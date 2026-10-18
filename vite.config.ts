@@ -1,11 +1,11 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-// Relative base keeps the build working both at the domain root and under a
-// GitHub Pages repository path (e.g. https://user.github.io/al-helm/).
-// https://vite.dev/config/
+// Configure VITE_BASE_PATH to the Pages repository path (e.g. /al-helm/).
+// Root deployments use '/'; local builds retain a relative base by default.
+const pagesBase = process.env.VITE_BASE_PATH
 export default defineConfig({
-  base: './',
+  base: pagesBase || './',
   plugins: [react()],
   build: {
     target: 'es2022',

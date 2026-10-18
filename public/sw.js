@@ -5,7 +5,7 @@
  * cache-versioning strategy. No UI feature depends on this worker.
  */
 
-const CACHE = 'alhelm-shell-v2'
+const CACHE = 'alhelm-shell-v4'
 const SHELL = [
   './',
   './index.html',
@@ -37,39 +37,26 @@ self.addEventListener('activate', (event) => {
   )
 })
 
-// Network-first for navigations so a deploy is picked up immediately; cached
-// shell is only a fallback when the network is unavailable.
+// Network-first for all same-origin GETs so deployed HTML/CSS/JS changes are
+// checked on each request. Cached assets remain an offline fallback.
 self.addEventListener('fetch', (event) => {
   const request = event.request
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return
-
-  if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          const copy = response.clone()
-          caches.open(CACHE).then((cache) => cache.put(shellUrl('./index.html'), copy)).catch(() => undefined)
-          return response
-        })
-        .catch(() => caches.match(shellUrl('./index.html')).then((cached) => cached ?? Response.error())),
-    )
-    return
-  }
-
   event.respondWith(
-    caches.match(request).then(
-      (cached) =>
-        cached ??
-        fetch(request)
-          .then((response) => {
-            if (response.ok) {
-              const copy = response.clone()
-              caches.open(CACHE).then((cache) => cache.put(request, copy)).catch(() => undefined)
-            }
-            return response
-          })
-          .catch(() => cached ?? Response.error()),
-    ),
+    fetch(new Request(request, { cache: 'no-store' }))
+      .then((response) => {
+        if (response.ok) {
+          const cacheKey = request.mode === 'navigate' ? shellUrl('./index.html') : request
+          const copy = response.clone()
+          event.waitUntil(caches.open(CACHE).then((cache) => cache.put(cacheKey, copy)))
+        }
+        return response
+      })
+      .catch(async () => {
+        const cacheKey = request.mode === 'navigate' ? shellUrl('./index.html') : request
+        const cached = await caches.match(cacheKey)
+        return cached ?? Response.error()
+      }),
   )
 })
 

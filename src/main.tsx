@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter } from 'react-router-dom'
+import { HashRouter } from 'react-router-dom'
 import './styles/index.css'
 import App from './App.tsx'
 import { initStore } from './services/store'
@@ -10,9 +10,9 @@ import { registerServiceWorker } from './services/pwa/registerServiceWorker'
 void initStore().finally(() => {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <BrowserRouter>
+      <HashRouter>
         <App />
-      </BrowserRouter>
+      </HashRouter>
     </StrictMode>,
   )
 })
