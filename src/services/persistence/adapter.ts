@@ -7,7 +7,7 @@
  * the factory at the bottom of this file.
  */
 
-import type { AppData, CollectionKey } from '../types'
+import type { AppData, CollectionKey } from '../../types'
 
 export interface DataAdapter {
   /** Human-readable name, surfaced in the UI so nothing pretends to be cloud. */
@@ -68,7 +68,7 @@ export class LocalStorageAdapter implements DataAdapter {
 
   async load(): Promise<AppData | null> {
     if (!this.available) return null
-    const keys: (keyof AppData)[] = [
+    const keys: (keyof AppData & string)[] = [
       'profile',
       'settings',
       'subjects',
@@ -88,8 +88,9 @@ export class LocalStorageAdapter implements DataAdapter {
       const value = safeParse<unknown>(window.localStorage.getItem(storageKey(key)))
       if (value !== null && value !== undefined) {
         found = true
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ; (out as any)[key] = value
+        // Each slice is read as its own JSON value; the guard above proves the
+        // value exists, and the key list is constrained to real AppData keys.
+        ;(out as Record<string, unknown>)[key] = value
       }
     }
     return found ? (out as AppData) : null
@@ -97,7 +98,7 @@ export class LocalStorageAdapter implements DataAdapter {
 
   async save(data: AppData): Promise<void> {
     if (!this.available) return
-    for (const key of Object.keys(data) as (keyof AppData)[]) {
+    for (const key of Object.keys(data) as (keyof AppData & string)[]) {
       window.localStorage.setItem(storageKey(key), JSON.stringify(data[key]))
     }
   }

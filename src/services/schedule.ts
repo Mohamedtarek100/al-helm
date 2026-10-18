@@ -6,16 +6,21 @@
 import type { StudySession } from '../types'
 import { timeToMinutes } from './date'
 
+/**
+ * A slice of clock time. The field names mirror `StudySession.startTime` /
+ * `StudySession.endTime`, so a session can be passed to `rangesOverlap`
+ * without mapping it into a different shape first.
+ */
 export interface TimeRange {
-  start: string
-  end: string
+  startTime: string
+  endTime: string
 }
 
 export function rangesOverlap(a: TimeRange, b: TimeRange): boolean {
-  const aStart = timeToMinutes(a.start)
-  const aEnd = timeToMinutes(a.end)
-  const bStart = timeToMinutes(b.start)
-  const bEnd = timeToMinutes(b.end)
+  const aStart = timeToMinutes(a.startTime)
+  const aEnd = timeToMinutes(a.endTime)
+  const bStart = timeToMinutes(b.startTime)
+  const bEnd = timeToMinutes(b.endTime)
   if ([aStart, aEnd, bStart, bEnd].some(Number.isNaN)) return false
   return aStart < bEnd && bStart < aEnd
 }

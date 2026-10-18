@@ -1,7 +1,13 @@
 import type { HTMLAttributes, ReactNode } from 'react'
 import { cn } from '../utils/cn'
 
-interface CardProps extends HTMLAttributes<HTMLDivElement> {
+/**
+ * `Card` renders as several different tags, so its attributes are typed
+ * against the common `HTMLElement` base rather than `HTMLDivElement`.
+ * Typing against a concrete element would make the `<li>` variant reject
+ * handlers whose event targets differ (e.g. `onCopy`, `onCut`).
+ */
+interface CardProps extends HTMLAttributes<HTMLElement> {
   /** Slightly recessed paper — good for grouped lists inside a card. */
   sunk?: boolean
   padded?: boolean
