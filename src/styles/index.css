@@ -1,0 +1,12 @@
+/* =====================================================================
+   الحُلم — Stylesheet entry point.
+   Import order matters: tokens define the vocabulary, base consumes it,
+   then layout and components build on top.
+   ===================================================================== */
+
+@import './tokens.css';
+@import './base.css';
+@import './layout.css';
+@import './components.css';
+@import './app-shell.css';
+@import './pages.css';

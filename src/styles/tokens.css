@@ -1,0 +1,136 @@
+/* =====================================================================
+   الحُلم — Design tokens
+   =====================================================================
+   Art direction: a student's sketchbook. Warm cream paper, terracotta
+   ink, sage accents, a hand-drawn feel with rounded, slightly irregular
+   edges. Everything here is a CSS custom property so themes swap cleanly.
+   ===================================================================== */
+
+:root {
+  /* ---- Paper & surfaces ------------------------------------------- */
+  --paper: #f7f0e5;
+  --paper-2: #fbf6ee;
+  --paper-3: #fffcf7;
+  --paper-sunk: #efe4d3;
+
+  /* ---- Ink -------------------------------------------------------- */
+  --ink: #34312f;
+  --ink-2: #4f4a45;
+  --ink-3: #7a726a;
+  --ink-4: #a89e93;
+
+  /* ---- Brand accents ---------------------------------------------- */
+  --clay: #b66b52;
+  --clay-strong: #9c563f;
+  --clay-soft: #e7c9c0;
+  --sage: #89977b;
+  --sage-soft: #cfd8c4;
+  --dusty-blue: #aabbc8;
+  --blush: #e7c9c0;
+  --beige: #d8c8aa;
+  --charcoal: #34312f;
+  --amber: #c99a4e;
+  --plum: #8c6a82;
+
+  /* ---- Functional ------------------------------------------------- */
+  --success: #6f8f6a;
+  --warning: #c99a4e;
+  --danger: #b5523f;
+  --focus-ring: rgba(182, 107, 82, 0.42);
+
+  /* ---- Lines & shadows -------------------------------------------- */
+  --line: #e3d6c2;
+  --line-strong: #cdbba0;
+  --shadow-xs: 0 1px 2px rgba(52, 49, 47, 0.06);
+  --shadow-sm: 0 2px 6px rgba(52, 49, 47, 0.07);
+  --shadow-md: 0 6px 20px -6px rgba(52, 49, 47, 0.18);
+  --shadow-lg: 0 18px 44px -14px rgba(52, 49, 47, 0.28);
+
+  /* ---- Radii ------------------------------------------------------ */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 28px;
+  --r-pill: 999px;
+
+  /* ---- Spacing scale (4px base) ----------------------------------- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 40px;
+  --s-9: 56px;
+
+  /* ---- Type ------------------------------------------------------- */
+  --font-display: 'Tajawal', 'Cairo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-body: 'Tajawal', 'Cairo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-numeric: 'Cairo', 'Tajawal', system-ui, sans-serif;
+
+  --t-xs: 0.75rem;
+  --t-sm: 0.85rem;
+  --t-base: 0.95rem;
+  --t-md: 1.05rem;
+  --t-lg: 1.3rem;
+  --t-xl: 1.7rem;
+  --t-2xl: 2.2rem;
+  --t-3xl: 2.9rem;
+
+  /* ---- Layout ----------------------------------------------------- */
+  --sidebar-w: 264px;
+  --topbar-h: 64px;
+  --bottomnav-h: 68px;
+  --content-max: 1180px;
+
+  /* ---- Motion ----------------------------------------------------- */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 140ms;
+  --dur: 240ms;
+  --dur-slow: 420ms;
+
+  /* ---- Texture ---------------------------------------------------- */
+  --grain-opacity: 0.035;
+}
+
+/* ---- Dark theme: ink-washed night paper --------------------------- */
+[data-theme='dark'] {
+  --paper: #1e1b19;
+  --paper-2: #262220;
+  --paper-3: #2e2926;
+  --paper-sunk: #17140f;
+
+  --ink: #f2e9dc;
+  --ink-2: #d9cdbc;
+  --ink-3: #a89b89;
+  --ink-4: #7b7166;
+
+  --clay: #d18a6d;
+  --clay-strong: #e0a184;
+  --clay-soft: #4a332b;
+  --sage: #a3b391;
+  --sage-soft: #333c2c;
+  --dusty-blue: #9fb4c4;
+  --blush: #6b4a45;
+  --beige: #8a7a5f;
+  --charcoal: #d9cdbc;
+  --amber: #d8ad66;
+  --plum: #b189a7;
+
+  --success: #8fb389;
+  --warning: #d8ad66;
+  --danger: #d97a63;
+  --focus-ring: rgba(209, 138, 109, 0.5);
+
+  --line: #3a332e;
+  --line-strong: #4c433b;
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 8px 26px -8px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 22px 52px -16px rgba(0, 0, 0, 0.6);
+
+  --grain-opacity: 0.05;
+}

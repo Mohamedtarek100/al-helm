@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="الحُلم">
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFFCF7" />
+      <stop offset="100%" stop-color="#F7F0E5" />
+    </linearGradient>
+    <linearGradient id="wash" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#B66B52" stop-opacity="0.85" />
+      <stop offset="55%" stop-color="#E7C9C0" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#AABBC8" stop-opacity="0.75" />
+    </linearGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="16" fill="url(#paper)" />
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="15.5" fill="none" stroke="#D8C8AA" stroke-width="1.2" />
+
+  <!-- watercolour wash -->
+  <path d="M12 40c7-3 12-1 19-6s13-8 20-5v15c0 4-3 7-7 7H19c-4 0-7-3-7-7z" fill="url(#wash)" opacity="0.55" />
+  <path d="M10 44c9-4 15 0 22-5s12-7 21-4" fill="none" stroke="#B66B52" stroke-width="1.1" opacity="0.5" stroke-linecap="round" />
+
+  <!-- pencil drawing the horizon -->
+  <g stroke="#34312F" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M16 42c5-8 11-12 16-12s10 4 16 12" stroke-width="2.1" />
+    <path d="M22 42v-4M32 42v-7M42 42v-4" stroke-width="1.7" opacity="0.7" />
+  </g>
+
+  <!-- rising sun / aspiration -->
+  <circle cx="32" cy="24" r="6.4" fill="#B66B52" />
+  <circle cx="32" cy="24" r="9.6" fill="none" stroke="#B66B52" stroke-width="1" opacity="0.45" stroke-dasharray="2 4" />
+
+  <!-- botanical sprig -->
+  <g stroke="#89977B" stroke-width="1.5" fill="none" stroke-linecap="round">
+    <path d="M49 20c-3 6-3 12 1 18" />
+    <path d="M49 25c2-1 3-3 3-5" />
+    <path d="M48 31c-2-1-3-2-4-4" />
+    <path d="M50 37c2-1 4-2 5-4" />
+  </g>
+</svg>

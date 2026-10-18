@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="theme-color" content="#F7F0E5" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="الحُلم — مُخطِّط دراسة فني للثانوية العامة أدبي، لكل صفحة بتذاكريها بتقرّبك من الحلم." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="الحُلم" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="application-name" content="الحُلم" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="الحُلم | Al-Helm" />
+    <meta property="og:description" content="كل صفحة بتذاكريها، بتقرّبك من الحلم." />
+    <title>الحُلم | مُخطِّط الدراسة الفني</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800&family=Cairo:wght@300;400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // Applied before paint so the chosen theme never flashes.
+      (function () {
+        try {
+          var raw = localStorage.getItem('alhelm.v1.settings');
+          var theme = raw ? JSON.parse(raw).theme : null;
+          if (theme === 'dark') document.documentElement.dataset.theme = 'dark';
+        } catch (e) {}
+      })();
+      // Static hosts without SPA rewrites (e.g. GitHub Pages) receive the
+      // redirect back as ?/route — restore it before the router boots.
+      (function () {
+        var q = window.location.search;
+        if (q.charAt(0) === '?' && q.charAt(1) === '/') {
+          var restored = q.charAt(2) === '/' ? q.slice(2) : q.slice(1);
+          var hash = window.location.hash ? window.location.hash.slice(1) : '';
+          window.history.replaceState(null, '', restored + hash);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

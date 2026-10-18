@@ -1,0 +1,24 @@
+{
+  "name": "الحُلم | مخطط المذاكرة والمرسم",
+  "short_name": "الحُلم",
+  "description": "مخطط مذاكرة فني للثانوية العامة: جدول أسبوعي، مهام، مؤقت تركيز، ومرسم للأهداف الفنية.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#F7F0E5",
+  "theme_color": "#F7F0E5",
+  "categories": ["education", "productivity", "lifestyle"],
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "جلسة تركيز", "short_name": "تركيز", "url": "./#/focus" },
+    { "name": "مهامي", "short_name": "مهامي", "url": "./#/tasks" },
+    { "name": "مرسم الحلم", "short_name": "المرسم", "url": "./#/studio" }
+  ]
+}
