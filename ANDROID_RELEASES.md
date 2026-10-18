@@ -7,10 +7,7 @@ From the project root:
 
 ```powershell
 npm ci
-npm run build
-npx cap sync android
-cd android
-.\gradlew.bat assembleDebug
+npm run android:debug
 ```
 
 The debug APK is written to:
@@ -33,7 +30,7 @@ cd android
 .\gradlew.bat assembleRelease
 ```
 
-The unsigned/signed output location depends on the signing configuration and should be checked before distribution (usually `android/app/build/outputs/apk/release/`). Verify the final APK with `apksigner verify --verbose <path>` before sharing it.
+The unsigned/signed output location depends on the signing configuration and should be checked before distribution (usually `android/app/build/outputs/apk/release/`). Verify the final APK with `apksigner verify --verbose <path>` before sharing it. The `android:debug` script is intentionally not used for release signing; use the wrapper's `assembleRelease` task only after adding a secure local signing configuration.
 
 Keep the application ID `com.alhelm.studyplanner` and use the exact same release signing key for every update distributed through the same channel.
 
