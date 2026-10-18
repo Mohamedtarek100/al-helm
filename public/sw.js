@@ -5,15 +5,25 @@
  * cache-versioning strategy. No UI feature depends on this worker.
  */
 
-const CACHE = 'alhelm-shell-v1'
-const SHELL = ['./', './index.html', './manifest.webmanifest', './favicon.svg']
+const CACHE = 'alhelm-shell-v2'
+const SHELL = [
+  './',
+  './index.html',
+  './manifest.webmanifest',
+  './favicon.svg',
+  './icons/apple-touch-icon.png',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/icon-maskable-512.png',
+]
+const shellUrl = (path) => new URL(path, self.registration.scope).href
+const shellRequest = (path) => new Request(shellUrl(path))
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(SHELL))
-      .catch(() => undefined)
+      .then((cache) => cache.addAll(SHELL.map((path) => shellRequest(path))))
       .then(() => self.skipWaiting()),
   )
 })
@@ -38,10 +48,10 @@ self.addEventListener('fetch', (event) => {
       fetch(request)
         .then((response) => {
           const copy = response.clone()
-          caches.open(CACHE).then((cache) => cache.put('./index.html', copy)).catch(() => undefined)
+          caches.open(CACHE).then((cache) => cache.put(shellUrl('./index.html'), copy)).catch(() => undefined)
           return response
         })
-        .catch(() => caches.match('./index.html').then((cached) => cached ?? Response.error())),
+        .catch(() => caches.match(shellUrl('./index.html')).then((cached) => cached ?? Response.error())),
     )
     return
   }
@@ -83,5 +93,5 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  event.waitUntil(self.clients.openWindow('./#/notifications'))
+  event.waitUntil(self.clients.openWindow(`${self.registration.scope}#/notifications`))
 })

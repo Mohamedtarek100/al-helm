@@ -1,26 +1,13 @@
 import type { ReactNode } from 'react'
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '../utils/cn'
-
-export type ToastTone = 'info' | 'success' | 'warning' | 'danger'
+import { ToastContext, type ToastTone } from './toastContext'
 
 interface Toast {
   id: number
   tone: ToastTone
   message: ReactNode
-}
-
-interface ToastContextValue {
-  notify: (message: ReactNode, tone?: ToastTone) => void
-}
-
-const ToastContext = createContext<ToastContextValue | null>(null)
-
-export function useToast(): ToastContextValue {
-  const ctx = useContext(ToastContext)
-  if (!ctx) throw new Error('useToast must be used inside <ToastProvider>')
-  return ctx
 }
 
 const TOAST_TTL = 3200

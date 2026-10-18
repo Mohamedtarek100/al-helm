@@ -83,6 +83,7 @@ export async function initStore(): Promise<void> {
   } catch {
     state = createInitialData()
   }
+  applyTheme(state.settings.theme)
   emit()
 }
 
@@ -161,12 +162,16 @@ export function updateProfile(patch: Partial<Profile>): void {
   commit({ ...state, profile: { ...state.profile, ...patch } })
 }
 
+function applyTheme(theme: Settings['theme']): void {
+  if (typeof document === 'undefined') return
+  const dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  if (dark) document.documentElement.dataset.theme = 'dark'
+  else delete document.documentElement.dataset.theme
+}
+
 export function updateSettings(patch: Partial<Settings>): void {
   const next = { ...state.settings, ...patch }
-  if (typeof document !== 'undefined') {
-    if (next.theme === 'dark') document.documentElement.dataset.theme = 'dark'
-    else delete document.documentElement.dataset.theme
-  }
+  applyTheme(next.theme)
   commit({ ...state, settings: next })
 }
 

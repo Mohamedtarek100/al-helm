@@ -30,7 +30,10 @@
         try {
           var raw = localStorage.getItem('alhelm.v1.settings');
           var theme = raw ? JSON.parse(raw).theme : null;
-          if (theme === 'dark') document.documentElement.dataset.theme = 'dark';
+          var systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          if (theme === 'dark' || (theme === 'system' && systemDark)) {
+            document.documentElement.dataset.theme = 'dark';
+          }
         } catch (e) {}
       })();
       // Static hosts without SPA rewrites (e.g. GitHub Pages) receive the
