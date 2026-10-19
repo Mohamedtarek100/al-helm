@@ -162,10 +162,30 @@ export function updateProfile(patch: Partial<Profile>): void {
   commit({ ...state, profile: { ...state.profile, ...patch } })
 }
 
+let systemThemeQuery: MediaQueryList | null = null
 function applyTheme(theme: Settings['theme']): void {
   if (typeof document === 'undefined') return
-  const dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
-  if (dark) document.documentElement.dataset.theme = 'dark'
+  const query = window.matchMedia('(prefers-color-scheme: dark)')
+  const apply = (dark: boolean) => {
+    if (dark) document.documentElement.dataset.theme = 'dark'
+    else delete document.documentElement.dataset.theme
+  }
+  if (systemThemeQuery) {
+    systemThemeQuery.removeEventListener('change', onSystemThemeChange)
+    systemThemeQuery = null
+  }
+  if (theme === 'system') {
+    systemThemeQuery = query
+    systemThemeQuery.addEventListener('change', onSystemThemeChange)
+    apply(query.matches)
+  } else {
+    apply(theme === 'dark')
+  }
+}
+
+function onSystemThemeChange(event: MediaQueryListEvent): void {
+  if (state.settings.theme !== 'system' || typeof document === 'undefined') return
+  if (event.matches) document.documentElement.dataset.theme = 'dark'
   else delete document.documentElement.dataset.theme
 }
 
