@@ -25,6 +25,7 @@ export type Entity<T> = T & { id: Id } & Timestamped
 /* ------------------------------------------------------------------ */
 
 export type ThemePreference = 'light' | 'dark' | 'system'
+export type LanguagePreference = 'en' | 'ar'
 
 export interface Profile {
   displayName: string
@@ -45,6 +46,7 @@ export interface ReminderPreference {
 
 export interface Settings {
   theme: ThemePreference
+  language: LanguagePreference
   /** Focus block length in minutes. */
   focusMinutes: number
   /** Short break length in minutes. */
@@ -256,6 +258,15 @@ export interface AppNotification extends Timestamped {
   read: boolean
 }
 
+export interface ExamDate extends Timestamped {
+  id: Id
+  title: string
+  subjectId: Id | null
+  examAt: string
+  timezone: string
+  notes: string
+}
+
 /* ------------------------------------------------------------------ */
 /* Whole-state snapshot (used by the persistence adapter)              */
 /* ------------------------------------------------------------------ */
@@ -273,6 +284,7 @@ export interface AppData {
   challenges: DrawingChallenge[]
   letters: FutureLetter[]
   notifications: AppNotification[]
+  exams: ExamDate[]
 }
 
 export type CollectionKey = Exclude<keyof AppData, 'profile' | 'settings'>

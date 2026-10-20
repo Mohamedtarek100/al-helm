@@ -62,11 +62,8 @@ export async function importBackup(file: File): Promise<void> {
   }
 
   const candidate = parsed as Partial<ExportEnvelope> & { data?: Partial<AppData> }
-  const payload = candidate?.data ?? (parsed as Partial<AppData>)
-
-  if (!payload || typeof payload !== 'object') {
+  if (candidate?.app !== 'alhelm' || typeof candidate.version !== 'number' || !candidate.data || typeof candidate.data !== 'object') {
     throw new ImportError('محتوى الملف غير متوقع.')
   }
-
-  replaceState(hydrateData(payload as Partial<AppData>))
+  await replaceState(hydrateData(candidate.data))
 }

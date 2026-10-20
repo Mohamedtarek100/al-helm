@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ar" dir="rtl">
+<html lang="en-US" dir="ltr">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
@@ -29,7 +29,11 @@
       (function () {
         try {
           var raw = localStorage.getItem('alhelm.v1.settings');
-          var theme = raw ? JSON.parse(raw).theme : null;
+          var saved = raw ? JSON.parse(raw) : {};
+          var theme = saved.theme || null;
+          var language = saved.language === 'ar' ? 'ar' : 'en';
+          document.documentElement.lang = language === 'ar' ? 'ar-EG' : 'en-US';
+          document.documentElement.dir = language === 'ar' ? 'rtl' : 'ltr';
           var systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
           if (theme === 'dark' || (theme === 'system' && systemDark)) {
             document.documentElement.dataset.theme = 'dark';

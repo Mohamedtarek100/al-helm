@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint src",
+    "test:i18n": "node scripts/check-translations.mjs",
+    "test": "vitest run",
     "preview": "vite preview",
     "android:sync": "npm run build && cap sync android",
     "android:debug": "npm run android:sync && android\\gradlew.bat -p android assembleDebug"
@@ -14,6 +16,7 @@
   "dependencies": {
     "@capacitor/android": "^7.6.9",
     "@capacitor/core": "^7.6.9",
+    "@supabase/supabase-js": "^2.118.0",
     "framer-motion": "^14.3.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -27,6 +30,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.81.0",
     "typescript": "~6.0.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.0",
+    "vitest": "^3.2.7"
   }
 }

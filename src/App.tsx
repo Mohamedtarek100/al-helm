@@ -8,11 +8,15 @@ import { StudioPage } from './pages/StudioPage'
 import { ProgressPage } from './pages/ProgressPage'
 import { NotificationsPage } from './pages/NotificationsPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { ReviewPage } from './pages/ReviewPage'
+import { ExamPage } from './pages/ExamPage'
 import { ToastProvider } from './components/Toast'
+import { I18nProvider } from './i18n/I18nProvider'
 
 function App() {
   return (
-    <ToastProvider>
+    <I18nProvider>
+      <ToastProvider>
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<HomePage />} />
@@ -21,12 +25,15 @@ function App() {
           <Route path="focus" element={<FocusPage />} />
           <Route path="studio" element={<StudioPage />} />
           <Route path="progress" element={<ProgressPage />} />
+          <Route path="review" element={<ReviewPage />} />
+          <Route path="exams" element={<ExamPage />} />
           <Route path="notifications" element={<NotificationsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<HomePage />} />
         </Route>
       </Routes>
-    </ToastProvider>
+      </ToastProvider>
+    </I18nProvider>
   )
 }
 

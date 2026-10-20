@@ -18,7 +18,7 @@ export interface DataAdapter {
   load(): Promise<AppData | null>
   /** Write the full snapshot. */
   save(data: AppData): Promise<void>
-  /** Remove all stored data for this adapter. */
+  /** Remove data for this adapter. */
   clear(): Promise<void>
 }
 
@@ -81,6 +81,7 @@ export class LocalStorageAdapter implements DataAdapter {
       'challenges',
       'letters',
       'notifications',
+      'exams',
     ]
     const out: Partial<AppData> = {}
     let found = false
@@ -97,9 +98,19 @@ export class LocalStorageAdapter implements DataAdapter {
   }
 
   async save(data: AppData): Promise<void> {
-    if (!this.available) return
-    for (const key of Object.keys(data) as (keyof AppData & string)[]) {
-      window.localStorage.setItem(storageKey(key), JSON.stringify(data[key]))
+    if (!this.available) throw new Error('Local storage is unavailable; your changes remain in memory only.')
+    const previous = new Map<string, string | null>()
+    try {
+      for (const key of Object.keys(data) as (keyof AppData & string)[]) {
+        const storageKeyForSlice = storageKey(key)
+        previous.set(storageKeyForSlice, window.localStorage.getItem(storageKeyForSlice))
+        window.localStorage.setItem(storageKeyForSlice, JSON.stringify(data[key]))
+      }
+    } catch (error) {
+      for (const [key, value] of previous) {
+        try { if (value === null) window.localStorage.removeItem(key); else window.localStorage.setItem(key, value) } catch { /* preserve the original failure */ }
+      }
+      throw error
     }
   }
 
@@ -137,18 +148,16 @@ export class MemoryAdapter implements DataAdapter {
 /* Factory                                                             */
 /* ------------------------------------------------------------------ */
 
-/**
- * Phase 2 note: return a `SupabaseAdapter` here when
- * `import.meta.env.VITE_SUPABASE_URL` is present. Nothing else changes.
- */
+/** This factory is deliberately local-only; cloud access is selected explicitly by the store after authentication. */
 export function createDataAdapter(): DataAdapter {
   if (typeof window === 'undefined') return new MemoryAdapter()
   if (!isStorageAvailable()) return new MemoryAdapter()
   return new LocalStorageAdapter()
 }
 
-/** Convenience export used by repositories and the store. */
-export const dataAdapter: DataAdapter = createDataAdapter()
+/** Device persistence remains available independently of cloud account state. */
+export const localDataAdapter: DataAdapter = createDataAdapter()
+export const dataAdapter = localDataAdapter
 
 /** Re-exported so repositories can build their own keys consistently. */
 export type { CollectionKey }

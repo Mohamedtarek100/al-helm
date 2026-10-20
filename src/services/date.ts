@@ -1,67 +1,46 @@
-/**
- * Date, time and formatting helpers. All user-facing formatting uses the
- * `ar-EG` locale and Egypt (Africa/Cairo) time, per the product brief.
- */
+/** Date, time and formatting helpers with locale-aware English/Arabic output. */
 
 import type { Weekday } from '../types'
 import { WEEKDAY_LABELS } from './domain'
 
 export const EGYPT_LOCALE = 'ar-EG'
+export const ENGLISH_LOCALE = 'en-US'
 export const EGYPT_TIME_ZONE = 'Africa/Cairo'
 
-const dateFormatter = new Intl.DateTimeFormat(EGYPT_LOCALE, {
-  weekday: 'long',
-  day: 'numeric',
-  month: 'long',
-  year: 'numeric',
-  calendar: 'gregory',
-  numberingSystem: 'arab',
-  timeZone: EGYPT_TIME_ZONE,
-})
-
-const shortDateFormatter = new Intl.DateTimeFormat(EGYPT_LOCALE, {
-  day: 'numeric',
-  month: 'short',
-  calendar: 'gregory',
-  numberingSystem: 'arab',
-  timeZone: EGYPT_TIME_ZONE,
-})
-
-const timeFormatter = new Intl.DateTimeFormat(EGYPT_LOCALE, {
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: true,
-  numberingSystem: 'arab',
-  timeZone: EGYPT_TIME_ZONE,
-})
-
-/** Long, human date in Arabic: «الأحد ١٨ أكتوبر ٢٠٢٦». */
-export function formatLongDate(input: Date | string): string {
-  const date = typeof input === 'string' ? parseDateKey(input) : input
-  return dateFormatter.format(date)
+function localeDigits(locale: string): string | undefined {
+  return locale === 'ar-EG' ? 'arab' : 'latn'
 }
 
-export function formatShortDate(input: Date | string): string {
+/** Long, human date in Arabic: «الأحد ١٨ أكتوبر ٢٠٢٦». */
+export function formatLongDate(input: Date | string, locale = EGYPT_LOCALE): string {
   const date = typeof input === 'string' ? parseDateKey(input) : input
-  return shortDateFormatter.format(date)
+  return new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', calendar: 'gregory', numberingSystem: localeDigits(locale) }).format(date)
+}
+
+export function formatShortDate(input: Date | string, locale = EGYPT_LOCALE): string {
+  const date = typeof input === 'string' ? parseDateKey(input) : input
+  return new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', calendar: 'gregory', numberingSystem: localeDigits(locale) }).format(date)
 }
 
 /** «٠٧:٣٠ م» from an HH:mm string. */
-export function formatTime(value: string): string {
+export function formatTime(value: string, locale = EGYPT_LOCALE): string {
   const [hours, minutes] = value.split(':').map(Number)
   if (Number.isNaN(hours) || Number.isNaN(minutes)) return value
-  const date = new Date()
-  date.setHours(hours, minutes, 0, 0)
-  return timeFormatter.format(date)
+  const date = new Date(2000, 0, 1, hours, minutes)
+  return new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit', hour12: locale === 'en-US', numberingSystem: localeDigits(locale) }).format(date)
 }
 
-export function formatMinutes(total: number): string {
+export function formatMinutes(total: number, locale = EGYPT_LOCALE): string {
   const minutes = Math.max(0, Math.round(total))
-  if (minutes < 60) return `${toArabicDigits(minutes)} د`
-  const hours = Math.floor(minutes / 60)
-  const rest = minutes % 60
-  if (rest === 0) return `${toArabicDigits(hours)} س`
-  return `${toArabicDigits(hours)} س ${toArabicDigits(rest)} د`
+  const digits = (value: number) => locale === 'ar-EG' ? toArabicDigits(value) : new Intl.NumberFormat('en-US').format(value)
+  if (locale === 'en-US') {
+    if (minutes < 60) return `${digits(minutes)} min`
+    const hours = Math.floor(minutes / 60), rest = minutes % 60
+    return rest ? `${digits(hours)} hr ${digits(rest)} min` : `${digits(hours)} hr`
+  }
+  if (minutes < 60) return `${digits(minutes)} د`
+  const hours = Math.floor(minutes / 60), rest = minutes % 60
+  return rest === 0 ? `${digits(hours)} س` : `${digits(hours)} س ${digits(rest)} د`
 }
 
 /** yyyy-mm-dd for a Date, computed in local time (never UTC-shifted). */
@@ -133,25 +112,30 @@ export function toArabicDigits(value: number | string): string {
 }
 
 /** Relative day wording that never shames the student for being behind. */
-export function describeDueDate(dueKey: string): string {
-  if (!dueKey) return 'بدون تاريخ'
+export function describeDueDate(dueKey: string, locale = 'ar-EG'): string {
+  if (!dueKey) return locale === 'en-US' ? 'No date' : 'بدون تاريخ'
   const today = todayKey()
-  if (dueKey === today) return 'النهارده'
-  const diff = Math.round(
-    (parseDateKey(dueKey).getTime() - parseDateKey(today).getTime()) / 86_400_000,
-  )
+  if (dueKey === today) return locale === 'en-US' ? 'Today' : 'النهارده'
+  const diff = Math.round((parseDateKey(dueKey).getTime() - parseDateKey(today).getTime()) / 86_400_000)
+  if (locale === 'en-US') {
+    if (diff === 1) return 'Tomorrow'
+    if (diff === -1) return 'Yesterday'
+    if (diff < -1) return `${Math.abs(diff)} days ago`
+    if (diff <= 7) return `In ${diff} days`
+    return formatShortDate(dueKey, locale)
+  }
   if (diff === 1) return 'بكرة'
   if (diff === -1) return 'امبارح'
   if (diff < -1) return `فات ${toArabicDigits(Math.abs(diff))} يوم`
   if (diff <= 7) return `بعد ${toArabicDigits(diff)} أيام`
-  return formatShortDate(dueKey)
+  return formatShortDate(dueKey, locale)
 }
 
-export function greetingForHour(hour: number): string {
+export function greetingForHour(hour: number, locale = 'ar-EG'): string {
+  if (locale === 'en-US') return hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
   if (hour < 5) return 'سهرة خفيفة'
   if (hour < 12) return 'صباح الخير'
   if (hour < 17) return 'نهارك سعيد'
-  if (hour < 21) return 'مساء الخير'
   return 'مساء الخير'
 }
 

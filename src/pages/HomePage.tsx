@@ -5,7 +5,8 @@ import { Card, CardHeader } from '../components/Card'
 import { EmptyState, ProgressBar } from '../components/Display'
 import { CheckIcon, CheckSquareIcon, ClockIcon, PaletteIcon, PlusIcon, SparkIcon, TargetIcon, TimerIcon } from '../components/icons'
 import { WEEKDAY_SHORT, SUBJECT_COLOR_HEX, SESSION_TYPE_LABELS } from '../services/domain'
-import { formatLongDate, formatMinutes, formatTime, greetingForHour, todayKey } from '../services/date'
+import { formatMinutes, formatTime, todayKey } from '../services/date'
+import { useI18n } from '../i18n/useI18n'
 import { sessionsForDate } from '../services/selectors'
 import { useAppData, setTaskCompleted } from '../services/store'
 import { PageFrame } from './PageFrame'
@@ -29,14 +30,18 @@ function SketchHero() {
 
 export function HomePage() {
   const data = useAppData()
-  const [{ date, formattedDate, hour }] = useState(() => {
+  const { t, language, formatDate, formatNumber } = useI18n()
+  const [{ date, hour, todayDate }] = useState(() => {
     const now = new Date()
-    return { date: todayKey(), formattedDate: formatLongDate(now), hour: now.getHours() }
+    return { date: todayKey(), hour: now.getHours(), todayDate: now }
   })
+  const formattedDate = formatDate(todayDate, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+  const greetingKey = hour < 12 ? 'greetingMorning' : hour < 17 ? 'greetingDay' : 'greetingEvening'
+  const greeting = t(greetingKey)
   const todaysTasks = useMemo(() => data.tasks.filter((task) => !task.completed && task.dueDate === date).sort((a,b) => (a.dueTime || '99:99').localeCompare(b.dueTime || '99:99')), [data.tasks, date])
   const todaysSessions = useMemo(() => sessionsForDate(data.sessions, date), [data.sessions, date])
   const done = data.tasks.filter((task) => task.completed && task.completedAt?.slice(0,10) === date).length
-  const dailyGoal = data.profile.motto.trim() || 'خطوة صغيرة كل يوم، تقرّبك من مرسمك.'
+  const dailyGoal = data.profile.motto.trim() || t('dailyGoalDefault')
   const total = todaysTasks.length + done
   const weeklyMinutes = Array(7).fill(0) as number[]
   for (const session of data.focusSessions) {
@@ -44,19 +49,18 @@ export function HomePage() {
     if (session.kind === 'focus') weeklyMinutes[weekday] += session.actualMinutes
   }
   const max = Math.max(60, ...weeklyMinutes)
-  const greeting = greetingForHour(hour)
 
   return (
     <PageFrame className="page-stack">
       <section className="hero-card">
         <div className="hero-card__content">
-          <p className="hero-card__greeting">{greeting}، {data.profile.displayName || 'يا فنانة'} ✨</p>
-          <h1 className="hero-card__title">الحُلم</h1>
-          <p className="hero-card__tagline">كل صفحة بتذاكريها، بتقرّبك من الحلم.</p>
+          <p className="hero-card__greeting">{greeting}, {data.profile.displayName || (language === 'en' ? 'artist' : 'يا فنانة')} ✨</p>
+          <h1 className="hero-card__title">{t('dreamGreeting')}</h1>
+          <p className="hero-card__tagline">{t('tagline')}</p>
           <p className="hero-card__date">{formattedDate}</p>
           <div className="hero-card__actions">
-            <Link to="/tasks"><Button variant="primary" leadingIcon={<PlusIcon size={17} />}>مهمة جديدة</Button></Link>
-            <Link to="/focus"><Button variant="secondary" leadingIcon={<TimerIcon size={17} />}>ابدئي جلسة تركيز</Button></Link>
+            <Link to="/tasks"><Button variant="primary" leadingIcon={<PlusIcon size={17} />}>{t('taskNew')}</Button></Link>
+            <Link to="/focus"><Button variant="secondary" leadingIcon={<TimerIcon size={17} />}>{t('focusTitle')}</Button></Link>
           </div>
         </div>
         <SketchHero />
@@ -65,40 +69,40 @@ export function HomePage() {
       <div className="dashboard-grid">
         <div className="dashboard-column">
           <Card>
-            <CardHeader title="هدف النهارده" subtitle="نية بسيطة تكفي كبداية" icon={<TargetIcon size={19} />} />
+            <CardHeader title={t('dailyIntention')} subtitle={t('intentionHint')} icon={<TargetIcon size={19} />} />
             <p className="daily-goal">{dailyGoal}</p>
             <div className="today-progress">
-              <div className="row row--between t-sm"><span>مهام اليوم</span><span className="t-muted">{done} من {total} خلصت</span></div>
-              <ProgressBar value={total ? done / total : 0} label="إنجاز مهام اليوم" height={9} />
-              {total === 0 && <p className="t-xs t-muted">لما تضيفي مهامك، هتظهر هنا بهدوء.</p>}
+              <div className="row row--between t-sm"><span>{t('tasksToday')}</span><span className="t-muted">{formatNumber(done)} / {formatNumber(total)} {t('completedOf')}</span></div>
+              <ProgressBar value={total ? done / total : 0} label={t('todayProgress')} height={9} />
+              {total === 0 && <p className="t-xs t-muted">{t('emptyTasksBody')}</p>}
             </div>
           </Card>
 
           <Card>
-            <CardHeader title="مهام النهارده" subtitle={todaysTasks.length ? `${todaysTasks.length} مهام لسه مستنياكي` : 'كل خطوة صغيرة محسوبة'} icon={<CheckSquareIcon size={19} />} action={<Link className="text-link" to="/tasks">كل المهام ←</Link>} />
+            <CardHeader title={t('tasksToday')} subtitle={todaysTasks.length ? `${formatNumber(todaysTasks.length)} ${language === 'en' ? 'tasks are waiting' : 'مهام لسه مستنياكي'}` : t('completedOf')} icon={<CheckSquareIcon size={19} />} action={<Link className="text-link" to="/tasks">{t('tasks')} →</Link>} />
             {todaysTasks.length ? <div>{todaysTasks.slice(0,5).map((task) => <div key={task.id} className="task-row">
-              <button className="task-check" aria-label={`إتمام ${task.title}`} onClick={() => setTaskCompleted(task.id,true)}><CheckIcon size={15} /></button>
-              <div className="task-row__body"><p className="task-row__title">{task.title}</p><p className="task-row__meta">{task.dueTime ? formatTime(task.dueTime) : 'خلال اليوم'} · {formatMinutes(task.estimatedMinutes)}</p></div>
-              <span className={`priority-dot priority-dot--${task.priority}`} title={task.priority === 'high' ? 'مهمة' : task.priority === 'medium' ? 'متوسطة' : 'هادية'} />
-            </div>)}</div> : <EmptyState compact icon={<SparkIcon size={24} />} title="يومك لسه ورقة فاضية" message="ضيفي مهمة أو استمتعي ببداية هادية." action={<Link className="text-link" to="/tasks">أضيفي أول مهمة</Link>} />}
+              <button className="task-check" aria-label={`${language === 'en' ? 'Complete' : 'إتمام'} ${task.title}`} onClick={() => setTaskCompleted(task.id,true)}><CheckIcon size={15} /></button>
+              <div className="task-row__body"><p className="task-row__title">{task.title}</p><p className="task-row__meta">{task.dueTime ? formatTime(task.dueTime, language==='en'?'en-US':'ar-EG') : t('today')} · {formatMinutes(task.estimatedMinutes, language==='en'?'en-US':'ar-EG')}</p></div>
+              <span className={`priority-dot priority-dot--${task.priority}`} title={task.priority === 'high' ? (language === 'en' ? 'High priority' : 'مهمة') : task.priority === 'medium' ? (language === 'en' ? 'Medium priority' : 'متوسطة') : (language === 'en' ? 'Low priority' : 'هادية')} />
+            </div>)}</div> : <EmptyState compact icon={<SparkIcon size={24} />} title={t('noTasks')} message={t('noTasksBody')} action={<Link className="text-link" to="/tasks">{t('addFirstTask')}</Link>} />}
           </Card>
 
           <Card>
-            <CardHeader title="جلسات قريبة" subtitle="مواعيدك الدراسية لليوم" icon={<ClockIcon size={19} />} action={<Link className="text-link" to="/schedule">الجدول ←</Link>} />
+            <CardHeader title={t('upcomingSessions')} subtitle={t('todaysStudySessions')} icon={<ClockIcon size={19} />} action={<Link className="text-link" to="/schedule">{t('schedule')} →</Link>} />
             {todaysSessions.length ? <div>{todaysSessions.slice(0,4).map((session) => {
               const subject = data.subjects.find((item) => item.id === session.subjectId)
-              return <div key={session.id} className="session-row"><span className="session-row__time">{formatTime(session.startTime)}</span><span className="session-row__color" style={{'--subject-color': subject ? SUBJECT_COLOR_HEX[subject.color] : 'var(--clay)'} as React.CSSProperties} /><div><p className="session-row__title">{session.title}</p><p className="session-row__meta">{subject?.name ?? 'بدون مادة'} · {SESSION_TYPE_LABELS[session.type]}</p></div></div>
-            })}</div> : <EmptyState compact icon={<ClockIcon size={24} />} title="مفيش جلسات مجدولة" message="رتّبي وقتك براحتك، يوم بيوم." action={<Link className="text-link" to="/schedule">افتحي الجدول</Link>} />}
+              return <div key={session.id} className="session-row"><span className="session-row__time">{formatTime(session.startTime, language==='en'?'en-US':'ar-EG')}</span><span className="session-row__color" style={{'--subject-color': subject ? SUBJECT_COLOR_HEX[subject.color] : 'var(--clay)'} as React.CSSProperties} /><div><p className="session-row__title">{session.title}</p><p className="session-row__meta">{subject?.name ?? (language === 'en' ? 'No subject' : 'بدون مادة')} · {language === 'en' ? session.type : SESSION_TYPE_LABELS[session.type]}</p></div></div>
+            })}</div> : <EmptyState compact icon={<ClockIcon size={24} />} title={t('noSessions')} message={t('noSessionsBody')} action={<Link className="text-link" to="/schedule">{t('openSchedule')}</Link>} />}
           </Card>
         </div>
 
         <div className="dashboard-column">
           <Card>
-            <CardHeader title="أسبوعك في التركيز" subtitle="وقت مسجل من جلسات تركيز مكتملة" icon={<TimerIcon size={19} />} />
-            {data.focusSessions.length ? <><div className="week-strip">{WEEKDAY_SHORT.map((day,index) => <div className="week-day" key={day}><span className="week-day__label">{day}</span><span className="week-day__bar"><span className="week-day__fill" style={{height:`${Math.max(4,weeklyMinutes[index]/max*100)}%`}} /></span></div>)}</div><p className="t-xs t-muted" style={{marginTop:12}}>كل جلسة مكتملة بتظهر هنا — دي بيانات رحلتك الفعلية.</p></> : <EmptyState compact icon={<BookIconSafe />} title="رحلتك لسه بتبدأ" message="أول جلسة تركيز هتبدأ ترسم أسبوعك هنا." />}
+            <CardHeader title={t('focusWeek')} subtitle={t('completedFocusOnly')} icon={<TimerIcon size={19} />} />
+            {data.focusSessions.length ? <><div className="week-strip">{WEEKDAY_SHORT.map((day,index) => <div className="week-day" key={day}><span className="week-day__label">{language === 'en' ? ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][index] : day}</span><span className="week-day__bar"><span className="week-day__fill" style={{height:`${Math.max(4,weeklyMinutes[index]/max*100)}%`}} /></span></div>)}</div><p className="t-xs t-muted" style={{marginTop:12}}>كل جلسة مكتملة بتظهر هنا — دي بيانات رحلتك الفعلية.</p></> : <EmptyState compact icon={<BookIconSafe />} title={t('startJourney')} message={t('firstFocus')} />}
           </Card>
-          <div className="encouragement">«الطريق للفن يبدأ بخط واحد، والطريق للحلم يبدأ بصفحة واحدة.»</div>
-          <Card className="dream-card"><div className="dream-card__mark"><PaletteIcon size={21}/></div><p className="dream-card__eyebrow">مرسم الحلم</p><h3>مساحة صغيرة لفنكِ</h3><p className="t-sm t-muted">أهدافك، أفكارك، وأعمالك الفنية — كلها في مكان واحد.</p><Link to="/studio" className="text-link">ادخلي المرسم ←</Link></Card>
+          <div className="encouragement">{t('encouragement')}</div>
+          <Card className="dream-card"><div className="dream-card__mark"><PaletteIcon size={21}/></div><p className="dream-card__eyebrow">{t('studio')}</p><h3>{t('dreamStudioIntro')}</h3><p className="t-sm t-muted">{t('dreamStudioBody')}</p><Link to="/studio" className="text-link">{t('enterStudio')} →</Link></Card>
         </div>
       </div>
     </PageFrame>

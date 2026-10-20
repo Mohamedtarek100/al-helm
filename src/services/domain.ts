@@ -95,6 +95,7 @@ export const WEEKDAY_SHORT = ['أحد', 'اثنين', 'ثلاثاء', 'أربع�
 
 export const defaultSettings: Settings = {
   theme: 'light',
+  language: 'en',
   focusMinutes: 25,
   shortBreakMinutes: 5,
   longBreakMinutes: 15,
@@ -150,7 +151,7 @@ export function createInitialData(): AppData {
   const stamp = nowIso()
   return {
     profile: {
-      displayName: 'الفنانة',
+      displayName: 'Artist',
       motto: '',
       journeyStart: stamp.slice(0, 10),
       avatarSeed: 'alhelm',
@@ -171,6 +172,7 @@ export function createInitialData(): AppData {
     })),
     letters: [],
     notifications: [],
+    exams: [],
   }
 }
 
@@ -187,6 +189,9 @@ export function hydrateData(stored: Partial<AppData> | null): AppData {
     settings: {
       ...base.settings,
       ...(stored.settings ?? {}),
+      storage: stored.settings?.storage === 'cloud' ? 'cloud' : 'local',
+      language: stored.settings?.language === 'ar' ? 'ar' : 'en',
+      theme: stored.settings?.theme === 'dark' || stored.settings?.theme === 'system' ? stored.settings.theme : 'light',
       reminders: stored.settings?.reminders ?? base.settings.reminders,
     },
     subjects: stored.subjects ?? base.subjects,
@@ -199,5 +204,6 @@ export function hydrateData(stored: Partial<AppData> | null): AppData {
     challenges: stored.challenges ?? base.challenges,
     letters: stored.letters ?? base.letters,
     notifications: stored.notifications ?? base.notifications,
+    exams: stored.exams ?? base.exams,
   }
 }

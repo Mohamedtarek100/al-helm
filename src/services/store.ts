@@ -20,6 +20,7 @@ import type {
   DrawingChallenge,
   FocusSession,
   FutureLetter,
+  ExamDate,
   JournalEntry,
   Profile,
   Settings,
@@ -29,6 +30,8 @@ import type {
   Timestamped,
 } from '../types'
 import { dataAdapter } from './persistence/adapter'
+import { cloudAdapter, supabase } from './persistence/supabase'
+import { PersistenceCoordinator } from './persistence/coordinator'
 import { createId, nowIso } from './persistence/repository'
 import { createInitialData, hydrateData } from './domain'
 
@@ -58,31 +61,106 @@ function getSnapshot(): AppData {
   return state
 }
 
+let persistenceError: string | null = null
+let cloudSaveError: string | null = null
+const persistence = new PersistenceCoordinator(dataAdapter, cloudAdapter())
+async function persistCloudSnapshot(snapshot: AppData): Promise<void> {
+  try {
+    await persistence.persist(snapshot)
+    persistenceError = null
+    cloudSaveError = null
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Persistence failed.'
+    if (persistence.snapshot().mode === 'cloud') cloudSaveError = message
+    else persistenceError = message
+    if (persistence.snapshot().mode === 'local') void persistence.refreshLocalSnapshot(state).catch(() => undefined)
+    emit()
+    throw error
+  }
+}
+export function getPersistenceError(): string | null { return cloudSaveError ?? persistenceError }
+export async function retryPersistence(): Promise<void> {
+  await persistence.retry()
+  persistenceError = null
+  cloudSaveError = null
+  emit()
+}
+
 /** Debounced write-through so rapid edits do not thrash localStorage. */
 function schedulePersist(): void {
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     saveTimer = null
-    void dataAdapter.save(state)
+    const snapshot = state
+    void persistCloudSnapshot(snapshot).catch(() => undefined)
   }, 220)
 }
-
-function commit(next: AppData): void {
-  state = next
+function commit(next:AppData):void{state=next;emit();schedulePersist()}
+async function commitAndPersist(next: AppData): Promise<void> {
+  const previous=state
+  if(saveTimer){clearTimeout(saveTimer);saveTimer=null}
+  state=next
   emit()
-  schedulePersist()
+  try {
+    if(persistence.snapshot().mode==='local') await persistCloudSnapshot(next)
+    else {
+      await persistence.refreshCloudSnapshot(next)
+      await dataAdapter.save({...next,settings:{...next.settings,storage:'local'}})
+      await persistCloudSnapshot(next)
+    }
+    schedulePersist()
+  } catch(error){state=previous;if(persistence.snapshot().mode==='local')await persistence.refreshLocalSnapshot(previous).catch(()=>undefined);else await persistence.refreshCloudSnapshot(previous).catch(()=>undefined);emit();throw error}
 }
 
-/** Loads the stored snapshot exactly once, before the first render settles. */
-export async function initStore(): Promise<void> {
-  if (hydrated) return
+export async function initStore(force = false): Promise<void> {
+  if (hydrated && !force) return
   hydrated = true
   try {
-    const stored = await dataAdapter.load()
-    state = hydrateData(stored)
-  } catch {
-    state = createInitialData()
+    const restored = await persistence.initialize()
+    state = hydrateData(restored.data)
+    state.settings.storage = 'local'
+    const cloud = cloudAdapter()
+    if (cloud && await cloud.hasSession().catch(() => false)) {
+      const { data: { user }, error } = await supabase!.auth.getUser()
+      if (!error && user) await authenticateCloudUser(user.id)
+    }
+  } catch (error) {
+    persistenceError=error instanceof Error?error.message:'Unable to initialize local storage.'
+    state=hydrateData(null)
+    state.settings.storage='local'
   }
+  applyTheme(state.settings.theme)
+  emit()
+}
+
+export async function authenticateCloudUser(userId: string): Promise<void> {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+  const next = await persistence.authenticate(userId)
+  if(next.error) cloudSaveError=next.error
+  if (next.mode === 'cloud') {
+    state = hydrateData(next.data)
+    state.settings.storage = 'cloud'
+  } else {
+    state = hydrateData(next.data)
+    state.settings.storage = 'local'
+    if (next.migrationRequired) persistenceError = 'Local data is still only on this device. Review and explicitly migrate it before syncing.'
+  }
+  applyTheme(state.settings.theme)
+  emit()
+}
+
+export async function logoutCloudUser(): Promise<void> {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+  const activeUser=persistence.snapshot().userId
+  if(activeUser){
+    try { await persistence.persist(state) }
+    catch(error) { persistenceError=error instanceof Error?error.message:'Cloud save failed before logout.' }
+  }
+  const next = persistence.logout()
+  state = hydrateData(next.data)
+  state.settings.storage = 'local'
+  cloudSaveError = null
+  persistenceError = null
   applyTheme(state.settings.theme)
   emit()
 }
@@ -95,71 +173,55 @@ export function isHydrated(): boolean {
 export function getState(): AppData {
   return state
 }
+export function getActivePersistenceCoordinator(): PersistenceCoordinator { return persistence }
 
 /** Used by "استعادة النسخة" in settings and by tests. */
-export function replaceState(next: AppData): void {
-  commit(next)
+export async function replaceState(next: AppData): Promise<void> {
+  const previous = state
+  state = next
+  emit()
+  try {
+    if(persistence.snapshot().mode==='local') await persistCloudSnapshot(next)
+    else {
+      await persistence.refreshCloudSnapshot(next)
+      await dataAdapter.save({...next,settings:{...next.settings,storage:'local'}})
+      await persistCloudSnapshot(next)
+    }
+    schedulePersist()
+  } catch (error) {
+    state = previous
+    if(persistence.snapshot().mode==='local') await persistence.refreshLocalSnapshot(previous).catch(()=>undefined)
+    else await persistence.refreshCloudSnapshot(previous).catch(()=>undefined)
+    emit()
+    throw error
+  }
 }
 
 export async function resetAllData(): Promise<void> {
+  if (persistence.snapshot().mode === 'cloud') throw new Error('Cloud data cannot be cleared by the local reset action.')
+  const next = createInitialData()
+  await replaceState(next)
   await dataAdapter.clear()
-  commit(createInitialData())
 }
 
 /* ------------------------------------------------------------------ */
 /* Generic collection actions                                          */
 /* ------------------------------------------------------------------ */
 
-function withCollection<K extends CollectionKey>(
-  key: K,
-  updater: (items: AppData[K][number][]) => AppData[K][number][],
-): void {
-  const items = state[key] as AppData[K][number][]
-  commit({ ...state, [key]: updater([...items]) } as AppData)
+async function withCollectionPersist<K extends CollectionKey>(key:K,updater:(items:AppData[K][number][])=>AppData[K][number][]):Promise<void>{
+  await commitAndPersist({...state,[key]:updater([...(state[key] as AppData[K][number][])])} as AppData)
 }
 
-function addItem<K extends CollectionKey>(
-  key: K,
-  input: Omit<AppData[K][number], 'id' | 'createdAt' | 'updatedAt'>,
-  idPrefix: string,
-): AppData[K][number] {
-  const stamp = nowIso()
-  const item = {
-    ...(input as object),
-    id: createId(idPrefix),
-    createdAt: stamp,
-    updatedAt: stamp,
-  } as AppData[K][number]
-  withCollection<K>(key, (items) => [...items, item])
-  return item
-}
+export async function persistCurrent(): Promise<void> { await commitAndPersist(structuredClone(state)) }
+export function activePersistenceMode(): 'local'|'cloud' { return persistence.snapshot().mode }
 
-function updateItem<K extends CollectionKey>(
-  key: K,
-  id: string,
-  patch: Partial<AppData[K][number]>,
-): void {
-  withCollection<K>(key, (items) =>
-    items.map((item) =>
-      (item as { id: string }).id === id
-        ? ({ ...item, ...(patch as object), updatedAt: nowIso() } as AppData[K][number])
-        : item,
-    ),
-  )
-}
-
-function removeItem<K extends CollectionKey>(key: K, id: string): void {
-  withCollection<K>(key, (items) =>
-    items.filter((item) => (item as { id: string }).id !== id),
-  )
-}
 
 /* ------------------------------------------------------------------ */
 /* Profile & settings                                                  */
 /* ------------------------------------------------------------------ */
 
-export function updateProfile(patch: Partial<Profile>): void {
-  commit({ ...state, profile: { ...state.profile, ...patch } })
+export async function updateProfile(patch: Partial<Profile>): Promise<void> {
+  await commitAndPersist({ ...state, profile:{...state.profile,...patch} })
 }
 
 let systemThemeQuery: MediaQueryList | null = null
@@ -189,10 +251,10 @@ function onSystemThemeChange(event: MediaQueryListEvent): void {
   else delete document.documentElement.dataset.theme
 }
 
-export function updateSettings(patch: Partial<Settings>): void {
+export async function updateSettings(patch: Partial<Settings>): Promise<void> {
   const next = { ...state.settings, ...patch }
+  await commitAndPersist({ ...state, settings:next })
   applyTheme(next.theme)
-  commit({ ...state, settings: next })
 }
 
 /* ------------------------------------------------------------------ */
@@ -201,28 +263,24 @@ export function updateSettings(patch: Partial<Settings>): void {
 
 export type NewSubject = Omit<Subject, keyof Timestamped | 'id'>
 
-export function createSubject(input: NewSubject): Subject {
-  return addItem('subjects', input, 'sub') as Subject
+export async function createSubject(input: NewSubject): Promise<Subject> {
+  const item={...(input as object),id:createId('sub'),createdAt:nowIso(),updatedAt:nowIso()} as Subject
+  await withCollectionPersist('subjects',items=>[...items,item])
+  return item
 }
 
-export function updateSubject(id: string, patch: Partial<Subject>): void {
-  updateItem('subjects', id, patch)
+export async function updateSubject(id: string, patch: Partial<Subject>): Promise<void> {
+  await withCollectionPersist('subjects',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item))
 }
 
 /** Removing a subject also detaches it from sessions and tasks (no orphans). */
-export function deleteSubject(id: string): void {
-  commit({
+export async function deleteSubject(id: string): Promise<void> {
+  await commitAndPersist({
     ...state,
-    subjects: state.subjects.filter((subject) => subject.id !== id),
-    sessions: state.sessions.map((session) =>
-      session.subjectId === id ? { ...session, subjectId: null } : session,
-    ),
-    tasks: state.tasks.map((task) =>
-      task.subjectId === id ? { ...task, subjectId: null } : task,
-    ),
-    focusSessions: state.focusSessions.map((entry) =>
-      entry.subjectId === id ? { ...entry, subjectId: null } : entry,
-    ),
+    subjects:state.subjects.filter(subject=>subject.id!==id),
+    sessions:state.sessions.map(session=>session.subjectId===id?{...session,subjectId:null}:session),
+    tasks:state.tasks.map(task=>task.subjectId===id?{...task,subjectId:null}:task),
+    focusSessions:state.focusSessions.map(entry=>entry.subjectId===id?{...entry,subjectId:null}:entry),
   })
 }
 
@@ -232,17 +290,17 @@ export function deleteSubject(id: string): void {
 
 export type NewStudySession = Omit<StudySession, keyof Timestamped | 'id'>
 
-export function createSession(input: NewStudySession): StudySession {
-  return addItem('sessions', input, 'ses') as StudySession
+export async function createSession(input: NewStudySession): Promise<StudySession> {
+  const stamp=nowIso(),item={...(input as object),id:createId('ses'),createdAt:stamp,updatedAt:stamp} as StudySession
+  await withCollectionPersist('sessions',items=>[...items,item])
+  return item
 }
 
-export function updateSession(id: string, patch: Partial<StudySession>): void {
-  updateItem('sessions', id, patch)
+export async function updateSession(id: string, patch: Partial<StudySession>): Promise<void> {
+  await withCollectionPersist('sessions',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item))
 }
 
-export function deleteSession(id: string): void {
-  removeItem('sessions', id)
-}
+export async function deleteSession(id: string): Promise<void> { await withCollectionPersist('sessions',items=>items.filter(item=>item.id!==id)) }
 
 /* ------------------------------------------------------------------ */
 /* Tasks                                                               */
@@ -250,26 +308,25 @@ export function deleteSession(id: string): void {
 
 export type NewTask = Omit<Task, keyof Timestamped | 'id' | 'completedAt' | 'completed'>
 
-export function createTask(input: NewTask): Task {
-  return addItem('tasks', { ...input, completed: false, completedAt: null }, 'tsk') as Task
+export async function createTask(input: NewTask): Promise<Task> {
+  const stamp=nowIso(),item={...(input as object),completed:false,completedAt:null,id:createId('tsk'),createdAt:stamp,updatedAt:stamp} as Task
+  await withCollectionPersist('tasks',items=>[...items,item])
+  return item
 }
 
-export function updateTask(id: string, patch: Partial<Task>): void {
-  updateItem('tasks', id, patch)
+export async function updateTask(id: string, patch: Partial<Task>): Promise<void> {
+  await withCollectionPersist('tasks',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item))
 }
 
-export function setTaskCompleted(id: string, completed: boolean): void {
-  updateItem('tasks', id, { completed, completedAt: completed ? nowIso() : null })
+export async function setTaskCompleted(id: string, completed: boolean): Promise<void> {
+  const completedAt=completed?nowIso():null
+  await withCollectionPersist('tasks',items=>items.map(item=>item.id===id?{...item,completed,completedAt,updatedAt:nowIso()}:item))
 }
 
-export function deleteTask(id: string): void {
-  removeItem('tasks', id)
-}
+export async function deleteTask(id: string): Promise<void> { await withCollectionPersist('tasks',items=>items.filter(item=>item.id!==id)) }
 
 /** Pushes a task's due date forward — used by "أجّليها لبكرة". */
-export function rescheduleTask(id: string, dueDate: string): void {
-  updateItem('tasks', id, { dueDate })
-}
+export async function rescheduleTask(id: string, dueDate: string): Promise<void> { await updateTask(id,{dueDate}) }
 
 /* ------------------------------------------------------------------ */
 /* Focus sessions                                                      */
@@ -277,13 +334,13 @@ export function rescheduleTask(id: string, dueDate: string): void {
 
 export type NewFocusSession = Omit<FocusSession, keyof Timestamped | 'id'>
 
-export function recordFocusSession(input: NewFocusSession): FocusSession {
-  return addItem('focusSessions', input, 'fcs') as FocusSession
+export async function recordFocusSession(input: NewFocusSession): Promise<FocusSession> {
+  const stamp=nowIso(),item={...(input as object),id:createId('fcs'),createdAt:stamp,updatedAt:stamp} as FocusSession
+  await withCollectionPersist('focusSessions',items=>[...items,item])
+  return item
 }
 
-export function deleteFocusSession(id: string): void {
-  removeItem('focusSessions', id)
-}
+export async function deleteFocusSession(id: string): Promise<void> { await withCollectionPersist('focusSessions',items=>items.filter(item=>item.id!==id)) }
 
 /* ------------------------------------------------------------------ */
 /* Journal                                                             */
@@ -291,17 +348,11 @@ export function deleteFocusSession(id: string): void {
 
 export type NewJournalEntry = Omit<JournalEntry, keyof Timestamped | 'id'>
 
-export function createJournalEntry(input: NewJournalEntry): JournalEntry {
-  return addItem('journal', input, 'jrn') as JournalEntry
-}
+export async function createJournalEntry(input: NewJournalEntry): Promise<JournalEntry> { const stamp=nowIso(),item={...(input as object),id:createId('jrn'),createdAt:stamp,updatedAt:stamp} as JournalEntry; await withCollectionPersist('journal',items=>[...items,item]); return item }
 
-export function updateJournalEntry(id: string, patch: Partial<JournalEntry>): void {
-  updateItem('journal', id, patch)
-}
+export async function updateJournalEntry(id: string, patch: Partial<JournalEntry>): Promise<void> { await withCollectionPersist('journal',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item)) }
 
-export function deleteJournalEntry(id: string): void {
-  removeItem('journal', id)
-}
+export async function deleteJournalEntry(id: string): Promise<void> { await withCollectionPersist('journal',items=>items.filter(item=>item.id!==id)) }
 
 /* ------------------------------------------------------------------ */
 /* Artistic goals                                                      */
@@ -309,21 +360,13 @@ export function deleteJournalEntry(id: string): void {
 
 export type NewArtisticGoal = Omit<ArtisticGoal, keyof Timestamped | 'id' | 'completed' | 'completedAt'>
 
-export function createGoal(input: NewArtisticGoal): ArtisticGoal {
-  return addItem('goals', { ...input, completed: false, completedAt: null }, 'goal') as ArtisticGoal
-}
+export async function createGoal(input: NewArtisticGoal): Promise<ArtisticGoal> { const stamp=nowIso(),item={...(input as object),completed:false,completedAt:null,id:createId('goal'),createdAt:stamp,updatedAt:stamp} as ArtisticGoal; await withCollectionPersist('goals',items=>[...items,item]); return item }
 
-export function updateGoal(id: string, patch: Partial<ArtisticGoal>): void {
-  updateItem('goals', id, patch)
-}
+export async function updateGoal(id: string, patch: Partial<ArtisticGoal>): Promise<void> { await withCollectionPersist('goals',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item)) }
 
-export function setGoalCompleted(id: string, completed: boolean): void {
-  updateItem('goals', id, { completed, completedAt: completed ? nowIso() : null })
-}
+export async function setGoalCompleted(id: string, completed: boolean): Promise<void> { const completedAt=completed?nowIso():null; await withCollectionPersist('goals',items=>items.map(item=>item.id===id?{...item,completed,completedAt,updatedAt:nowIso()}:item)) }
 
-export function deleteGoal(id: string): void {
-  removeItem('goals', id)
-}
+export async function deleteGoal(id: string): Promise<void> { await withCollectionPersist('goals',items=>items.filter(item=>item.id!==id)) }
 
 /* ------------------------------------------------------------------ */
 /* Artworks                                                            */
@@ -331,17 +374,11 @@ export function deleteGoal(id: string): void {
 
 export type NewArtwork = Omit<Artwork, keyof Timestamped | 'id'>
 
-export function createArtwork(input: NewArtwork): Artwork {
-  return addItem('artworks', input, 'art') as Artwork
-}
+export async function createArtwork(input: NewArtwork): Promise<Artwork> { const stamp=nowIso(),item={...(input as object),id:createId('art'),createdAt:stamp,updatedAt:stamp} as Artwork; await withCollectionPersist('artworks',items=>[...items,item]); return item }
 
-export function updateArtwork(id: string, patch: Partial<Artwork>): void {
-  updateItem('artworks', id, patch)
-}
+export async function updateArtwork(id: string, patch: Partial<Artwork>): Promise<void> { await withCollectionPersist('artworks',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item)) }
 
-export function deleteArtwork(id: string): void {
-  removeItem('artworks', id)
-}
+export async function deleteArtwork(id: string): Promise<void> { await withCollectionPersist('artworks',items=>items.filter(item=>item.id!==id)) }
 
 /* ------------------------------------------------------------------ */
 /* Drawing challenges                                                  */
@@ -349,21 +386,13 @@ export function deleteArtwork(id: string): void {
 
 export type NewDrawingChallenge = Omit<DrawingChallenge, keyof Timestamped | 'id' | 'completed' | 'completedAt'>
 
-export function createChallenge(input: NewDrawingChallenge): DrawingChallenge {
-  return addItem('challenges', { ...input, completed: false, completedAt: null }, 'chal') as DrawingChallenge
-}
+export async function createChallenge(input: NewDrawingChallenge): Promise<DrawingChallenge> { const stamp=nowIso(),item={...(input as object),completed:false,completedAt:null,id:createId('chal'),createdAt:stamp,updatedAt:stamp} as DrawingChallenge; await withCollectionPersist('challenges',items=>[...items,item]); return item }
 
-export function updateChallenge(id: string, patch: Partial<DrawingChallenge>): void {
-  updateItem('challenges', id, patch)
-}
+export async function updateChallenge(id: string, patch: Partial<DrawingChallenge>): Promise<void> { await withCollectionPersist('challenges',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item)) }
 
-export function setChallengeCompleted(id: string, completed: boolean): void {
-  updateItem('challenges', id, { completed, completedAt: completed ? nowIso() : null })
-}
+export async function setChallengeCompleted(id: string, completed: boolean): Promise<void> { const completedAt=completed?nowIso():null; await withCollectionPersist('challenges',items=>items.map(item=>item.id===id?{...item,completed,completedAt,updatedAt:nowIso()}:item)) }
 
-export function deleteChallenge(id: string): void {
-  removeItem('challenges', id)
-}
+export async function deleteChallenge(id: string): Promise<void> { await withCollectionPersist('challenges',items=>items.filter(item=>item.id!==id)) }
 
 /* ------------------------------------------------------------------ */
 /* Future letters                                                      */
@@ -371,17 +400,16 @@ export function deleteChallenge(id: string): void {
 
 export type NewFutureLetter = Omit<FutureLetter, keyof Timestamped | 'id'>
 
-export function createLetter(input: NewFutureLetter): FutureLetter {
-  return addItem('letters', input, 'ltr') as FutureLetter
-}
+export async function createLetter(input: NewFutureLetter): Promise<FutureLetter> { const stamp=nowIso(),item={...(input as object),id:createId('ltr'),createdAt:stamp,updatedAt:stamp} as FutureLetter; await withCollectionPersist('letters',items=>[...items,item]); return item }
 
-export function updateLetter(id: string, patch: Partial<FutureLetter>): void {
-  updateItem('letters', id, patch)
-}
+export async function updateLetter(id: string, patch: Partial<FutureLetter>): Promise<void> { await withCollectionPersist('letters',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item)) }
 
-export function deleteLetter(id: string): void {
-  removeItem('letters', id)
-}
+export async function deleteLetter(id: string): Promise<void> { await withCollectionPersist('letters',items=>items.filter(item=>item.id!==id)) }
+
+export type NewExamDate = Omit<ExamDate, keyof Timestamped | 'id'>
+export async function createExam(input: NewExamDate): Promise<ExamDate> { const stamp=nowIso(),item={...(input as object),id:createId('exam'),createdAt:stamp,updatedAt:stamp} as ExamDate; await withCollectionPersist('exams',items=>[...items,item]); return item }
+export async function updateExam(id: string, patch: Partial<ExamDate>): Promise<void> { await withCollectionPersist('exams',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item)) }
+export async function deleteExam(id: string): Promise<void> { await withCollectionPersist('exams',items=>items.filter(item=>item.id!==id)) }
 
 /* ------------------------------------------------------------------ */
 /* Notifications                                                       */
@@ -396,36 +424,18 @@ export type NewNotification = {
 }
 
 export function pushNotification(input: NewNotification): AppNotification {
-  return addItem(
-    'notifications',
-    {
-      kind: input.kind,
-      title: input.title,
-      body: input.body,
-      at: input.at ?? nowIso(),
-      read: input.read ?? false,
-    },
-    'ntf',
-  ) as AppNotification
+  const stamp=nowIso(),item={id:createId('ntf'),kind:input.kind,title:input.title,body:input.body,at:input.at??stamp,read:input.read??false,createdAt:stamp,updatedAt:stamp} as AppNotification
+  commit({...state,notifications:[...state.notifications,item]})
+  return item
 }
 
-export function markNotificationRead(id: string, read: boolean): void {
-  updateItem('notifications', id, { read })
-}
+export async function markNotificationRead(id: string, read: boolean): Promise<void> { await withCollectionPersist('notifications',items=>items.map(item=>item.id===id?{...item,read,updatedAt:nowIso()}:item)) }
 
-export function markAllNotificationsRead(): void {
-  withCollection('notifications', (items) =>
-    items.map((item) => (item.read ? item : { ...item, read: true, updatedAt: nowIso() })),
-  )
-}
+export async function markAllNotificationsRead(): Promise<void> { await withCollectionPersist('notifications',items=>items.map(item=>item.read?item:{...item,read:true,updatedAt:nowIso()})) }
 
-export function deleteNotification(id: string): void {
-  removeItem('notifications', id)
-}
+export async function deleteNotification(id: string): Promise<void> { await withCollectionPersist('notifications',items=>items.filter(item=>item.id!==id)) }
 
-export function clearNotifications(): void {
-  withCollection('notifications', () => [])
-}
+export async function clearNotifications(): Promise<void> { await withCollectionPersist('notifications',()=>[]) }
 
 /* ------------------------------------------------------------------ */
 /* React binding                                                       */

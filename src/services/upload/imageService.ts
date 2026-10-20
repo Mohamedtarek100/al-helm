@@ -1,15 +1,14 @@
 /**
  * Image storage service interface.
  *
- * Phase 1 ships a `LocalObjectUrlUploader` that keeps artwork previews in the
- * browser only. Phase 2 adds a `SupabaseStorageUploader` implementing the very
- * same interface — components never learn where the bytes went.
+ * Local object URLs are temporary previews. Authenticated cloud uploads use a
+ * private bucket and signed URLs; the store persists only the user's object path.
  */
 
 export interface UploadedImage {
-  /** Displayable URL (object URL today, public CDN URL in Phase 2). */
+  /** Displayable URL (local object URL or short-lived private signed URL). */
   url: string
-  /** Storage path / key. `null` for the local adapter. */
+  /** Storage path / key. Null for local previews. */
   path: string | null
   /** Bytes, when known. */
   size: number
@@ -22,7 +21,7 @@ export interface ImageUploader {
   readonly accepts: string
   readonly maxBytes: number
   upload(file: File): Promise<UploadedImage>
-  /** Revokes the local object URL; a no-op in Phase 2. */
+  /** Releases a local preview or uploaded file when explicitly requested. */
   release(image: UploadedImage): Promise<void>
 }
 
@@ -33,7 +32,7 @@ export const MAX_IMAGE_BYTES = 6 * 1024 * 1024
 
 class LocalObjectUrlUploader implements ImageUploader {
   readonly kind = 'local' as const
-  readonly label = 'معاينة محلية فقط (بدون رفع للسحابة)'
+  readonly label = 'Local preview only (not uploaded to cloud)'
   readonly accepts = ACCEPTED_IMAGE_TYPES.join(',')
   readonly maxBytes = MAX_IMAGE_BYTES
 
@@ -53,12 +52,45 @@ class LocalObjectUrlUploader implements ImageUploader {
   }
 }
 
-/**
- * Phase 2 note: swap this for the Supabase implementation once storage
- * buckets exist. Nothing else in the app needs to change.
- */
+export class SupabaseStorageUploader implements ImageUploader {
+  readonly kind = 'cloud' as const
+  readonly label = 'Private Supabase artwork storage'
+  readonly accepts = ACCEPTED_IMAGE_TYPES.join(',')
+  readonly maxBytes = MAX_IMAGE_BYTES
+  private readonly bucket = 'artworks'
+  async upload(file: File): Promise<UploadedImage> {
+    const { supabase } = await import('../persistence/supabase')
+    if (!supabase) throw new UploadError('Cloud storage is not configured.')
+    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) throw new UploadError('Unsupported artwork image type.')
+    if (file.size > this.maxBytes) throw new UploadError('Artwork image exceeds 6 MB.')
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError) throw authError
+    if (!user) throw new UploadError('Sign in to upload private artwork.')
+    const extension = file.type.split('/')[1]?.replace('jpeg', 'jpg') ?? 'image'
+    const path = `${user.id}/${crypto.randomUUID()}.${extension}`
+    const { error } = await supabase.storage.from(this.bucket).upload(path, file, { contentType:file.type, upsert:false })
+    if (error) throw error
+    const { data: signed, error:signedError } = await supabase.storage.from(this.bucket).createSignedUrl(path, 3600)
+    if (signedError) {
+      await supabase.storage.from(this.bucket).remove([path])
+      throw signedError
+    }
+    return { url:signed.signedUrl, path, size:file.size, mimeType:file.type }
+  }
+  async release(image: UploadedImage): Promise<void> {
+    if (image.url.startsWith('blob:')) URL.revokeObjectURL(image.url)
+    if (!image.path) return
+    const { supabase } = await import('../persistence/supabase')
+    if (!supabase) return
+    const { error } = await supabase.storage.from(this.bucket).remove([image.path])
+    if (error) throw error
+  }
+}
+
+/** Use private cloud uploads only when the configured Supabase client is present. */
 export function createImageUploader(): ImageUploader {
-  return new LocalObjectUrlUploader()
+  const configured = Boolean(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY)
+  return configured ? new SupabaseStorageUploader() : new LocalObjectUrlUploader()
 }
 
 export const imageUploader: ImageUploader = createImageUploader()
