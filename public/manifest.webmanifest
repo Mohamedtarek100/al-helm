@@ -1,8 +1,8 @@
 {
-  "name": "الحُلم | مخطط المذاكرة والمرسم",
-  "short_name": "الحُلم",
-  "description": "مخطط مذاكرة فني للثانوية العامة: جدول أسبوعي، مهام، مؤقت تركيز، ومرسم للأهداف الفنية.",
-  "lang": "ar",
+  "name": "4uLife — Study & Art Companion",
+  "short_name": "4uLife",
+  "description": "Study planner and art companion: weekly schedule, tasks, focus timer, and an art studio.",
+  "lang": "en",
   "dir": "rtl",
   "start_url": "./",
   "scope": "./",

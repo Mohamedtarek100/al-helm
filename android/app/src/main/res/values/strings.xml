@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">الحُلم</string>
-    <string name="title_activity_main">الحُلم</string>
+    <string name="app_name">4uLife</string>
+    <string name="title_activity_main">4uLife</string>
     <string name="package_name">com.alhelm.studyplanner</string>
     <string name="custom_url_scheme">com.alhelm.studyplanner</string>
 </resources>

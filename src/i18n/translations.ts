@@ -2,7 +2,7 @@ export type Language = 'en' | 'ar'
 
 export const messages = {
   en: {
-    brand: 'Al-Helm',
+    brand: '4uLife',
     tagline: 'Every page you study brings you closer to your dream.',
     brandCaption: 'A study journal for your dream',
     navigation: 'Journey space',
@@ -87,7 +87,7 @@ export const messages = {
     calendarAddTask: 'Add task', calendarTasksOn: 'Tasks on this day', calendarExamsOn: 'Exams on this day',
   },
   ar: {
-    brand: 'الحُلم',
+    brand: '4uLife',
     tagline: 'كل صفحة بتذاكريها، بتقرّبك من الحلم.',
     brandCaption: 'دفتر مذاكرة لحلمك',
     navigation: 'مساحة رحلتك',

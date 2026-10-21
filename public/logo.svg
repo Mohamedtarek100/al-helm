@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!--
+    4uLife logo — an abstract four-point mark formed by a leaf/petal
+    sprouting on the numeral four, symbolising growth + creativity.
+    Flat 2-colour design for legibility at any size, on light or dark.
+  -->
+  <circle cx="64" cy="64" r="62" fill="#B66B52"/>
+  <path d="M34 78h24v22a6 6 0 0 0 12 0V78h24a6 6 0 0 0 0-12H70V30a6 6 0 0 0-12 0v36H34a6 6 0 0 0 0 12Z"
+        fill="#F7F0E5" transform="rotate(18 64 64)"/>
+  <path d="M64 64c14-4 22-14 20-28-14 2-22 12-20 28Z" fill="#89977B"/>
+</svg>
