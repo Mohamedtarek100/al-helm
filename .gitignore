@@ -34,3 +34,8 @@ dist-ssr
 .tsbuildinfo
 node_modules/.tmp
 
+
+# Android release signing (kept outside repo)
+android/keystore.properties
+*.jks
+*.keystore

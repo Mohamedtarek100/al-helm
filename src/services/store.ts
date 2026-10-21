@@ -34,6 +34,7 @@ import { cloudAdapter, supabase } from './persistence/supabase'
 import { PersistenceCoordinator } from './persistence/coordinator'
 import { createId, nowIso } from './persistence/repository'
 import { createInitialData, hydrateData } from './domain'
+import { syncReminders } from './reminders'
 
 export type CollectionItem<K extends CollectionKey> = AppData[K][number]
 
@@ -255,6 +256,7 @@ export async function updateSettings(patch: Partial<Settings>): Promise<void> {
   const next = { ...state.settings, ...patch }
   await commitAndPersist({ ...state, settings:next })
   applyTheme(next.theme)
+  if (patch.reminders) void syncReminders(next.reminders)
 }
 
 /* ------------------------------------------------------------------ */
