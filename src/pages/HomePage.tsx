@@ -3,12 +3,12 @@ import { Link } from 'react-router-dom'
 import { Button } from '../components/Button'
 import { Card, CardHeader } from '../components/Card'
 import { EmptyState, ProgressBar } from '../components/Display'
-import { CheckIcon, CheckSquareIcon, ClockIcon, PaletteIcon, PlusIcon, SparkIcon, TargetIcon, TimerIcon } from '../components/icons'
+import { CheckIcon, CheckSquareIcon, ClockIcon, MonitorIcon, MoonIcon, PaletteIcon, PlusIcon, SparkIcon, SunIcon, TargetIcon, TimerIcon } from '../components/icons'
 import { WEEKDAY_SHORT, SUBJECT_COLOR_HEX, SESSION_TYPE_LABELS } from '../services/domain'
 import { formatMinutes, formatTime, todayKey } from '../services/date'
 import { useI18n } from '../i18n/useI18n'
 import { sessionsForDate } from '../services/selectors'
-import { useAppData, setTaskCompleted } from '../services/store'
+import { useAppData, setTaskCompleted, useSettings, updateSettings } from '../services/store'
 import { PageFrame } from './PageFrame'
 
 function SketchHero() {
@@ -29,6 +29,8 @@ function SketchHero() {
 }
 
 export function HomePage() {
+  const settings = useSettings()
+  const themeIcon = settings.theme === 'dark' ? <MoonIcon size={18} /> : settings.theme === 'system' ? <MonitorIcon size={18} /> : <SunIcon size={18} />
   const data = useAppData()
   const { t, language, formatDate, formatNumber } = useI18n()
   const [{ date, hour, todayDate }] = useState(() => {
@@ -58,6 +60,15 @@ export function HomePage() {
           <h1 className="hero-card__title">{t('dreamGreeting')}</h1>
           <p className="hero-card__tagline">{t('tagline')}</p>
           <p className="hero-card__date">{formattedDate}</p>
+          <button
+            className="theme-quick-toggle"
+            type="button"
+            aria-label={settings.theme === 'dark' ? (language === 'en' ? 'Switch to light mode' : 'التحويل للوضع الفاتح') : (language === 'en' ? 'Switch to dark mode' : 'التحويل للوضع الليلي')}
+            onClick={() => { void updateSettings({ theme: settings.theme === 'dark' ? 'light' : 'dark' }).catch(() => {}) }}
+          >
+            {themeIcon}
+            <span>{settings.theme === 'dark' ? (language === 'en' ? 'Light mode' : 'الوضع الفاتح') : (language === 'en' ? 'Dark mode' : 'الوضع الليلي')}</span>
+          </button>
           <div className="hero-card__actions">
             <Link to="/tasks"><Button variant="primary" leadingIcon={<PlusIcon size={17} />}>{t('taskNew')}</Button></Link>
             <Link to="/focus"><Button variant="secondary" leadingIcon={<TimerIcon size={17} />}>{t('focusTitle')}</Button></Link>

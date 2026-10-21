@@ -7,6 +7,7 @@ import { FocusPage } from './pages/FocusPage'
 import { StudioPage } from './pages/StudioPage'
 import { ProgressPage } from './pages/ProgressPage'
 import { NotificationsPage } from './pages/NotificationsPage'
+import { CalendarPage } from './pages/CalendarPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { ExamPage } from './pages/ExamPage'
@@ -21,6 +22,8 @@ function App() {
         <Route element={<AppShell />}>
           <Route index element={<HomePage />} />
           <Route path="schedule" element={<SchedulePage />} />
+          <Route path="calendar" element={<CalendarPage />} />
+          <Route path="calendar" element={<CalendarPage />} />
           <Route path="tasks" element={<TasksPage />} />
           <Route path="focus" element={<FocusPage />} />
           <Route path="studio" element={<StudioPage />} />

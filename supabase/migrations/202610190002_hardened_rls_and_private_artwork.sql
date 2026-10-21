@@ -1,16 +1,14 @@
 -- Harden ownership, cross-user relationships, profile policies and private artwork access.
+-- NOTE: focus_sessions already receives composite owner-scoped FKs
+-- (focus_sessions_subject_fk, focus_sessions_task_fk) in 202610190001;
+-- re-adding equivalent constraints here would be a duplicate-column error,
+-- so only recurring_schedules and exam_dates are hardened in this step.
 do $$ begin
   if not exists(select 1 from pg_constraint where conrelid='public.recurring_schedules'::regclass and conname='recurring_schedules_subject_owner_fk') then
     alter table public.recurring_schedules add constraint recurring_schedules_subject_owner_fk foreign key(user_id,subject_id) references public.subjects(user_id,id) on delete set null (subject_id);
   end if;
   if not exists(select 1 from pg_constraint where conrelid='public.exam_dates'::regclass and conname='exam_dates_subject_owner_fk') then
     alter table public.exam_dates add constraint exam_dates_subject_owner_fk foreign key(user_id,subject_id) references public.subjects(user_id,id) on delete set null (subject_id);
-  end if;
-  if not exists(select 1 from pg_constraint where conrelid='public.focus_sessions'::regclass and conname='focus_sessions_subject_owner_fk') then
-    alter table public.focus_sessions add constraint focus_sessions_subject_owner_fk foreign key(user_id,subject_id) references public.subjects(user_id,id) on delete set null (subject_id);
-  end if;
-  if not exists(select 1 from pg_constraint where conrelid='public.focus_sessions'::regclass and conname='focus_sessions_task_owner_fk') then
-    alter table public.focus_sessions add constraint focus_sessions_task_owner_fk foreign key(user_id,task_id) references public.tasks(user_id,id) on delete set null (task_id);
   end if;
 end $$;
 

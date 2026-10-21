@@ -841,3 +841,91 @@
         transition: none
     }
 }
+/* ---- Study Calendar (added) ---- */
+.calendar-layout{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:20px;align-items:start}
+@media(max-width:900px){.calendar-layout{grid-template-columns:1fr}}
+.calendar-card{overflow:hidden}
+.calendar-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line)}
+.calendar-month{font-size:var(--t-md);font-weight:800}
+.calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;padding:12px}
+.calendar-grid__weekdays{padding-block:10px 4px;text-align:center;font-size:var(--t-xs);font-weight:700;color:var(--ink-3)}
+.calendar-cell{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:46px;border-radius:var(--r-sm);border:none;background:transparent;color:var(--ink-2);font-family:inherit;font-weight:600;cursor:pointer;transition:background var(--dur-fast),color var(--dur-fast)}
+.calendar-cell:hover{background:var(--paper-sunk)}
+.calendar-cell--pad{cursor:default}
+.calendar-cell--today{border:1.5px solid var(--clay);color:var(--clay-strong)}
+.calendar-cell--selected{background:var(--clay);color:#fff;box-shadow:var(--shadow-sm)}
+.calendar-cell--exam .calendar-cell__num{color:var(--danger)}
+.calendar-cell--selected.calendar-cell--exam .calendar-cell__num{color:#fff}
+.calendar-cell__num{font-size:var(--t-sm);line-height:1}
+.calendar-cell__dots{display:flex;gap:3px}
+.calendar-dot{width:5px;height:5px;border-radius:50%;background:var(--sage)}
+.calendar-dot--exam{background:var(--danger)}
+.calendar-cell--selected .calendar-dot{background:rgba(255,255,255,.85)}
+.calendar-foot{display:flex;justify-content:center;padding:8px 16px 14px;border-top:1px solid var(--line)}
+.calendar-item{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--line)}
+.calendar-item:last-child{border-bottom:none}
+.calendar-item--exam{color:var(--danger);font-weight:700}
+
+/* ---- Sketch board (added) ---- */
+.sketch-card{overflow:hidden}
+.sketch-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:14px;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--paper-2)}
+.sketch-swatch{width:26px;height:26px;border-radius:50%;border:2px solid var(--line-strong);cursor:pointer;transition:transform var(--dur-fast),border-color var(--dur-fast)}
+.sketch-swatch:hover{transform:scale(1.12)}
+.sketch-swatch--active{border-color:var(--ink);box-shadow:0 0 0 2px var(--paper-3),0 0 0 4px var(--clay)}
+.sketch-size{display:flex;align-items:center;gap:8px}
+.sketch-size input[type=range]{width:110px;accent-color:var(--clay)}
+.sketch-bg{padding:7px 10px;border-radius:var(--r-sm);border:1px solid var(--line-strong);background:var(--paper-3);color:var(--ink);font-family:inherit;font-size:var(--t-sm)}
+.sketch-canvas{display:block;width:100%;height:auto;border:none;cursor:crosshair;touch-action:none}
+.sketch-footer{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px 16px;border-top:1px solid var(--line)}
+.sketch-title-input{flex:1;min-width:160px;padding:9px 12px;border-radius:var(--r-sm);border:1px solid var(--line-strong);background:var(--paper-3);color:var(--ink);font-family:inherit;font-size:var(--t-sm)}
+.sketch-save-state{font-size:var(--t-xs);color:var(--success);font-weight:700;white-space:nowrap}
+.sketch-save-state--dirty{color:var(--warning)}
+.sketch-recent{display:flex;gap:12px;overflow-x:auto;padding-top:10px}
+.sketch-thumb{display:flex;flex-direction:column;gap:6px;min-width:110px;max-width:110px;border:none;background:transparent;cursor:pointer;font-family:inherit}
+.sketch-thumb img{width:110px;height:82px;object-fit:cover;border-radius:var(--r-sm);border:1px solid var(--line);box-shadow:var(--shadow-xs)}
+.sketch-thumb span{font-size:var(--t-xs);color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
+
+/* ---- Calendar (added) ---- */
+.calendar-layout{display:grid;gap:var(--s-5)}
+@media(min-width:900px){.calendar-layout{grid-template-columns:1.25fr 1fr;align-items:start}}
+.calendar-card{overflow:hidden}
+.calendar-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 8px}
+.calendar-month{font-size:var(--t-md);font-weight:800;color:var(--ink)}
+.calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;padding:6px 12px 10px}
+.calendar-grid__weekdays{padding-block:2px 0}
+.calendar-grid__weekdays span{padding:4px 0;font-size:var(--t-xs);font-weight:800;color:var(--ink-4);text-align:center}
+.calendar-cell{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:44px;border-radius:var(--r-sm);border:1px solid transparent;background:transparent;font-family:inherit;color:var(--ink-2);cursor:pointer;transition:background var(--dur-fast),border-color var(--dur-fast)}
+.calendar-cell:hover{background:var(--paper-sunk)}
+.calendar-cell--pad{pointer-events:none}
+.calendar-cell--today{border-color:var(--clay)}
+.calendar-cell--selected{background:color-mix(in srgb,var(--clay) 14%,var(--paper-3));border-color:var(--clay);font-weight:800}
+.calendar-cell--exam .calendar-cell__num{color:var(--danger)}
+.calendar-cell__num{font-size:var(--t-sm);font-weight:600;line-height:1}
+.calendar-cell__dots{display:flex;gap:3px;height:5px}
+.calendar-dot{width:5px;height:5px;border-radius:50%;background:var(--clay)}
+.calendar-dot--exam{background:var(--danger)}
+.calendar-foot{padding:4px 14px}
+.calendar-item{display:flex;align-items:center;gap:10px;padding:8px 2px;border-bottom:1px dashed var(--line)}
+.calendar-item:last-child{border-bottom:0}
+.calendar-item--exam{font-weight:700;color:var(--danger)}
+.calendar-day-panel .row{align-items:center}
+
+/* ---- Sketch canvas (added) ---- */
+.sketch-card{overflow:hidden}
+.sketch-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--paper-2)}
+.sketch-toolbar .row{align-items:center;gap:6px}
+.sketch-swatch{width:26px;height:26px;border-radius:50%;border:2px solid var(--line-strong);cursor:pointer;transition:transform var(--dur-fast),border-color var(--dur-fast)}
+.sketch-swatch--active{border-color:var(--ink);transform:scale(1.12)}
+.sketch-swatch:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.sketch-size{display:flex;align-items:center;gap:8px;font-family:inherit}
+.sketch-size input[type=range]{width:90px;accent-color:var(--clay)}
+.sketch-bg{padding:7px 10px;border-radius:var(--r-sm);border:1px solid var(--line-strong);background:var(--paper-3);color:var(--ink-2);font-family:inherit;font-size:var(--t-sm)}
+.sketch-canvas{display:block;width:100%;max-width:900px;margin-inline:auto;aspect-ratio:900/620;height:auto;border-radius:0;cursor:crosshair;touch-action:none}
+.sketch-footer{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:12px 14px;border-top:1px solid var(--line)}
+.sketch-title-input{flex:1;min-width:160px;padding:9px 12px;border-radius:var(--r-sm);border:1px solid var(--line-strong);background:var(--paper-3);color:var(--ink);font-family:inherit;font-size:var(--t-sm)}
+.sketch-save-state{font-size:var(--t-xs);font-weight:700;color:var(--success)}
+.sketch-save-state--dirty{color:var(--warning)}
+.sketch-recent{display:flex;gap:10px;overflow-x:auto;padding-top:10px}
+.sketch-thumb{flex:none;display:flex;flex-direction:column;gap:5px;width:130px;border:0;background:transparent;font-family:inherit;cursor:pointer;text-align:start}
+.sketch-thumb img{width:130px;height:92px;object-fit:cover;border-radius:var(--r-sm);border:1px solid var(--line)}
+.sketch-thumb span{font-size:var(--t-xs);color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

@@ -1,13 +1,16 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { BellIcon, CalendarIcon, CheckSquareIcon, CogIcon, HomeIcon, PaletteIcon, TimerIcon, TrendIcon } from '../components/icons'
-import { useCollection } from '../services/store'
+import { BellIcon, CogIcon, HomeIcon, CalendarIcon, CheckSquareIcon, PaletteIcon, TimerIcon, TrendIcon, SunIcon, MoonIcon, MonitorIcon } from '../components/icons'
+import { useCollection, updateSettings, useSettings } from '../services/store'
 import { cn } from '../utils/cn'
 import { useI18n } from '../i18n/useI18n'
 import type { TranslationKey } from '../i18n/translations'
+import type { Settings } from '../types'
 
 const nav: { to: string; key: TranslationKey; icon: typeof HomeIcon; end?: boolean }[] = [
   { to: '/', key: 'home', icon: HomeIcon, end: true },
   { to: '/schedule', key: 'schedule', icon: CalendarIcon },
+  { to: '/calendar', key: 'calendarPage', icon: CalendarIcon },
+  { to: '/calendar', key: 'calendarPage', icon: CalendarIcon },
   { to: '/tasks', key: 'tasks', icon: CheckSquareIcon },
   { to: '/focus', key: 'focus', icon: TimerIcon },
   { to: '/studio', key: 'studio', icon: PaletteIcon },
@@ -31,6 +34,26 @@ function Brand() {
   )
 }
 
+function ThemeToggle() {
+  const { t } = useI18n()
+  const settings = useSettings()
+  const cycle: Settings['theme'][] = ['light', 'dark', 'system']
+  const next = cycle[(cycle.indexOf(settings.theme) + 1) % 3]
+  const Icon = settings.theme === 'dark' ? MoonIcon : settings.theme === 'system' ? MonitorIcon : SunIcon
+  const label = settings.theme === 'dark' ? t('themeDark') : settings.theme === 'system' ? t('themeSystem') : t('themeLight')
+  return (
+    <button
+      className="icon-btn icon-btn--ghost"
+      type="button"
+      aria-label={`${t('theme')}: ${label}`}
+      title={`${t('theme')}: ${label}`}
+      onClick={() => { void updateSettings({ theme: next }).catch(() => {}) }}
+    >
+      <Icon size={20} />
+    </button>
+  )
+}
+
 export function AppShell() {
   const { t, language, setLanguage } = useI18n()
   const notifications = useCollection('notifications')
@@ -42,11 +65,14 @@ export function AppShell() {
       <header className="app-topbar">
         <Brand />
         <div className="topbar-actions">
-          <span className="topbar-date">{t('tagline')}</span>
+          <ThemeToggle />
           <button className="language-toggle" type="button" onClick={() => setLanguage(language === 'en' ? 'ar' : 'en')} aria-label={language === 'en' ? 'Switch to Arabic' : 'Switch to English'}>{language === 'en' ? 'العربية' : 'English'}</button>
           <NavLink className="topbar-bell" to="/notifications" aria-label={t('notifications')}>
             <BellIcon size={20} />
             {unread > 0 && <span className="topbar-badge">{unread}</span>}
+          </NavLink>
+          <NavLink className="topbar-bell" to="/settings" aria-label={t('settings')}>
+            <CogIcon size={20} />
           </NavLink>
         </div>
       </header>

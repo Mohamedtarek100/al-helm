@@ -79,6 +79,12 @@ export const messages = {
 
     save: 'Save', cancel: 'Cancel', back: 'Back', delete: 'Delete', edit: 'Edit', close: 'Close', confirm: 'Confirm',
     required: 'This field is required.', retry: 'Try again.',
+    canvasTab: 'Sketch board', undo: 'Undo', redo: 'Redo', clearCanvas: 'Clear canvas', clearCanvasConfirm: 'Erase everything on this canvas? This cannot be undone.',
+    sketchPencil: 'Pencil', sketchEraser: 'Eraser', sketchColor: 'Color', sketchSize: 'Size', sketchBackground: 'Paper',
+    sketchBgWhite: 'White paper', sketchBgCream: 'Cream paper', sketchBgGrid: 'Grid paper',
+    sketchTitlePlaceholder: 'Name this drawing…', sketchUnsaved: 'Unsaved changes', sketchSaved: 'Saved', sketchExport: 'Export PNG',
+    sketchRecentDrawings: 'Recent drawings', calendarPage: 'Calendar', calendarToday: 'Today', calendarEmpty: 'Nothing planned for this day',
+    calendarAddTask: 'Add task', calendarTasksOn: 'Tasks on this day', calendarExamsOn: 'Exams on this day',
   },
   ar: {
     brand: 'الحُلم',
@@ -158,6 +164,12 @@ export const messages = {
 
     save: 'حفظ', cancel: 'رجوع', back: 'رجوع', delete: 'حذف', edit: 'تعديل', close: 'إغلاق', confirm: 'تأكيد',
     required: 'هذا الحقل مطلوب.', retry: 'حاولي مرة أخرى.',
+    canvasTab: 'لوحة الرسم', undo: 'تراجع', redo: 'إعادة', clearCanvas: 'مسح اللوحة', clearCanvasConfirm: 'هتمسحي كل اللي على اللوحة؟ الإجراء لا يمكن التراجع عنه.',
+    sketchPencil: 'قلم', sketchEraser: 'ممحاة', sketchColor: 'اللون', sketchSize: 'الحجم', sketchBackground: 'الورق',
+    sketchBgWhite: 'ورق أبيض', sketchBgCream: 'ورق كريمي', sketchBgGrid: 'ورق مربعات',
+    sketchTitlePlaceholder: 'سمّي الرسمة…', sketchUnsaved: 'تغييرات غير محفوظة', sketchSaved: 'محفوظة', sketchExport: 'تصدير PNG',
+    sketchRecentDrawings: 'أحدث الرسمات', calendarPage: 'التقويم', calendarToday: 'اليوم', calendarEmpty: 'مفيش حاجة مطلوبة في اليوم ده',
+    calendarAddTask: 'أضيفي مهمة', calendarTasksOn: 'مهام اليوم ده', calendarExamsOn: 'امتحانات اليوم ده',
   },
 } as const
 export type TranslationKey = keyof typeof messages.en

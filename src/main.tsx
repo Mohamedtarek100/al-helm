@@ -21,3 +21,30 @@ void initStore().finally(() => {
 // and offline-tolerant. Phase 2 adds real push delivery.
 void registerServiceWorker()
 
+
+// OTA update check: manual-mode Capacitor updater. Runs once at launch on
+// native builds only; on web this is a no-op. Activation is deferred so it
+// never interrupts an active study session — the bundle becomes active on
+// the next reload/restart.
+void (async () => {
+  try {
+    const { checkAndDownload, confirmBundleHealthy, currentBundle } = await import('./services/ota')
+    await confirmBundleHealthy()
+    const version = await checkAndDownload()
+    if (version) {
+      // Persist for the next launch; do not hard-reload mid-session.
+      localStorage.setItem('alhelm:pending-ota', version)
+    }
+    // Activate a previously downloaded bundle at launch (safe point).
+    const pending = localStorage.getItem('alhelm:pending-ota')
+    if (pending) {
+      const { applyPendingUpdate } = await import('./services/ota')
+      const ok = await applyPendingUpdate(pending)
+      localStorage.removeItem('alhelm:pending-ota')
+      if (ok) return // bundle replaced; app reloaded with new frontend
+    }
+    void currentBundle()
+  } catch {
+    /* updater is best-effort; never block app startup */
+  }
+})()
