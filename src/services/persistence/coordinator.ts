@@ -21,7 +21,10 @@ export interface PersistenceState {
 }
 
 function hasRecords(data: AppData): boolean {
-  return data.subjects.length + data.sessions.length + data.tasks.length + data.focusSessions.length + data.journal.length + data.goals.length + data.artworks.length + data.challenges.length + data.letters.length + data.exams.length > 0
+  // Seeded starter challenges are initialization records, not user content —
+  // a fresh account ships with them, so they must not count as existing data.
+  const userChallenges = data.challenges.filter((challenge) => !challenge.id.startsWith('chal_seed_'))
+  return data.subjects.length + data.sessions.length + data.tasks.length + data.focusSessions.length + data.journal.length + data.goals.length + data.artworks.length + userChallenges.length + data.letters.length + data.exams.length > 0
 }
 function canonical(value:unknown):string {
   if(Array.isArray(value))return `[${value.map(canonical).join(',')}]`
@@ -34,17 +37,32 @@ function canonical(value:unknown):string {
   }
   return JSON.stringify(value)
 }
-/** Proves each expected artwork image is referenced by a retrievable cloud path. */
+/** Proves each expected artwork image is referenced by a retrievable cloud path.
+ *  Artworks whose local record has no image at all (e.g. metadata-only drafts)
+ *  are not required to have one in the cloud. */
 function storageImagesPresent(local:AppData,remote:AppData):boolean {
   return local.artworks.every((artwork)=>{
     const cloudArtwork=remote.artworks.find((candidate)=>candidate.id===artwork.id)
     if(!cloudArtwork)return false
+    if(!artwork.imagePath)return true
     return typeof cloudArtwork.imagePath==='string'&&cloudArtwork.imagePath.length>0
   })
 }
+/**
+ * User-content keys compared during migration verification. Seeded starter
+ * challenges are initialization records, not user data, so they are excluded —
+ * a cloud save round trip only persists rows the database actually stores.
+ */
+function userContentOf(value:AppData):Record<string,unknown>{
+  const result:Record<string,unknown>={}
+  for (const key of ['subjects','sessions','tasks','focusSessions','journal','goals','artworks','letters','exams'] as const) {
+    result[key]=value[key]
+  }
+  result.challenges=value.challenges.filter((challenge)=>!challenge.id.startsWith('chal_seed_'))
+  return result
+}
 function sameRecordContent(left:AppData,right:AppData):boolean {
-  const keys:(keyof AppData)[]=['subjects','sessions','tasks','focusSessions','journal','goals','artworks','challenges','letters','exams']
-  return keys.every(key=>canonical(left[key])===canonical(right[key]))
+  return canonical(userContentOf(left))===canonical(userContentOf(right))
 }
 
 /**
@@ -140,12 +158,19 @@ export class PersistenceCoordinator {
         return this.state
       }
       // A brand-new account can return initialized profile/settings with no
-      // user content. Treat that as empty for migration purposes rather than
-      // dropping straight into cloud mode with the local snapshot hidden.
+      // user content. Keep the LOCAL snapshot active (mode stays 'local') so
+      // the explicit migration path can run — migrateLocalToCloud requires a
+      // local-mode state — while still marking the account as authenticated.
       const remoteHasContent = hasRecords(remote)
       if (!remoteHasContent && hasRecords(this.localSnapshot)) {
         this.migrationRequiredForCurrentAccount = true
-        this.state = { data:hydrateData(remote), mode:'cloud', status:'ready', error:null, userId, migrationRequired:true }
+        this.state = { data:hydrateData(this.localSnapshot), mode:'local', status:'ready', error:null, userId, migrationRequired:true }
+        return this.state
+      }
+      if (!remoteHasContent) {
+        // Both sides empty: enter cloud mode directly with nothing to migrate.
+        this.migrationRequiredForCurrentAccount=false
+        this.state = { data:hydrateData(remote), mode:'cloud', status:'ready', error:null, userId, migrationRequired:false }
         return this.state
       }
       this.migrationRequiredForCurrentAccount=false

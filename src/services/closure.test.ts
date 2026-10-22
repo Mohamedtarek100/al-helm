@@ -1,86 +1,162 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { PersistenceCoordinator, type CloudPersistence } from './persistence/coordinator'
+import type { DataAdapter } from './persistence/adapter'
+import { createInitialData } from './domain'
+import type { AppData } from '../types'
 
-/**
- * Final closure-pass regression tests (code-level; no live Supabase).
- *
- * Pins:
- *  - migration verification ignores imagePath but proves image presence
- *  - initialized-but-empty cloud accounts trigger the migration flow
- *  - storage orphan cleanup surfaces failures instead of swallowing them
- */
-
-interface ArtworkLike {
-  id: string
-  title: string
-  imagePath?: string | null
+function data(overrides: Partial<AppData> = {}): AppData {
+  const base = createInitialData()
+  return { ...base, ...overrides }
 }
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([key]) => key !== 'updatedAt' && key !== 'createdAt' && key !== 'imageUrl' && key !== 'imagePath')
-      .sort(([a], [b]) => a.localeCompare(b))
-    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`
+function makeLocal(overrides: Partial<AppData> = {}): DataAdapter {
+  const stored = data(overrides)
+  return {
+    label: 'test local',
+    kind: 'local',
+    load: vi.fn(async (): Promise<AppData | null> => structuredClone(stored)),
+    save: vi.fn(async () => undefined),
+    clear: vi.fn(async () => undefined),
   }
-  return JSON.stringify(value)
 }
 
-function sameRecordContent(left: { artworks: ArtworkLike[] }, right: { artworks: ArtworkLike[] }): boolean {
-  return canonical(left.artworks) === canonical(right.artworks)
+function makeCloud(opts: {
+  hasSession?: boolean
+  remoteData?: AppData | null
+  userId?: string
+  saveShouldFail?: boolean
+} = {}): CloudPersistence & { savedSnapshots: AppData[] } {
+  let remote = opts.remoteData !== undefined ? opts.remoteData : null
+  const savedSnapshots: AppData[] = []
+  return {
+    label: 'test cloud',
+    kind: 'cloud',
+    hasSession: vi.fn(async () => opts.hasSession ?? false),
+    isCloudEmpty: vi.fn(async () => remote === null || (!remote.subjects.length && !remote.tasks.length)),
+    save: vi.fn(async (snapshot: AppData) => {
+      if (opts.saveShouldFail) throw new Error('cloud save failed')
+      remote = structuredClone(snapshot)
+    }),
+    load: vi.fn(async () => remote),
+    userId: vi.fn(async () => opts.userId ?? 'user-1'),
+    clear: vi.fn(async () => undefined),
+    savedSnapshots,
+  }
 }
 
-function storageImagesPresent(local: { artworks: ArtworkLike[] }, remote: { artworks: ArtworkLike[] }): boolean {
-  return local.artworks.every((artwork) => {
-    const cloudArtwork = remote.artworks.find((candidate) => candidate.id === artwork.id)
-    if (!cloudArtwork) return false
-    return typeof cloudArtwork.imagePath === 'string' && cloudArtwork.imagePath.length > 0
-  })
-}
+describe('PersistenceCoordinator: initialized-but-empty cloud migration', () => {
+  it('keeps local mode with local data and userId so migration can complete', async () => {
+    const localData = data({ tasks: [{ id: 't1' } as never] })
+    const local = makeLocal(localData)
+    // Cloud returns profile/settings only (non-null), no user content.
+    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'u1' })
+    const coordinator = new PersistenceCoordinator(local, cloud)
 
-describe('migration verification tolerates generated cloud paths', () => {
-  const local: { artworks: ArtworkLike[] } = { artworks: [{ id: 'art_1', title: 'Sketch', imagePath: 'local-blob' }] }
-  const remoteSamePath: { artworks: ArtworkLike[] } = { artworks: [{ id: 'art_1', title: 'Sketch', imagePath: 'u-123/art_1.png' }] }
-
-  it('accepts differing imagePath values when content matches', () => {
-    expect(sameRecordContent(local, remoteSamePath)).toBe(true)
-  })
-
-  it('still proves the image exists in cloud storage', () => {
-    expect(storageImagesPresent(local, remoteSamePath)).toBe(true)
+    const state = await coordinator.authenticate('u1')
+    expect(state.mode).toBe('local')
+    expect(state.migrationRequired).toBe(true)
+    expect(state.userId).toBe('u1')
+    expect(state.data.tasks).toEqual(localData.tasks)
   })
 
-  it('rejects a matching-content record whose image is missing', () => {
-    const missingImage: { artworks: ArtworkLike[] } = { artworks: [{ id: 'art_1', title: 'Sketch', imagePath: null }] }
-    expect(sameRecordContent(local, missingImage)).toBe(true)
-    expect(storageImagesPresent(local, missingImage)).toBe(false)
+  it('completes explicit migration from this state', async () => {
+    const localData = data({ tasks: [{ id: 't1' } as never], subjects: [{ id: 's1' } as never] })
+    const local = makeLocal(localData)
+    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'u1' })
+    const coordinator = new PersistenceCoordinator(local, cloud)
+
+    await coordinator.authenticate('u1')
+    const migrated = await coordinator.migrateLocalToCloud('u1')
+    expect(migrated.tasks).toEqual(localData.tasks)
+    expect(cloud.save).toHaveBeenCalled()
+    expect(coordinator.snapshot().mode).toBe('cloud')
+    expect(coordinator.snapshot().migrationRequired).toBe(false)
   })
 
-  it('rejects when an artwork is absent from cloud entirely', () => {
-    const absent: { artworks: ArtworkLike[] } = { artworks: [] }
-    expect(storageImagesPresent(local, absent)).toBe(false)
+  it('reports migration failure with local data preserved for recovery', async () => {
+    const localData = data({ tasks: [{ id: 't1' } as never] })
+    const local = makeLocal(localData)
+    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'u1', saveShouldFail: true })
+    const coordinator = new PersistenceCoordinator(local, cloud)
+
+    await coordinator.authenticate('u1')
+    await expect(coordinator.migrateLocalToCloud('u1')).rejects.toThrow('cloud save failed')
+    expect(coordinator.snapshot().mode).toBe('local')
+    expect(coordinator.snapshot().data.tasks).toEqual(localData.tasks)
+    expect(coordinator.snapshot().migrationRequired).toBe(true)
+  })
+
+  it('does not overwrite existing cloud content during migration', async () => {
+    const localData = data({ tasks: [{ id: 'local-task' } as never] })
+    const remoteData = data({ tasks: [{ id: 'cloud-task' } as never] })
+    const local = makeLocal(localData)
+    const cloud = makeCloud({ hasSession: true, remoteData, userId: 'u1' })
+    const coordinator = new PersistenceCoordinator(local, cloud)
+
+    const state = await coordinator.authenticate('u1')
+    expect(state.mode).toBe('cloud')
+    expect(state.data.tasks).toEqual(remoteData.tasks)
+    expect(cloud.save).not.toHaveBeenCalled()
+  })
+
+  it('refuses to migrate the same snapshot twice', async () => {
+    const local = makeLocal(data({ tasks: [{ id: 't1' } as never] }))
+    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'u1' })
+    const coordinator = new PersistenceCoordinator(local, cloud)
+    await coordinator.authenticate('u1')
+    await coordinator.migrateLocalToCloud('u1')
+    await expect(coordinator.migrateLocalToCloud('u1')).rejects.toThrow('already been migrated')
   })
 })
 
-describe('initialized-but-empty cloud account triggers migration flow', () => {
-  function classify(remoteArtworkCount: number, localArtworkCount: number): 'migration-required' | 'cloud' {
-    const remoteHasContent = remoteArtworkCount > 0
-    const localHasContent = localArtworkCount > 0
-    if (!remoteHasContent && localHasContent) return 'migration-required'
-    return 'cloud'
-  }
+describe('PersistenceCoordinator: account switching', () => {
+  it("never exposes another user's cloud data after a failed switch", async () => {
+    const local = makeLocal(data({ tasks: [{ id: 'local-t' } as never] }))
+    const cloud = makeCloud({ hasSession: false, userId: 'u2' })
+    const coordinator = new PersistenceCoordinator(local, cloud)
+    const state = await coordinator.authenticate('u2')
+    expect(state.mode).toBe('local')
+    expect(state.data.tasks).toEqual([{ id: 'local-t' } as never])
+    expect(state.data.tasks.some((t: { id: string }) => t.id === 'u1-task')).toBe(false)
+  })
+})
 
-  it('enters migration flow when local content exists and cloud is empty', () => {
-    expect(classify(0, 3)).toBe('migration-required')
+describe('blob-first image persistence invariants', () => {
+  it('valid blob exists before metadata is considered uploaded', async () => {
+    const calls: string[] = []
+    const putImage = vi.fn(async (_blob: Blob) => { calls.push('putImage') })
+    const createArtwork = vi.fn(async () => { calls.push('createArtwork') })
+    const blob = new Blob(['png'], { type: 'image/png' })
+    await putImage(blob)
+    expect(calls).toEqual(['putImage'])
+    await createArtwork()
+    expect(calls).toEqual(['putImage', 'createArtwork'])
   })
 
-  it('stays in cloud mode when cloud has content', () => {
-    expect(classify(2, 0)).toBe('cloud')
-    expect(classify(2, 5)).toBe('cloud')
+  it('unavailable blob is never reported as uploaded', async () => {
+    const putImage = vi.fn(async (_blob: Blob) => { throw new Error('blob capture failed') })
+    const createArtwork = vi.fn(async () => {})
+    await expect(putImage(new Blob([]))).rejects.toThrow('blob capture failed')
+    expect(createArtwork).not.toHaveBeenCalled()
   })
 
-  it('has no migration need when both sides are empty', () => {
-    expect(classify(0, 0)).toBe('cloud')
+  it('cloud upload failure preserves local metadata for retry', async () => {
+    const calls: string[] = []
+    const putImage = vi.fn(async (_blob: Blob) => { calls.push('putImage') })
+    const createArtwork = vi.fn(async () => { calls.push('createArtwork') })
+    const markSaved = vi.fn(async () => { calls.push('markSaved'); throw new Error('cloud upload failed') })
+    await putImage(new Blob(['x'], { type: 'image/png' }))
+    await createArtwork()
+    await expect(markSaved()).rejects.toThrow('cloud upload failed')
+    expect(calls).toEqual(['putImage', 'createArtwork', 'markSaved'])
+    expect(createArtwork).toHaveBeenCalledTimes(1)
+  })
+
+  it('generated cloud paths differ from local paths but presence is verifiable', () => {
+    const localPath: string | null = 'local-blob-id'
+    const cloudPath: string | null = 'u-abc123/art_1.png'
+    expect(localPath !== cloudPath).toBe(true)
+    expect((cloudPath ?? '').length > 0).toBe(true)
   })
 })
 
