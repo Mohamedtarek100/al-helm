@@ -10,7 +10,6 @@ const nav: { to: string; key: TranslationKey; icon: typeof HomeIcon; end?: boole
   { to: '/', key: 'home', icon: HomeIcon, end: true },
   { to: '/schedule', key: 'schedule', icon: CalendarIcon },
   { to: '/calendar', key: 'calendarPage', icon: CalendarIcon },
-  { to: '/calendar', key: 'calendarPage', icon: CalendarIcon },
   { to: '/tasks', key: 'tasks', icon: CheckSquareIcon },
   { to: '/focus', key: 'focus', icon: TimerIcon },
   { to: '/studio', key: 'studio', icon: PaletteIcon },

@@ -60,7 +60,7 @@ export function SketchCanvas() {
       }
       const all = inProgress ? [...strokes, inProgress] : strokes
       for (const s of all) {
-        if (s.points.length === 0) continue
+        if (!s || !Array.isArray(s.points) || s.points.length === 0) continue
         ctx.globalCompositeOperation = s.eraser ? 'destination-out' : 'source-over'
         ctx.strokeStyle = s.eraser ? 'rgba(0,0,0,1)' : s.color
         ctx.lineWidth = s.size
@@ -180,6 +180,16 @@ export function SketchCanvas() {
       if (!ctx) return
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H)
       ctx.drawImage(img, 0, 0, CANVAS_W, CANVAS_H)
+    }
+    img.onerror = () => {
+      // Recovery: image data is gone but metadata remains; keep the drawing usable.
+      const canvas = canvasRef.current
+      if (!canvas) return
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H)
+      ctx.fillStyle = bgCss
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H)
     }
     img.src = art.imageUrl
     setTitle(art.title)
