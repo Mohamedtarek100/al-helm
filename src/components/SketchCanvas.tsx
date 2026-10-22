@@ -154,14 +154,20 @@ export function SketchCanvas() {
   const save = async () => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const dataUrl = canvas.toDataURL('image/png')
     const name = title.trim() || (language === 'en' ? 'Untitled sketch' : 'اسكتش بدون عنوان')
     try {
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+      let created: { id: string } | null = null
       if (savedId) {
-        await updateArtwork(savedId, { title: name, imageUrl: dataUrl, imagePath: null, date: todayKey(), medium: language === 'en' ? 'Digital sketch' : 'رسم رقمي' })
+        await updateArtwork(savedId, { title: name, imageUrl: '', imagePath: null, date: todayKey(), medium: language === 'en' ? 'Digital sketch' : 'رسم رقمي', source: 'drawn' })
       } else {
-        const created = await createArtwork({ title: name, description: '', medium: language === 'en' ? 'Digital sketch' : 'رسم رقمي', date: todayKey(), imageUrl: dataUrl, imagePath: null })
+        created = await createArtwork({ title: name, description: '', medium: language === 'en' ? 'Digital sketch' : 'رسم رقمي', date: todayKey(), imageUrl: '', imagePath: null, source: 'drawn', category: '', tags: [], favorite: false })
         setSavedId(created.id)
+      }
+      const id = created?.id ?? savedId
+      if (blob && id) {
+        const { putImage } = await import('../services/artImages')
+        await putImage(id, blob)
       }
       setDirty(false)
     } catch {
@@ -172,26 +178,39 @@ export function SketchCanvas() {
   const openSaved = (id: string) => {
     const art = data.artworks.find((a) => a.id === id)
     if (!art) return
-    const img = new Image()
-    img.onload = () => {
-      const canvas = canvasRef.current
-      if (!canvas) return
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return
-      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H)
-      ctx.drawImage(img, 0, 0, CANVAS_W, CANVAS_H)
+    const loadInto = (src: string) => {
+      const img = new Image()
+      img.onload = () => {
+        const canvas = canvasRef.current
+        if (!canvas) return
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        ctx.clearRect(0, 0, CANVAS_W, CANVAS_H)
+        ctx.drawImage(img, 0, 0, CANVAS_W, CANVAS_H)
+      }
+      img.onerror = () => {
+        // Recovery: image data is gone but metadata remains; keep the drawing usable.
+        const canvas = canvasRef.current
+        if (!canvas) return
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        ctx.clearRect(0, 0, CANVAS_W, CANVAS_H)
+        ctx.fillStyle = bgCss
+        ctx.fillRect(0, 0, CANVAS_W, CANVAS_H)
+      }
+      img.src = src
     }
-    img.onerror = () => {
-      // Recovery: image data is gone but metadata remains; keep the drawing usable.
-      const canvas = canvasRef.current
-      if (!canvas) return
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return
-      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H)
-      ctx.fillStyle = bgCss
-      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H)
-    }
-    img.src = art.imageUrl
+    ;(async () => {
+      try {
+        const { getImage } = await import('../services/artImages')
+        const blob = await getImage(id)
+        if (blob) {
+          loadInto(URL.createObjectURL(blob))
+          return
+        }
+      } catch { /* fall back to stored URL */ }
+      if (art.imageUrl) loadInto(art.imageUrl)
+    })()
     setTitle(art.title)
     setSavedId(art.id)
     setStrokes([])

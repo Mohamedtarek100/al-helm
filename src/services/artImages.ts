@@ -57,3 +57,24 @@ export async function deleteImage(id: string): Promise<void> {
   })
   db.close()
 }
+
+/**
+ * One-time cleanup: converts legacy artworks whose metadata still carries a
+ * base64 data URL into IndexedDB blobs, then trims the metadata field so the
+ * local snapshot stays lightweight. Returns how many records were migrated.
+ */
+export async function migrateLegacyArtworkImages(artworks: Array<{ id: string; imageUrl?: string }>): Promise<number> {
+  let migrated = 0
+  for (const artwork of artworks) {
+    if (!artwork.imageUrl?.startsWith('data:image/')) continue
+    try {
+      const blob = await (await fetch(artwork.imageUrl)).blob()
+      await putImage(artwork.id, blob)
+      migrated += 1
+    } catch {
+      // Preserve the original record untouched so no image is lost.
+      continue
+    }
+  }
+  return migrated
+}

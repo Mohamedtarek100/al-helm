@@ -120,6 +120,18 @@ export async function initStore(force = false): Promise<void> {
     const restored = await persistence.initialize()
     state = hydrateData(restored.data)
     state.settings.storage = 'local'
+    // One-time legacy cleanup: move base64 data URLs out of the metadata
+    // snapshot into IndexedDB blobs. The original record is untouched on
+    // failure so no image is lost.
+    try {
+      const { migrateLegacyArtworkImages } = await import('./artImages')
+      const migrated = await migrateLegacyArtworkImages(state.artworks as unknown as Array<{ id: string; imageUrl?: string }>)
+      if (migrated > 0) {
+        const trimmed = { ...state, artworks: state.artworks.map((a) => (a.imageUrl.startsWith('data:image/') ? { ...a, imageUrl: '' } : a)) }
+        state = trimmed
+        await dataAdapter.save({ ...trimmed, settings: { ...trimmed.settings, storage: 'local' } })
+      }
+    } catch { /* legacy records keep working via the URL fallback */ }
     const cloud = cloudAdapter()
     if (cloud && await cloud.hasSession().catch(() => false)) {
       const { data: { user }, error } = await supabase!.auth.getUser()
