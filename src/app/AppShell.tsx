@@ -1,5 +1,6 @@
-import { NavLink, Outlet } from 'react-router-dom'
-import { BellIcon, CogIcon, HomeIcon, CalendarIcon, CheckSquareIcon, PaletteIcon, TimerIcon, TrendIcon, SunIcon, MoonIcon, MonitorIcon } from '../components/icons'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { BellIcon, CogIcon, HomeIcon, CalendarIcon, CheckSquareIcon, MenuIcon, CloseIcon, PaletteIcon, TimerIcon, TrendIcon, SunIcon, MoonIcon, MonitorIcon } from '../components/icons'
 import { useCollection, updateSettings, useSettings } from '../services/store'
 import { cn } from '../utils/cn'
 import { useI18n } from '../i18n/useI18n'
@@ -59,10 +60,18 @@ export function AppShell() {
   const tasks = useCollection('tasks')
   const unread = notifications.filter((item) => !item.read).length
   const openTasks = tasks.filter((item) => !item.completed).length
+  const [menuOpen, setMenuOpen] = useState(false)
+  const location = useLocation()
+  useEffect(() => { setMenuOpen(false) }, [location.pathname])
   return (
     <div className="app-frame">
       <header className="app-topbar">
-        <Brand />
+        <div className="topbar-left">
+          <button className="mobile-menu-btn" type="button" aria-expanded={menuOpen} aria-controls="mobile-drawer" aria-label={t('primaryNavigation')} onClick={() => setMenuOpen(true)}>
+            <MenuIcon size={22} />
+          </button>
+          <Brand />
+        </div>
         <div className="topbar-actions">
           <ThemeToggle />
           <button className="language-toggle" type="button" onClick={() => setLanguage(language === 'en' ? 'ar' : 'en')} aria-label={language === 'en' ? 'Switch to Arabic' : 'Switch to English'}>{language === 'en' ? 'العربية' : 'English'}</button>
@@ -75,6 +84,37 @@ export function AppShell() {
           </NavLink>
         </div>
       </header>
+      {menuOpen && (
+        <div className="mobile-drawer" id="mobile-drawer" role="dialog" aria-modal="true" aria-label={t('primaryNavigation')}>
+          <div className="mobile-drawer__backdrop" onClick={() => setMenuOpen(false)} />
+          <aside className="mobile-drawer__panel" aria-label={t('primaryNavigation')}>
+            <div className="mobile-drawer__head">
+              <Brand />
+              <button className="mobile-drawer__close" type="button" aria-label={t('close')} onClick={() => setMenuOpen(false)}>
+                <CloseIcon size={20} />
+              </button>
+            </div>
+            <nav className="mobile-drawer__nav">
+              {nav.map(({ to, key, icon: Icon, end }) => {
+                const label = t(key)
+                const badge = to === '/tasks' ? openTasks : to === '/notifications' ? unread : 0
+                return (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    end={end}
+                    className={({ isActive }) => cn('mobile-drawer__link', isActive && 'mobile-drawer__link--active')}
+                  >
+                    <span className="mobile-drawer__icon"><Icon size={20} /></span>
+                    <span className="mobile-drawer__label">{label}</span>
+                    {badge > 0 && <span className="mobile-nav__badge">{badge}</span>}
+                  </NavLink>
+                )
+              })}
+            </nav>
+          </aside>
+        </div>
+      )}
       <div className="app-body">
         <aside className="sidebar" aria-label={t('primaryNavigation')}>
           <p className="sidebar__caption">{t('navigation')}</p>
