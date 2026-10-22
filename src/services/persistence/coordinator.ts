@@ -26,10 +26,21 @@ function hasRecords(data: AppData): boolean {
 function canonical(value:unknown):string {
   if(Array.isArray(value))return `[${value.map(canonical).join(',')}]`
   if(value&&typeof value==='object'){
-    const entries=Object.entries(value as Record<string,unknown>).filter(([key])=>key!=='updatedAt'&&key!=='createdAt'&&key!=='imageUrl').sort(([a],[b])=>a.localeCompare(b))
+    // imagePath is excluded from the comparison: cloud-generated storage paths
+    // may legitimately differ from local values. Existence of every image is
+    // verified separately by storageImagesPresent.
+    const entries=Object.entries(value as Record<string,unknown>).filter(([key])=>key!=='updatedAt'&&key!=='createdAt'&&key!=='imageUrl'&&key!=='imagePath').sort(([a],[b])=>a.localeCompare(b))
     return `{${entries.map(([key,item])=>`${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`
   }
   return JSON.stringify(value)
+}
+/** Proves each expected artwork image is referenced by a retrievable cloud path. */
+function storageImagesPresent(local:AppData,remote:AppData):boolean {
+  return local.artworks.every((artwork)=>{
+    const cloudArtwork=remote.artworks.find((candidate)=>candidate.id===artwork.id)
+    if(!cloudArtwork)return false
+    return typeof cloudArtwork.imagePath==='string'&&cloudArtwork.imagePath.length>0
+  })
 }
 function sameRecordContent(left:AppData,right:AppData):boolean {
   const keys:(keyof AppData)[]=['subjects','sessions','tasks','focusSessions','journal','goals','artworks','challenges','letters','exams']
@@ -128,6 +139,15 @@ export class PersistenceCoordinator {
         this.state = { ...this.state, mode:'local', status:'ready', error:null, userId, migrationRequired:this.migrationRequiredForCurrentAccount }
         return this.state
       }
+      // A brand-new account can return initialized profile/settings with no
+      // user content. Treat that as empty for migration purposes rather than
+      // dropping straight into cloud mode with the local snapshot hidden.
+      const remoteHasContent = hasRecords(remote)
+      if (!remoteHasContent && hasRecords(this.localSnapshot)) {
+        this.migrationRequiredForCurrentAccount = true
+        this.state = { data:hydrateData(remote), mode:'cloud', status:'ready', error:null, userId, migrationRequired:true }
+        return this.state
+      }
       this.migrationRequiredForCurrentAccount=false
       this.state = { data:hydrateData(remote), mode:'cloud', status:'ready', error:null, userId, migrationRequired:false }
       return this.state
@@ -159,7 +179,7 @@ export class PersistenceCoordinator {
       await cloud.save(candidate)
       if (await cloud.userId() !== userId) throw new Error('The signed-in account changed during migration.')
       const verified = await cloud.load()
-      if (!verified || !sameRecordContent(candidate, verified)) throw new Error('Migration verification failed; your local snapshot was preserved.')
+      if (!verified || !sameRecordContent(candidate, verified) || !storageImagesPresent(candidate, verified)) throw new Error('Migration verification failed; your local snapshot was preserved.')
       const safeLocal=hydrateData(candidate)
       safeLocal.settings.storage='local'
       await this.local.save(safeLocal)

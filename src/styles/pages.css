@@ -925,6 +925,7 @@
 .sketch-title-input{flex:1;min-width:160px;padding:9px 12px;border-radius:var(--r-sm);border:1px solid var(--line-strong);background:var(--paper-3);color:var(--ink);font-family:inherit;font-size:var(--t-sm)}
 .sketch-save-state{font-size:var(--t-xs);font-weight:700;color:var(--success)}
 .sketch-save-state--dirty{color:var(--warning)}
+.sketch-save-state--error{color:var(--danger)}
 .sketch-recent{display:flex;gap:10px;overflow-x:auto;padding-top:10px}
 .sketch-thumb{flex:none;display:flex;flex-direction:column;gap:5px;width:130px;border:0;background:transparent;font-family:inherit;cursor:pointer;text-align:start}
 .sketch-thumb img{width:130px;height:92px;object-fit:cover;border-radius:var(--r-sm);border:1px solid var(--line)}

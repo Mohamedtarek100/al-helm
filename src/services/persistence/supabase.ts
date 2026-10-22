@@ -148,11 +148,14 @@ export class SupabaseAdapter implements CloudPersistence {
         }
         await this.saveSlice(table, rows, userId)
         if (await this.userId() !== userId) throw new Error('Account changed during cloud save.')
-        // Clean up storage objects that no longer have a metadata row.
+        // Clean up storage objects that no longer have a metadata row. A
+        // removal failure is surfaced (not swallowed) so orphaned files are
+        // never silently retained while the metadata claims deletion succeeded.
         const keepPaths = new Set(rows.map((row) => String(row.storage_path ?? '')).filter(Boolean))
         const orphans = [...existingPaths].filter((path) => path && !keepPaths.has(path))
         if (orphans.length) {
-          await this.client.storage.from('artworks').remove(orphans)
+          const { error: removeError } = await this.client.storage.from('artworks').remove(orphans)
+          if (removeError) throw new Error(`Artwork file cleanup failed: ${removeError.message}`)
         }
         continue
       }

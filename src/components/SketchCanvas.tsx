@@ -34,6 +34,7 @@ export function SketchCanvas() {
   const [savedId, setSavedId] = useState<string | null>(null)
   const [title, setTitle] = useState('')
   const [confirmClear, setConfirmClear] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [bg, setBg] = useState<'white' | 'cream' | 'grid'>('cream')
 
   const bgCss = bg === 'white' ? '#ffffff' : bg === 'cream' ? '#fdf8ef' : '#fdf8ef'
@@ -151,27 +152,33 @@ export function SketchCanvas() {
     }, 'image/png')
   }
 
-  const save = async () => {
+  const save = async (): Promise<boolean> => {
     const canvas = canvasRef.current
-    if (!canvas) return
+    if (!canvas) return false
     const name = title.trim() || (language === 'en' ? 'Untitled sketch' : 'اسكتش بدون عنوان')
     try {
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
-      let created: { id: string } | null = null
-      if (savedId) {
-        await updateArtwork(savedId, { title: name, imageUrl: '', imagePath: null, date: todayKey(), medium: language === 'en' ? 'Digital sketch' : 'رسم رقمي', source: 'drawn' })
+      // 1. Capture the Blob FIRST so a failed capture never commits metadata.
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((value) => { if (value) resolve(value); else reject(new Error('Canvas capture failed.')) }, 'image/png')
+      })
+      // 2. Create the metadata record only once the Blob exists.
+      let artworkId = savedId
+      if (!artworkId) {
+        const created = await createArtwork({ title: name, description: '', medium: language === 'en' ? 'Digital sketch' : 'رسم رقمي', date: todayKey(), imageUrl: '', imagePath: null, source: 'drawn', category: '', tags: [], favorite: false })
+        artworkId = created.id
+        setSavedId(artworkId)
       } else {
-        created = await createArtwork({ title: name, description: '', medium: language === 'en' ? 'Digital sketch' : 'رسم رقمي', date: todayKey(), imageUrl: '', imagePath: null, source: 'drawn', category: '', tags: [], favorite: false })
-        setSavedId(created.id)
+        await updateArtwork(artworkId, { title: name, imageUrl: '', imagePath: null, date: todayKey(), medium: language === 'en' ? 'Digital sketch' : 'رسم رقمي', source: 'drawn' })
       }
-      const id = created?.id ?? savedId
-      if (blob && id) {
-        const { putImage } = await import('../services/artImages')
-        await putImage(id, blob)
-      }
+      // 3. Store the Blob; a failure here keeps metadata but marks unsaved so
+      //    the user can retry without losing the drawing on the canvas.
+      const { putImage } = await import('../services/artImages')
+      await putImage(artworkId, blob)
       setDirty(false)
-    } catch {
-      /* save failure surfaced by persistence layer */
+      return true
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : (language === 'en' ? 'Save failed.' : 'فشل الحفظ.'))
+      return false
     }
   }
 
@@ -272,6 +279,7 @@ export function SketchCanvas() {
           <span className={`sketch-save-state ${dirty ? 'sketch-save-state--dirty' : ''}`}>
             {dirty ? t('sketchUnsaved') : t('sketchSaved')}
           </span>
+          {saveError && <span className="sketch-save-state sketch-save-state--error">{saveError}</span>}
           <div className="row">
             <Button size="sm" variant="secondary" leadingIcon={<DownloadIcon size={15} />} onClick={exportPng}>{t('sketchExport')}</Button>
             <Button size="sm" variant="primary" leadingIcon={<SaveIcon size={15} />} onClick={() => { void save() }}>{t('save')}</Button>

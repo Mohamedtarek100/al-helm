@@ -27,6 +27,12 @@ jobs:
       - name: Typecheck and build
         env:
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          # Public publishable configuration only — never the service-role key.
+          # Configure SUPABASE_URL and SUPABASE_ANON_KEY as repository
+          # variables (or secrets) in the deployment repo's Settings. When
+          # absent the app falls back to local-only mode by design.
+          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
         run: npm run build
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
