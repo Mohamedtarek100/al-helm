@@ -209,6 +209,15 @@ export interface Artwork extends Timestamped {
    */
   imageUrl: string
   imagePath: string | null
+  /** Local image bytes persisted in IndexedDB so drawings survive reloads. */
+  imageData?: string
+  /** Where the artwork came from: drawn in-app, camera photo, or imported file. */
+  source?: 'drawn' | 'photo' | 'imported'
+  /** Category key (see ART_CATEGORIES). Empty string = uncategorised. */
+  category?: string
+  /** Multiple free-form tags. */
+  tags?: string[]
+  favorite?: boolean
 }
 
 export type DrawingChallengeTrack =

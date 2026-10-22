@@ -1,0 +1,27 @@
+/* Art Library — polished gallery for 4uLife Dream Studio */
+.art-library__actions{display:flex;gap:10px;flex-wrap:wrap}
+.art-library__filters{margin-top:0}
+.art-library__filter-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.art-library__search{display:flex;align-items:center;gap:8px;flex:1;min-width:220px;padding:10px 14px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--paper-3);color:var(--ink-3)}
+.art-library__search input{border:0;outline:0;background:transparent;color:var(--ink);width:100%;font:inherit}
+.art-library__tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+.art-library__tag{border:1px solid var(--line);background:var(--paper-3);border-radius:999px;padding:4px 12px;font-size:.8rem;color:var(--ink-2);cursor:pointer}
+.art-library__tag--active{background:var(--clay);color:#fff;border-color:var(--clay)}
+.art-library__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:16px}
+.art-library__card{background:var(--paper-3);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;transition:box-shadow .18s ease,transform .18s ease}
+.art-library__card:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
+.art-library__thumbbtn{display:block;width:100%;position:relative;border:0;background:none;padding:0;cursor:pointer}
+.art-library__thumb{display:block;width:100%;aspect-ratio:1/1;object-fit:cover;background:var(--paper-sunk)}
+.art-library__thumb--empty{display:grid;place-items:center;color:var(--ink-4)}
+.art-library__cardsource{position:absolute;inset-block-start:8px;inset-inline-start:8px;background:rgba(30,25,20,.55);color:#fff;border-radius:999px;font-size:.68rem;padding:3px 8px}
+.art-library__cardfav{position:absolute;inset-block-start:8px;inset-inline-end:8px;color:var(--amber)}
+.art-library__cardbody{padding:10px 12px 12px}
+.art-library__cardtitle{font-weight:700;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.art-library__cardmeta{font-size:.75rem;color:var(--ink-3);margin-top:2px}
+.art-library__cardactions{display:flex;gap:4px;margin-top:6px}
+.art-library__previewbackdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;background:rgba(25,20,16,.45);padding:18px}
+.art-library__preview{background:var(--paper-2);border-radius:var(--r-xl);padding:18px;max-width:420px;width:100%;box-shadow:var(--shadow-lg);display:grid;gap:12px}
+.art-library__preview--wide{max-width:520px}
+.art-library__preview img{width:100%;border-radius:var(--r-md);object-fit:cover;max-height:340px;background:var(--paper-sunk)}
+.art-library__detailimg{max-height:240px;width:100%;object-fit:cover;border-radius:var(--r-md);background:var(--paper-sunk)}
+@media(prefers-reduced-motion:reduce){.art-library__card{transition:none}}

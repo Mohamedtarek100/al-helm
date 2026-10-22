@@ -364,6 +364,12 @@ export const RedoIcon = (p: IconProps) => (
     <path d="M21 7v6h-6" /><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" />
   </svg>
 )
+export const CameraIcon = (p: IconProps) => (
+  <svg viewBox="0 0 24 24" width={p.size ?? 20} height={p.size ?? 20} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M14.5 4h-5L7.5 7H4a1.5 1.5 0 0 0-1.5 1.5v10A1.5 1.5 0 0 0 4 20h16a1.5 1.5 0 0 0 1.5-1.5v-10A1.5 1.5 0 0 0 20 7h-3.5Z" />
+    <circle cx="12" cy="13" r="3.4" />
+  </svg>
+)
 export const SaveIcon = (p: IconProps) => (
   <svg viewBox="0 0 24 24" width={p.size ?? 20} height={p.size ?? 20} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><path d="M17 21v-8H7v8M7 3v5h8" />
