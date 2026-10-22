@@ -12,7 +12,7 @@ const tableBySlice = {
   journal: 'journal_entries', goals: 'artistic_goals', artworks: 'artwork_metadata', challenges: 'drawing_challenges',
   letters: 'future_letters', exams: 'exam_dates', notifications: null,
 } as const
-const toDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).filter(([key]) => !['imageUrl','imagePath'].includes(key)).map(([k,v]) => [k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`),v]))
+const toDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).filter(([key]) => !['imageUrl','imagePath','imageData'].includes(key)).map(([k,v]) => [k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`),v]))
 const fromDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'user_id').map(([k,v]) => [k.replace(/_([a-z])/g, (_,m:string) => m.toUpperCase()),v]))
 
 /** Cloud persistence adapter. Requires a signed-in Supabase user; RLS remains authoritative. */
@@ -92,6 +92,30 @@ export class SupabaseAdapter implements CloudPersistence {
     return Object.keys(result).length ? result as AppData : null
   }
 
+  /**
+   * Uploads an artwork's image Blob to the private `artworks` bucket under the
+   * authenticated user's folder. Skipped when the metadata row already points
+   * at the same storage path (prevents re-uploads on debounced re-persists).
+   */
+  private async uploadArtworkImage(item: Record<string, unknown>, userId: string, id: string, existingPaths: Set<string>): Promise<string | null> {
+    const existingPath = typeof item.imagePath === 'string' && item.imagePath ? item.imagePath : null
+    if (existingPath && existingPaths.has(existingPath)) return existingPath
+    if (existingPath && existingPath.startsWith(`${userId}/`)) return existingPath // already owned, trust it
+    try {
+      const { getImage } = await import('../artImages')
+      const blob = await getImage(id)
+      if (!blob) return existingPath // nothing new to upload; keep any legacy path
+      const extension = blob.type.split('/')[1]?.replace('jpeg', 'jpg') ?? 'png'
+      const path = `${userId}/${id}.${extension}`
+      const { error } = await this.client.storage.from('artworks').upload(path, blob, { contentType: blob.type || 'image/png', upsert: true })
+      if (error) throw error
+      return path
+    } catch (error) {
+      // Preserve the local copy; surface the failure instead of a false success.
+      throw new Error(`Artwork image upload failed for "${String(item.title ?? id)}": ${error instanceof Error ? error.message : 'unknown error'}`)
+    }
+  }
+
   async save(data: AppData): Promise<void> {
     const userId = await this.userId()
     const p = data.profile, s = data.settings
@@ -108,12 +132,35 @@ export class SupabaseAdapter implements CloudPersistence {
     if(await this.userId()!==userId)throw new Error('Account changed during cloud save.')
     for (const [slice, table] of Object.entries(tableBySlice) as [keyof typeof tableBySlice, string | null][]) {
       if (!table || slice === 'exams') continue
+      if (slice === 'artworks') {
+        // Read current storage paths first so unchanged images are not re-uploaded.
+        const { data: existingRows, error: existingError } = await this.client.from(table).select('id,storage_path').eq('user_id', userId)
+        if (existingError) throw existingError
+        const existingPaths = new Set((existingRows ?? []).map((row) => String(row.storage_path ?? '')))
+        const rows: Record<string, unknown>[] = []
+        for (const item of data.artworks as unknown as Record<string, unknown>[]) {
+          const mapped = toDb(item)
+          mapped.artwork_date = item.date
+          delete mapped.date; delete mapped.image_url
+          const path = await this.uploadArtworkImage(item, userId, String(item.id), existingPaths)
+          mapped.storage_path = path
+          rows.push({ ...mapped, user_id: userId })
+        }
+        await this.saveSlice(table, rows, userId)
+        if (await this.userId() !== userId) throw new Error('Account changed during cloud save.')
+        // Clean up storage objects that no longer have a metadata row.
+        const keepPaths = new Set(rows.map((row) => String(row.storage_path ?? '')).filter(Boolean))
+        const orphans = [...existingPaths].filter((path) => path && !keepPaths.has(path))
+        if (orphans.length) {
+          await this.client.storage.from('artworks').remove(orphans)
+        }
+        continue
+      }
       const rows: Record<string, unknown>[] = (data[slice] as unknown as Record<string, unknown>[]).map(item => {
         const mapped = toDb(item)
         if (slice === 'sessions') { mapped.session_date = item.date || new Date().toISOString().slice(0,10); delete mapped.date }
         if (slice === 'focusSessions') { mapped.session_date = item.date; delete mapped.date }
         if (slice === 'journal') { mapped.entry_date = item.date; delete mapped.date }
-        if (slice === 'artworks') { mapped.artwork_date = item.date; mapped.storage_path = item.imagePath ?? null; delete mapped.date; delete mapped.image_url }
         return { ...mapped, user_id:userId }
       })
       await this.saveSlice(table, rows, userId)

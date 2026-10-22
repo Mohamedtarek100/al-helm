@@ -105,7 +105,12 @@ create table if not exists public.journal_entries (
 create table if not exists public.artwork_metadata (
   id text not null, user_id uuid not null references auth.users(id) on delete cascade,
   title text not null, description text not null default '', medium text not null default '', artwork_date date not null,
-  storage_path text, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), primary key (user_id,id)
+  storage_path text,
+  source text not null default 'drawn' check (source in ('drawn','photo','imported')),
+  category text not null default '',
+  tags jsonb not null default '[]'::jsonb,
+  favorite boolean not null default false,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), primary key (user_id,id)
 );
 create table if not exists public.drawing_challenges (
   id text not null, user_id uuid not null references auth.users(id) on delete cascade,
@@ -208,18 +213,10 @@ create trigger on_auth_user_created after insert on auth.users for each row exec
 -- ============ MIGRATION 2 (deduplicated) ============
 
 -- Harden ownership, cross-user relationships, profile policies and private artwork access.
--- NOTE: focus_sessions already receives composite owner-scoped FKs
--- (focus_sessions_subject_fk, focus_sessions_task_fk) in 202610190001;
--- re-adding equivalent constraints here would be a duplicate-column error,
--- so only recurring_schedules and exam_dates are hardened in this step.
-do $$ begin
-  if not exists(select 1 from pg_constraint where conrelid='public.recurring_schedules'::regclass and conname='recurring_schedules_subject_owner_fk') then
-    alter table public.recurring_schedules add constraint recurring_schedules_subject_owner_fk foreign key(user_id,subject_id) references public.subjects(user_id,id) on delete set null (subject_id);
-  end if;
-  if not exists(select 1 from pg_constraint where conrelid='public.exam_dates'::regclass and conname='exam_dates_subject_owner_fk') then
-    alter table public.exam_dates add constraint exam_dates_subject_owner_fk foreign key(user_id,subject_id) references public.subjects(user_id,id) on delete set null (subject_id);
-  end if;
-end $$;
+-- NOTE: equivalent composite owner-scoped subject FKs are already declared in
+-- 202610190001 on focus_sessions (named), recurring_schedules and exam_dates
+-- (inline). Re-adding them here would raise a duplicate-constraint error, so
+-- no constraint changes are made in this migration.
 
 -- Replace permissive generic policies with operation-specific owner policies; profile key is id, not user_id.
 do $$ declare t text; begin

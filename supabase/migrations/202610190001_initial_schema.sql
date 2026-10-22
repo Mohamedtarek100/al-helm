@@ -105,7 +105,12 @@ create table if not exists public.journal_entries (
 create table if not exists public.artwork_metadata (
   id text not null, user_id uuid not null references auth.users(id) on delete cascade,
   title text not null, description text not null default '', medium text not null default '', artwork_date date not null,
-  storage_path text, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), primary key (user_id,id)
+  storage_path text,
+  source text not null default 'drawn' check (source in ('drawn','photo','imported')),
+  category text not null default '',
+  tags jsonb not null default '[]'::jsonb,
+  favorite boolean not null default false,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), primary key (user_id,id)
 );
 create table if not exists public.drawing_challenges (
   id text not null, user_id uuid not null references auth.users(id) on delete cascade,

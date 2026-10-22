@@ -104,13 +104,6 @@ export function ArtLibrary() {
 
   const allTags = useMemo(() => [...new Set(artworks.flatMap((a) => a.tags ?? []))].sort(), [artworks])
 
-  async function storeImage(id: string, dataUrl: string): Promise<void> {
-    const res = await fetch(dataUrl)
-    const blob = await res.blob()
-    const { putImage } = await import('../services/artImages')
-    await putImage(id, blob)
-  }
-
   async function confirmImport(title: string) {
     if (!pending) return
     try {
@@ -119,17 +112,31 @@ export function ArtLibrary() {
         description: '',
         medium: '',
         date: todayKey(),
-        imageUrl: pending.dataUrl,
+        // Image bytes live in IndexedDB; keep metadata rows lightweight.
+        imageUrl: '',
         imagePath: null,
         source: pending.source,
         category: '',
         tags: [],
         favorite: false,
       })
-      await storeImage(created.id, pending.dataUrl)
+      // Persist the blob separately; on failure, remove the metadata row so the
+      // library never shows a record that has no recoverable image.
+      try {
+        const res = await fetch(pending.dataUrl)
+        const blob = await res.blob()
+        const { putImage } = await import('../services/artImages')
+        await putImage(created.id, blob)
+      } catch (storageError) {
+        await deleteArtwork(created.id).catch(() => undefined)
+        setPending(null)
+        setFileError(storageError instanceof Error ? storageError.message : 'Unable to save this artwork.')
+        return
+      }
       setPending(null)
       setSelected(created)
     } catch (err) {
+      setPending(null)
       setFileError(err instanceof Error ? err.message : 'Unable to save this artwork.')
     }
   }
