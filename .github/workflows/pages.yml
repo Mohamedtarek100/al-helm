@@ -7,8 +7,8 @@ name: Deploy 4uLife web build to al-helm-app (GitHub Pages)
 #
 # Required repository configuration (source repo Settings):
 #   Variables:
-#     SUPABASE_URL        — public Supabase project URL
-#     SUPABASE_ANON_KEY   — public publishable/anon key (browser-safe only)
+#     VITE_SUPABASE_URL      — public Supabase project URL
+#     VITE_SUPABASE_ANON_KEY — public publishable/anon key (browser-safe only)
 #   Secrets:
 #     GH_PAGES_DEPLOY_TOKEN — PAT with contents:write on
 #         Mohamedtarek100/al-helm-app. Never printed or hardcoded.
@@ -55,9 +55,12 @@ jobs:
         # Fail fast — never publish a bundle built without the public Supabase
         # configuration. Vars must be set in the source repo (Settings →
         # Secrets and variables → Actions → Variables tab).
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
         run: |
           if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_ANON_KEY" ]; then
-            echo "::error::Missing SUPABASE_URL / SUPABASE_ANON_KEY repo variables. Set them before deploying."
+            echo "::error::Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY repo variables. Set them before deploying."
             exit 1
           fi
           echo "Public Supabase configuration present (values not printed)."
@@ -68,12 +71,14 @@ jobs:
           # runs in the source repository.
           VITE_BASE_PATH: /al-helm-app/
           # Public publishable configuration only — never the service-role key.
-          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
         run: npm run build
 
       - name: Verify deploy token availability
         # Fail safely with a clear message instead of a cryptic git error.
+        env:
+          GH_PAGES_DEPLOY_TOKEN: ${{ secrets.GH_PAGES_DEPLOY_TOKEN }}
         run: |
           if [ -z "$GH_PAGES_DEPLOY_TOKEN" ]; then
             echo "::error::GH_PAGES_DEPLOY_TOKEN secret is not configured. Add a PAT with contents:write on Mohamedtarek100/al-helm-app, then re-run."
@@ -83,6 +88,8 @@ jobs:
       - name: Deploy dist to al-helm-app
         # Pushes only the generated dist/ contents to the distribution
         # repository's main branch. Token comes from GH_PAGES_DEPLOY_TOKEN.
+        env:
+          GH_PAGES_DEPLOY_TOKEN: ${{ secrets.GH_PAGES_DEPLOY_TOKEN }}
         run: |
           git config --global user.name "4uLife deploy bot"
           git config --global user.email "actions@users.noreply.github.com"
