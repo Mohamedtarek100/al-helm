@@ -268,7 +268,7 @@ export async function updateSettings(patch: Partial<Settings>): Promise<void> {
   const next = { ...state.settings, ...patch }
   await commitAndPersist({ ...state, settings:next })
   applyTheme(next.theme)
-  if (patch.reminders) void syncReminders(next.reminders)
+  if (patch.reminders) void syncReminders(next.reminders).then((r) => { if (r.error) console.warn('Reminder scheduling issue:', r.error) })
 }
 
 /* ------------------------------------------------------------------ */

@@ -37,6 +37,9 @@ export function Modal({
   // (re-running it would restore/steal focus and break typing mid-word).
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
+  // Suppresses the one-time focus restore when the panel unmounts mid-typing
+  // (e.g. task form remount). Re-typing users keep their caret.
+  const skipRestoreRef = useRef(false)
 
   // Escape closes; focus is trapped inside while open.
   useEffect(() => {
@@ -82,7 +85,8 @@ export function Modal({
       document.removeEventListener('keydown', onKeyDown)
       document.body.style.overflow = previousOverflow
       window.clearTimeout(timer)
-      lastFocused.current?.focus?.()
+      if (!skipRestoreRef.current) lastFocused.current?.focus?.()
+      skipRestoreRef.current = false
     }
   }, [open])
 

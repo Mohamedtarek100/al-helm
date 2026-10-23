@@ -68,17 +68,30 @@ function nextOccurrence(time: string, from = new Date()): Date | null {
   return candidate
 }
 
-function ensureChannel(): void {
+function ensureChannel(): Promise<void> {
   const channel: Channel = {
     id: REMINDER_CHANNEL_ID,
     name: REMINDER_CHANNEL_NAME,
     importance: 5,
     visibility: 1,
     vibration: true,
+    sound: 'default',
   }
-  void LocalNotifications.createChannel(channel).catch(() => {
-    /* channel may already exist */
-  })
+  return LocalNotifications.createChannel(channel).then(
+    () => undefined,
+    () => undefined,
+  )
+}
+
+export interface ReminderSyncResult {
+  /** Number of native schedules now active. */
+  scheduled: number
+  /** Whether notification permission is granted on this device. */
+  permissionGranted: boolean
+  /** True when running in a web browser (no native scheduling available). */
+  webUnsupported: boolean
+  /** Human-readable error when scheduling failed despite permission. */
+  error: string | null
 }
 
 export async function requestReminderPermission(): Promise<boolean> {
@@ -92,24 +105,33 @@ export async function requestReminderPermission(): Promise<boolean> {
 /**
  * Sync native schedules to the given preference list. Cancels stale
  * schedules (removed/disabled reminders) and schedules the next occurrence
- * for each enabled reminder. Returns the number of native schedules active.
+ * for each enabled reminder. Never swallows scheduling failures — the
+ * caller reports them to the user so the UI never claims success falsely.
  */
 export async function syncReminders(
   reminders: ReminderPreference[],
-): Promise<number> {
-  if (!isNative()) return 0
+): Promise<ReminderSyncResult> {
+  if (!isNative()) {
+    return { scheduled: 0, permissionGranted: false, webUnsupported: true, error: null }
+  }
   const granted = await requestReminderPermission()
-  if (!granted) return 0
-  ensureChannel()
+  if (!granted) {
+    return { scheduled: 0, permissionGranted: false, webUnsupported: false, error: 'permission_denied' }
+  }
+  await ensureChannel()
 
   const stored = readStored()
   const next: StoredSchedule = {}
   let scheduled = 0
+  let failure: string | null = null
 
   for (const reminder of reminders) {
     if (!reminder.enabled) continue
     const when = nextOccurrence(reminder.time)
-    if (!when) continue
+    if (!when) {
+      failure = failure ?? `invalid time: ${reminder.time}`
+      continue
+    }
 
     // Skip if we already scheduled this exact occurrence for this reminder.
     if (stored[reminder.id] === when.toISOString()) {
@@ -143,8 +165,8 @@ export async function syncReminders(
       })
       next[reminder.id] = when.toISOString()
       scheduled += 1
-    } catch {
-      /* scheduling failed on this device; keep going with the rest */
+    } catch (e) {
+      failure = failure ?? (e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -163,8 +185,37 @@ export async function syncReminders(
   }
 
   writeStored(next)
-  return scheduled
+  return { scheduled, permissionGranted: true, webUnsupported: false, error: failure }
 }
+
+/**
+ * Immediate test notification so the user can verify delivery, sound and
+ * vibration without waiting for the next scheduled reminder. Reports the
+ * real outcome instead of assuming success.
+ */
+export async function sendTestNotification(): Promise<{ ok: boolean; error: string | null }> {
+  if (!isNative()) return { ok: false, error: 'web_unsupported' }
+  const granted = await requestReminderPermission()
+  if (!granted) return { ok: false, error: 'permission_denied' }
+  await ensureChannel()
+  try {
+    await LocalNotifications.schedule({
+      notifications: [
+        {
+          id: TEST_NOTIFICATION_ID,
+          title: '4uLife',
+          body: 'Test notification — reminders are working.',
+          channelId: REMINDER_CHANNEL_ID,
+        },
+      ],
+    })
+    return { ok: true, error: null }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+const TEST_NOTIFICATION_ID = 1999999999
 
 /** Cancel every Al-Helm native reminder (used on clear/reset). */
 export async function cancelAllReminders(): Promise<void> {

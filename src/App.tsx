@@ -13,6 +13,7 @@ import { ReviewPage } from './pages/ReviewPage'
 import { ExamPage } from './pages/ExamPage'
 import { ToastProvider } from './components/Toast'
 import { I18nProvider } from './i18n/I18nProvider'
+import { AdminPage } from './pages/AdminPage'
 
 function App() {
   return (
@@ -23,7 +24,6 @@ function App() {
           <Route index element={<HomePage />} />
           <Route path="schedule" element={<SchedulePage />} />
           <Route path="calendar" element={<CalendarPage />} />
-          <Route path="calendar" element={<CalendarPage />} />
           <Route path="tasks" element={<TasksPage />} />
           <Route path="focus" element={<FocusPage />} />
           <Route path="studio" element={<StudioPage />} />
@@ -32,6 +32,7 @@ function App() {
           <Route path="exams" element={<ExamPage />} />
           <Route path="notifications" element={<NotificationsPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          <Route path="admin" element={<AdminPage />} />
           <Route path="*" element={<HomePage />} />
         </Route>
       </Routes>

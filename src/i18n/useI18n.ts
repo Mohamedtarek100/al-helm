@@ -4,7 +4,7 @@ import type { Language, TranslationKey } from './translations'
 export interface I18nValue {
   language: Language
   dir: 'ltr' | 'rtl'
-  t: (key: TranslationKey) => string
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string
   locale: 'en-US' | 'ar-EG'
   formatDate: (date: Date | string, options?: Intl.DateTimeFormatOptions) => string
   formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string
