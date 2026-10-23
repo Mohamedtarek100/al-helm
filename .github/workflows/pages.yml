@@ -51,6 +51,17 @@ jobs:
           npm run test
           npm run lint
 
+      - name: Verify required repository variables
+        # Fail fast — never publish a bundle built without the public Supabase
+        # configuration. Vars must be set in the source repo (Settings →
+        # Secrets and variables → Actions → Variables tab).
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_ANON_KEY" ]; then
+            echo "::error::Missing SUPABASE_URL / SUPABASE_ANON_KEY repo variables. Set them before deploying."
+            exit 1
+          fi
+          echo "Public Supabase configuration present (values not printed)."
+
       - name: Build
         env:
           # The public URL lives under /al-helm-app/ even though this workflow
@@ -61,6 +72,14 @@ jobs:
           VITE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
         run: npm run build
 
+      - name: Verify deploy token availability
+        # Fail safely with a clear message instead of a cryptic git error.
+        run: |
+          if [ -z "$GH_PAGES_DEPLOY_TOKEN" ]; then
+            echo "::error::GH_PAGES_DEPLOY_TOKEN secret is not configured. Add a PAT with contents:write on Mohamedtarek100/al-helm-app, then re-run."
+            exit 1
+          fi
+
       - name: Deploy dist to al-helm-app
         # Pushes only the generated dist/ contents to the distribution
         # repository's main branch. Token comes from GH_PAGES_DEPLOY_TOKEN.
@@ -70,7 +89,8 @@ jobs:
           git clone --depth 1 --branch main \
             "https://x-access-token:${GH_PAGES_DEPLOY_TOKEN}@github.com/Mohamedtarek100/al-helm-app.git" publish
           cd publish
-          git rm -rf . 2>/dev/null || true
+          # Replace published files but keep repository metadata (README, LICENSE).
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name 'README.md' ! -name 'LICENSE' -exec rm -rf {} +
           cp -r ../dist/* .
           git add -A
           if git diff --cached --quiet; then

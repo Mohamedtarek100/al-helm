@@ -13,12 +13,29 @@
 //   read       — (authenticated non-admin) mark own announcement read
 import { createClient, type User } from 'https://esm.sh/@supabase/supabase-js@2'
 
-/** Shape of an auth directory user, subset used by this function. */
-interface DirectoryUser {
+/** Minimal structural type for a delivery row returned by the feed query. */
+interface DeliveryRow {
+  announcement_id: string
+  delivered_at: string
+  read_at: string | null
+}
+
+/** Minimal structural type for announcement content rows. */
+interface AnnouncementRow {
+  id: string
+  title: string
+  body: string
+  created_at: string
+}
+
+/** Row shape returned to the admin dashboard for one registered user. */
+interface AdminRow {
   id: string
   email: string | null
-  created_at: string
-  user_metadata?: { display_name?: string; reminders_opt_in?: boolean }
+  displayName: string
+  createdAt: string
+  lastSeenAt: string | null
+  pushOptIn: boolean
 }
 
 const json = (body: unknown, status = 200) =>
@@ -76,26 +93,42 @@ Deno.serve(async (req) => {
   }
 
   if (action === 'feed') {
-    // Any signed-in user: their own announcements via announcement_delivery.
-    // RLS allows reading only own delivery rows, so the user-scoped client is
-    // already safe; this returns joined content server-side.
-    const { data, error } = await userClient(authHeader)
+    // Recipient feed: two-step server-side join.
+    //
+    // Step 1 (user client, RLS-scoped): fetch the caller's own delivery rows
+    // only — the RLS policy `auth.uid() = user_id` makes client-supplied IDs
+    // irrelevant here.
+    //
+    // Step 2 (service role): fetch announcement content for exactly those
+    // delivery ids. This avoids relying on a cross-table RLS join, since
+    // `announcements` intentionally has no client-facing SELECT policy (a
+    // grant alone does not bypass RLS).
+    const { data: deliveries, error: delErr } = await userClient(authHeader)
       .from('announcement_delivery')
-      .select('delivered_at,read_at,announcement_id,announcements(title,body,created_at)')
+      .select('announcement_id,delivered_at,read_at')
       .eq('user_id', user.id)
       .order('delivered_at', { ascending: false })
       .limit(50)
-    if (error) return json({ error: error.message }, 500)
-    const feed = (data ?? []).map((row) => {
-      const ann = Array.isArray(row.announcements) ? row.announcements[0] : row.announcements
-      return {
-        id: row.announcement_id,
-        title: ann?.title ?? '',
-        body: ann?.body ?? '',
-        createdAt: ann?.created_at ?? row.delivered_at,
-        deliveredAt: row.delivered_at,
-        readAt: row.read_at,
-      }
+    if (delErr) return json({ error: delErr.message }, 500)
+    const ids = (deliveries ?? []).map((d) => d.announcement_id)
+    if (ids.length === 0) return json({ feed: [] })
+    const { data: anns, error: annErr } = await adminClient()
+      .from('announcements')
+      .select('id,title,body,created_at')
+      .in('id', ids)
+    if (annErr) return json({ error: annErr.message }, 500)
+    const byId = new Map((anns ?? []).map((a) => [a.id, a]))
+    const feed = (deliveries ?? []).flatMap((d: DeliveryRow) => {
+      const ann: AnnouncementRow | undefined = byId.get(d.announcement_id)
+      if (!ann) return [] // announcement deleted — skip instead of showing an empty row
+      return [{
+        id: ann.id,
+        title: ann.title,
+        body: ann.body,
+        createdAt: ann.created_at,
+        deliveredAt: d.delivered_at,
+        readAt: d.read_at,
+      }]
     })
     return json({ feed })
   }
@@ -188,7 +221,7 @@ Deno.serve(async (req) => {
         if (matches.length < perPage) {
           matches.push({
             id: u.id,
-            email: u.email,
+            email: u.email ?? null,
             displayName: u.user_metadata?.display_name ?? '',
             createdAt: u.created_at,
             lastSeenAt: null,

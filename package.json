@@ -10,8 +10,9 @@
     "test:i18n": "node scripts/check-translations.mjs",
     "test": "vitest run",
     "check:types": "tsc -p tsconfig.app.json --noEmit",
+    "check:edge": "tsc -p supabase/tsconfig.json --noEmit",
     "check:migrations": "node scripts/check-migrations.mjs",
-    "check": "npm run check:types && npm run test:i18n && npm run test && npm run lint && npm run build",
+    "check": "npm run check:types && npm run check:edge && npm run test:i18n && npm run test && npm run lint && npm run build",
     "preview": "vite preview",
     "android:sync": "npm run build && cap sync android",
     "android:debug": "npm run android:sync && android\\gradlew.bat -p android assembleDebug"
@@ -31,6 +32,7 @@
     "@capacitor/cli": "^7.6.9",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
+    "@types/deno": "^2.7.0",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
