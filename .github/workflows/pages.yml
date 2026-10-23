@@ -47,9 +47,12 @@ jobs:
       - name: Quality gates
         run: |
           npm run check:types
+          npm run check:edge
           npm run test:i18n
           npm run test
           npm run lint
+          npm run check:migrations
+          node scripts/check-workflows.mjs
 
       - name: Verify required repository variables
         # Fail fast — never publish a bundle built without the public Supabase
@@ -106,5 +109,3 @@ jobs:
             git commit -m "Deploy build from al-helm@${GITHUB_SHA}"
             git push origin main
           fi
-        env:
-          GH_PAGES_DEPLOY_TOKEN: ${{ secrets.GH_PAGES_DEPLOY_TOKEN }}

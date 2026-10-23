@@ -1,3 +1,12 @@
+-- 4uLife — consolidated schema.
+-- GENERATED from supabase/migrations/ (ordered). Do not edit by hand —
+-- run `npm run gen:migrations` after adding or changing migration files.
+-- Applied incrementally via `npx supabase db push --linked`.
+
+-- ============================================================
+-- Migration: 202610190001_initial_schema.sql
+-- ============================================================
+
 -- Al-Helm initial schema. Additive migration; no destructive operations.
 create extension if not exists pgcrypto;
 
@@ -160,15 +169,91 @@ create index if not exists focus_sessions_user_date_idx on public.focus_sessions
 create index if not exists reminder_due_idx on public.reminder_schedule(status, scheduled_at) where status = 'pending';
 
 -- All user-owned data is protected by RLS. Authenticated browser clients receive CRUD only.
-do $$ declare t text; begin
-  foreach t in array['subjects','study_sessions','tasks','focus_sessions','recurring_schedules','artistic_goals','journal_entries','artwork_metadata','drawing_challenges','future_letters','user_preferences','exam_dates','notification_preferences','push_subscriptions','reminder_schedule','push_deliveries'] loop
-    execute format('alter table public.%I enable row level security', t);
-    execute format('revoke all on public.%I from anon', t);
-    execute format('drop policy if exists owner_all on public.%I', t);
-    execute format('create policy owner_all on public.%I for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid())', t);
-    execute format('grant select, insert, update, delete on public.%I to authenticated', t);
-  end loop;
-end $$;
+-- Written as explicit statements (a dynamic do-block failed under the migration runner).
+alter table public.subjects enable row level security;
+alter table public.study_sessions enable row level security;
+alter table public.tasks enable row level security;
+alter table public.focus_sessions enable row level security;
+alter table public.recurring_schedules enable row level security;
+alter table public.artistic_goals enable row level security;
+alter table public.journal_entries enable row level security;
+alter table public.artwork_metadata enable row level security;
+alter table public.drawing_challenges enable row level security;
+alter table public.future_letters enable row level security;
+alter table public.user_preferences enable row level security;
+alter table public.exam_dates enable row level security;
+alter table public.notification_preferences enable row level security;
+alter table public.push_subscriptions enable row level security;
+alter table public.reminder_schedule enable row level security;
+alter table public.push_deliveries enable row level security;
+
+revoke all on public.subjects from anon;
+revoke all on public.study_sessions from anon;
+revoke all on public.tasks from anon;
+revoke all on public.focus_sessions from anon;
+revoke all on public.recurring_schedules from anon;
+revoke all on public.artistic_goals from anon;
+revoke all on public.journal_entries from anon;
+revoke all on public.artwork_metadata from anon;
+revoke all on public.drawing_challenges from anon;
+revoke all on public.future_letters from anon;
+revoke all on public.user_preferences from anon;
+revoke all on public.exam_dates from anon;
+revoke all on public.notification_preferences from anon;
+revoke all on public.push_subscriptions from anon;
+revoke all on public.reminder_schedule from anon;
+revoke all on public.push_deliveries from anon;
+
+drop policy if exists owner_all on public.subjects;
+drop policy if exists owner_all on public.study_sessions;
+drop policy if exists owner_all on public.tasks;
+drop policy if exists owner_all on public.focus_sessions;
+drop policy if exists owner_all on public.recurring_schedules;
+drop policy if exists owner_all on public.artistic_goals;
+drop policy if exists owner_all on public.journal_entries;
+drop policy if exists owner_all on public.artwork_metadata;
+drop policy if exists owner_all on public.drawing_challenges;
+drop policy if exists owner_all on public.future_letters;
+drop policy if exists owner_all on public.user_preferences;
+drop policy if exists owner_all on public.exam_dates;
+drop policy if exists owner_all on public.notification_preferences;
+drop policy if exists owner_all on public.push_subscriptions;
+drop policy if exists owner_all on public.reminder_schedule;
+drop policy if exists owner_all on public.push_deliveries;
+
+create policy owner_all on public.subjects for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.study_sessions for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.tasks for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.focus_sessions for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.recurring_schedules for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.artistic_goals for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.journal_entries for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.artwork_metadata for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.drawing_challenges for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.future_letters for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.user_preferences for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.exam_dates for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.notification_preferences for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.push_subscriptions for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.reminder_schedule for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy owner_all on public.push_deliveries for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+grant select, insert, update, delete on public.subjects to authenticated;
+grant select, insert, update, delete on public.study_sessions to authenticated;
+grant select, insert, update, delete on public.tasks to authenticated;
+grant select, insert, update, delete on public.focus_sessions to authenticated;
+grant select, insert, update, delete on public.recurring_schedules to authenticated;
+grant select, insert, update, delete on public.artistic_goals to authenticated;
+grant select, insert, update, delete on public.journal_entries to authenticated;
+grant select, insert, update, delete on public.artwork_metadata to authenticated;
+grant select, insert, update, delete on public.drawing_challenges to authenticated;
+grant select, insert, update, delete on public.future_letters to authenticated;
+grant select, insert, update, delete on public.user_preferences to authenticated;
+grant select, insert, update, delete on public.exam_dates to authenticated;
+grant select, insert, update, delete on public.notification_preferences to authenticated;
+grant select, insert, update, delete on public.push_subscriptions to authenticated;
+grant select, insert, update, delete on public.reminder_schedule to authenticated;
+grant select, insert, update, delete on public.push_deliveries to authenticated;
 alter table public.profiles enable row level security;
 revoke all on public.profiles from anon;
 drop policy if exists owner_all on public.profiles;
@@ -189,7 +274,8 @@ grant usage on schema public to authenticated;
 insert into storage.buckets(id,name,public,file_size_limit,allowed_mime_types)
 values('artworks','artworks',false,6291456,array['image/png','image/jpeg','image/webp','image/gif'])
 on conflict(id) do update set public=false,file_size_limit=6291456,allowed_mime_types=array['image/png','image/jpeg','image/webp','image/gif'];
-alter table storage.objects enable row level security;
+-- storage.objects already has RLS enabled; altering it requires ownership
+-- which the SQL role does not have on hosted projects.
 drop policy if exists alhelm_artwork_owner_insert on storage.objects;
 drop policy if exists alhelm_artwork_owner_select on storage.objects;
 drop policy if exists alhelm_artwork_owner_update on storage.objects;
@@ -209,6 +295,10 @@ $$;
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users for each row execute procedure public.handle_new_user();
 
+-- ============================================================
+-- Migration: 202610190002_hardened_rls_and_private_artwork.sql
+-- ============================================================
+
 -- Harden ownership, cross-user relationships, profile policies and private artwork access.
 -- NOTE: equivalent composite owner-scoped subject FKs are already declared in
 -- 202610190001 on focus_sessions (named), recurring_schedules and exam_dates
@@ -216,23 +306,193 @@ create trigger on_auth_user_created after insert on auth.users for each row exec
 -- no constraint changes are made in this migration.
 
 -- Replace permissive generic policies with operation-specific owner policies; profile key is id, not user_id.
-do $$ declare t text; begin
-  foreach t in array['subjects','study_sessions','tasks','focus_sessions','recurring_schedules','artistic_goals','journal_entries','artwork_metadata','drawing_challenges','future_letters','user_preferences','exam_dates','notification_preferences','push_subscriptions','reminder_schedule','push_deliveries'] loop
-    execute format('alter table public.%I enable row level security',t);
-    execute format('revoke all on public.%I from anon',t);
-    execute format('drop policy if exists owner_all on public.%I',t);
-    execute format('revoke all on public.%I from authenticated',t);
-    execute format('drop policy if exists owner_select on public.%I',t);
-    execute format('drop policy if exists owner_insert on public.%I',t);
-    execute format('drop policy if exists owner_update on public.%I',t);
-    execute format('drop policy if exists owner_delete on public.%I',t);
-    execute format('create policy owner_select on public.%I for select to authenticated using(user_id=auth.uid())',t);
-    execute format('create policy owner_insert on public.%I for insert to authenticated with check(user_id=auth.uid())',t);
-    execute format('create policy owner_update on public.%I for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid())',t);
-    execute format('create policy owner_delete on public.%I for delete to authenticated using(user_id=auth.uid())',t);
-    execute format('grant select,insert,update,delete on public.%I to authenticated',t);
-  end loop;
-end $$;
+-- Written as explicit statements (a dynamic do-block failed under the migration runner).
+revoke all on public.subjects from authenticated;
+revoke all on public.study_sessions from authenticated;
+revoke all on public.tasks from authenticated;
+revoke all on public.focus_sessions from authenticated;
+revoke all on public.recurring_schedules from authenticated;
+revoke all on public.artistic_goals from authenticated;
+revoke all on public.journal_entries from authenticated;
+revoke all on public.artwork_metadata from authenticated;
+revoke all on public.drawing_challenges from authenticated;
+revoke all on public.future_letters from authenticated;
+revoke all on public.user_preferences from authenticated;
+revoke all on public.exam_dates from authenticated;
+revoke all on public.notification_preferences from authenticated;
+revoke all on public.push_subscriptions from authenticated;
+revoke all on public.reminder_schedule from authenticated;
+revoke all on public.push_deliveries from authenticated;
+
+drop policy if exists owner_all on public.subjects;
+drop policy if exists owner_all on public.study_sessions;
+drop policy if exists owner_all on public.tasks;
+drop policy if exists owner_all on public.focus_sessions;
+drop policy if exists owner_all on public.recurring_schedules;
+drop policy if exists owner_all on public.artistic_goals;
+drop policy if exists owner_all on public.journal_entries;
+drop policy if exists owner_all on public.artwork_metadata;
+drop policy if exists owner_all on public.drawing_challenges;
+drop policy if exists owner_all on public.future_letters;
+drop policy if exists owner_all on public.user_preferences;
+drop policy if exists owner_all on public.exam_dates;
+drop policy if exists owner_all on public.notification_preferences;
+drop policy if exists owner_all on public.push_subscriptions;
+drop policy if exists owner_all on public.reminder_schedule;
+drop policy if exists owner_all on public.push_deliveries;
+
+drop policy if exists owner_select on public.subjects;
+drop policy if exists owner_select on public.study_sessions;
+drop policy if exists owner_select on public.tasks;
+drop policy if exists owner_select on public.focus_sessions;
+drop policy if exists owner_select on public.recurring_schedules;
+drop policy if exists owner_select on public.artistic_goals;
+drop policy if exists owner_select on public.journal_entries;
+drop policy if exists owner_select on public.artwork_metadata;
+drop policy if exists owner_select on public.drawing_challenges;
+drop policy if exists owner_select on public.future_letters;
+drop policy if exists owner_select on public.user_preferences;
+drop policy if exists owner_select on public.exam_dates;
+drop policy if exists owner_select on public.notification_preferences;
+drop policy if exists owner_select on public.push_subscriptions;
+drop policy if exists owner_select on public.reminder_schedule;
+drop policy if exists owner_select on public.push_deliveries;
+
+drop policy if exists owner_insert on public.subjects;
+drop policy if exists owner_insert on public.study_sessions;
+drop policy if exists owner_insert on public.tasks;
+drop policy if exists owner_insert on public.focus_sessions;
+drop policy if exists owner_insert on public.recurring_schedules;
+drop policy if exists owner_insert on public.artistic_goals;
+drop policy if exists owner_insert on public.journal_entries;
+drop policy if exists owner_insert on public.artwork_metadata;
+drop policy if exists owner_insert on public.drawing_challenges;
+drop policy if exists owner_insert on public.future_letters;
+drop policy if exists owner_insert on public.user_preferences;
+drop policy if exists owner_insert on public.exam_dates;
+drop policy if exists owner_insert on public.notification_preferences;
+drop policy if exists owner_insert on public.push_subscriptions;
+drop policy if exists owner_insert on public.reminder_schedule;
+drop policy if exists owner_insert on public.push_deliveries;
+
+drop policy if exists owner_update on public.subjects;
+drop policy if exists owner_update on public.study_sessions;
+drop policy if exists owner_update on public.tasks;
+drop policy if exists owner_update on public.focus_sessions;
+drop policy if exists owner_update on public.recurring_schedules;
+drop policy if exists owner_update on public.artistic_goals;
+drop policy if exists owner_update on public.journal_entries;
+drop policy if exists owner_update on public.artwork_metadata;
+drop policy if exists owner_update on public.drawing_challenges;
+drop policy if exists owner_update on public.future_letters;
+drop policy if exists owner_update on public.user_preferences;
+drop policy if exists owner_update on public.exam_dates;
+drop policy if exists owner_update on public.notification_preferences;
+drop policy if exists owner_update on public.push_subscriptions;
+drop policy if exists owner_update on public.reminder_schedule;
+drop policy if exists owner_update on public.push_deliveries;
+
+drop policy if exists owner_delete on public.subjects;
+drop policy if exists owner_delete on public.study_sessions;
+drop policy if exists owner_delete on public.tasks;
+drop policy if exists owner_delete on public.focus_sessions;
+drop policy if exists owner_delete on public.recurring_schedules;
+drop policy if exists owner_delete on public.artistic_goals;
+drop policy if exists owner_delete on public.journal_entries;
+drop policy if exists owner_delete on public.artwork_metadata;
+drop policy if exists owner_delete on public.drawing_challenges;
+drop policy if exists owner_delete on public.future_letters;
+drop policy if exists owner_delete on public.user_preferences;
+drop policy if exists owner_delete on public.exam_dates;
+drop policy if exists owner_delete on public.notification_preferences;
+drop policy if exists owner_delete on public.push_subscriptions;
+drop policy if exists owner_delete on public.reminder_schedule;
+drop policy if exists owner_delete on public.push_deliveries;
+
+create policy owner_select on public.subjects for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.study_sessions for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.tasks for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.focus_sessions for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.recurring_schedules for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.artistic_goals for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.journal_entries for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.artwork_metadata for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.drawing_challenges for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.future_letters for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.user_preferences for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.exam_dates for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.notification_preferences for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.push_subscriptions for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.reminder_schedule for select to authenticated using(user_id=auth.uid());
+create policy owner_select on public.push_deliveries for select to authenticated using(user_id=auth.uid());
+
+create policy owner_insert on public.subjects for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.study_sessions for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.tasks for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.focus_sessions for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.recurring_schedules for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.artistic_goals for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.journal_entries for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.artwork_metadata for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.drawing_challenges for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.future_letters for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.user_preferences for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.exam_dates for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.notification_preferences for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.push_subscriptions for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.reminder_schedule for insert to authenticated with check(user_id=auth.uid());
+create policy owner_insert on public.push_deliveries for insert to authenticated with check(user_id=auth.uid());
+
+create policy owner_update on public.subjects for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.study_sessions for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.tasks for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.focus_sessions for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.recurring_schedules for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.artistic_goals for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.journal_entries for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.artwork_metadata for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.drawing_challenges for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.future_letters for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.user_preferences for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.exam_dates for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.notification_preferences for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.push_subscriptions for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.reminder_schedule for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+create policy owner_update on public.push_deliveries for update to authenticated using(user_id=auth.uid()) with check(user_id=auth.uid());
+
+create policy owner_delete on public.subjects for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.study_sessions for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.tasks for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.focus_sessions for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.recurring_schedules for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.artistic_goals for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.journal_entries for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.artwork_metadata for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.drawing_challenges for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.future_letters for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.user_preferences for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.exam_dates for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.notification_preferences for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.push_subscriptions for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.reminder_schedule for delete to authenticated using(user_id=auth.uid());
+create policy owner_delete on public.push_deliveries for delete to authenticated using(user_id=auth.uid());
+
+grant select,insert,update,delete on public.subjects to authenticated;
+grant select,insert,update,delete on public.study_sessions to authenticated;
+grant select,insert,update,delete on public.tasks to authenticated;
+grant select,insert,update,delete on public.focus_sessions to authenticated;
+grant select,insert,update,delete on public.recurring_schedules to authenticated;
+grant select,insert,update,delete on public.artistic_goals to authenticated;
+grant select,insert,update,delete on public.journal_entries to authenticated;
+grant select,insert,update,delete on public.artwork_metadata to authenticated;
+grant select,insert,update,delete on public.drawing_challenges to authenticated;
+grant select,insert,update,delete on public.future_letters to authenticated;
+grant select,insert,update,delete on public.user_preferences to authenticated;
+grant select,insert,update,delete on public.exam_dates to authenticated;
+grant select,insert,update,delete on public.notification_preferences to authenticated;
+grant select,insert,update,delete on public.push_subscriptions to authenticated;
+grant select,insert,update,delete on public.reminder_schedule to authenticated;
+grant select,insert,update,delete on public.push_deliveries to authenticated;
 drop policy if exists owner_all on public.profiles;
 drop policy if exists profile_select_own on public.profiles;
 drop policy if exists profile_insert_own on public.profiles;
@@ -249,7 +509,8 @@ revoke delete on public.profiles from authenticated;
 insert into storage.buckets(id,name,public,file_size_limit,allowed_mime_types)
 values('artworks','artworks',false,6291456,array['image/png','image/jpeg','image/webp','image/gif'])
 on conflict(id) do update set public=false,file_size_limit=6291456,allowed_mime_types=array['image/png','image/jpeg','image/webp','image/gif'];
-alter table storage.objects enable row level security;
+-- storage.objects already has RLS enabled; altering it requires table ownership
+-- which the SQL role does not have on hosted projects.
 revoke all on storage.objects from anon;
 revoke all on storage.objects from authenticated;
 drop policy if exists alhelm_artwork_owner_insert on storage.objects;
@@ -262,6 +523,10 @@ create policy alhelm_artwork_owner_select on storage.objects for select to authe
 create policy alhelm_artwork_owner_update on storage.objects for update to authenticated using(bucket_id='artworks' and (storage.foldername(name))[1]=auth.uid()::text) with check(bucket_id='artworks' and (storage.foldername(name))[1]=auth.uid()::text);
 create policy alhelm_artwork_owner_delete on storage.objects for delete to authenticated using(bucket_id='artworks' and (storage.foldername(name))[1]=auth.uid()::text);
 grant select,insert,update,delete on storage.objects to authenticated;
+
+-- ============================================================
+-- Migration: 202610190003_admin_announcements.sql
+-- ============================================================
 
 -- Additive migration: announcements, admin allowlist, user activity tracking.
 -- RLS: ordinary users may only read announcements intended for them; only the
@@ -331,6 +596,9 @@ grant insert, select, update on public.user_activity to authenticated;
 -- Ordered grants keep the RLS story auditable: no anon access anywhere here.
 revoke all on public.admin_allowlist from anon, authenticated;
 
+-- ============================================================
+-- Migration: 202610190004_announcement_author_nullable.sql
+-- ============================================================
 
 -- Additive correction: resolve the created_by NOT NULL / ON DELETE SET NULL
 -- contradiction in public.announcements.

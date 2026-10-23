@@ -32,6 +32,9 @@ jobs:
       - name: Migration consistency
         run: npm run check:migrations
 
+      - name: Workflow validation
+        run: node scripts/check-workflows.mjs
+
       - name: Unit tests
         run: npm run test
 
