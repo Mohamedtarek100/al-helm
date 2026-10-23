@@ -5,8 +5,10 @@
  * It is the only module that talks to the persistence adapter; components read
  * state and dispatch actions through the hooks at the bottom of this file.
  *
- * Phase 2: replace `persist()` with debounced repository writes against
- * Supabase. The action signatures below stay identical, so no UI changes.
+ * Persistence is layered: a local adapter (localStorage/IndexedDB) always
+ * writes through, and an optional cloud adapter (Supabase) is coordinated by
+ * PersistenceCoordinator. The action signatures below stay stable, so no UI
+ * changes are needed when the persistence backend changes.
  */
 
 import { useCallback, useSyncExternalStore } from 'react'

@@ -9,6 +9,9 @@
     "lint": "oxlint src",
     "test:i18n": "node scripts/check-translations.mjs",
     "test": "vitest run",
+    "check:types": "tsc -p tsconfig.app.json --noEmit",
+    "check:migrations": "node scripts/check-migrations.mjs",
+    "check": "npm run check:types && npm run test:i18n && npm run test && npm run lint && npm run build",
     "preview": "vite preview",
     "android:sync": "npm run build && cap sync android",
     "android:debug": "npm run android:sync && android\\gradlew.bat -p android assembleDebug"

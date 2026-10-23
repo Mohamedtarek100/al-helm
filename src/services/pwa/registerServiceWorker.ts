@@ -1,9 +1,10 @@
 /**
- * Service-worker registration for Phase 1.
+ * Service-worker registration.
  *
  * Deliberately minimal: the app registers an existing `sw.js` when present and
- * only in production builds. Phase 2 owns real push subscriptions and cache
- * strategies; nothing in the UI depends on this file succeeding.
+ * only in production builds. Real push subscriptions and cache strategies
+ * live behind feature flags when introduced; nothing in the UI depends on
+ * this file succeeding.
  */
 
 export interface ServiceWorkerStatus {

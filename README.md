@@ -1,26 +1,80 @@
-﻿# Al-Helm — الحُلم
+# 4uLife (formerly Al-Helm) — Study & Art Companion
 
-A study planner PWA and Android app. **Official site: https://mohamedtar
-ek100.github.io/al-helm-app/**
+React + TypeScript + Vite + Capacitor + Supabase study planner with an art
+studio. Web build deploys to GitHub Pages; Android uses Capacitor with an OTA
+updater.
 
-## Android app (debug build)
+**Public site:** https://mohamedtarek100.github.io/al-helm-app/
 
-- Download: [releases/Al-Helm-debug.apk](releases/Al-Helm-debug.apk)
-- Package ID: `com.alhelm.studyplanner`
-- Version: 1.0 (versionCode 1)
-- Build type: **debug** — signed with the debug key; for personal installati
-on/testing only, not a production release.
-- Size: 4,478,764 bytes
-- SHA-256: `46C5853FE0782C30F370D3E2CF8308068DB7240FA2EB54F6048A3BC94861E6C3`
+## Quick start
 
-### Install
+```bash
+npm install
+cp .env.example .env.local   # fill VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY
+npm run dev
+```
 
-1. Enable "Install unknown apps" for your browser/file manager on Android.
-2. Download the APK and open it.
-3. Installation on physical devices has not been tested from this workspace.
+## Scripts
 
-## Notes
+| Command | What it does |
+|---|---|
+| `npm run dev` | Vite dev server |
+| `npm run build` | Type-check + production build |
+| `npm run preview` | Serve the production build locally |
+| `npm run test` | Vitest unit tests |
+| `npm run test:i18n` | English/Arabic translation key parity check |
+| `npm run check:types` | `tsc --noEmit` only |
+| `npm run check:migrations` | Migration ordering + ALL_MIGRATIONS.sql consistency |
+| `npm run check` | types + i18n + tests + lint + build in one pass |
+| `npm run lint` | oxlint over `src/` |
+| `npm run android:sync` | Build web assets and sync into the Capacitor project |
+| `npm run android:debug` | Assemble a debug APK (not a production release) |
 
-- This repository contains only generated website/release artifacts. The so
-urce code is private.
-- Cloud sync (Supabase) is not yet configured.
+## Quality gates (CI runs these)
+
+TypeScript, i18n parity, migration consistency, unit tests, oxlint, and the
+production build must all pass. See `.github/workflows/ci.yml`.
+
+## Supabase setup
+
+See `SUPABASE_SETUP.md` for the full walkthrough. Short version:
+
+1. Create a Supabase project (free tier is enough).
+2. Apply the ordered files in `supabase/migrations/` in the SQL editor —
+   `supabase/ALL_MIGRATIONS.sql` is the concatenated equivalent, generated from
+   those files and verified by `npm run check:migrations`.
+3. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in `.env.local`
+   (browser-safe values only; **never** a service-role key).
+
+### Admin dashboard
+
+The owner dashboard lives at `#/admin` and is authorized **server-side only**
+by the `admin` edge function against the `ADMIN_EMAILS` secret:
+
+```bash
+supabase functions deploy admin
+supabase secrets set ADMIN_EMAILS=you@example.com   # comma-separated list
+```
+
+Until that secret is set the function denies every request — there is no
+frontend-only bypass. Ordinary users cannot enumerate accounts or send
+announcements.
+
+### Push / reminders
+
+- Android: local notifications via `@capacitor/local-notifications`; scheduled
+  from Settings, with a Test-notification button. Physical-device verification
+  is still outstanding.
+- Web push: requires VAPID keys stored as server-side secrets plus a trusted
+  scheduler; not yet operational — the UI does not claim otherwise.
+
+## Android release
+
+`ANDROID_RELEASES.md` documents the build and signing notes. Debug APKs are
+not production releases.
+
+## Deployment
+
+The web build is published through the `al-helm-app` distribution repository
+(`.github/workflows/pages.yml`). A workflow here must not assume variables
+configured in the other repository are available.

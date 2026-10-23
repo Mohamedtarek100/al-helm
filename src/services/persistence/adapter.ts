@@ -1,10 +1,10 @@
 /**
- * Persistence abstraction — the seam that Phase 2 replaces with Supabase.
+ * Persistence abstraction.
  *
  * Every component talks to `dataClient` (and, through the store, to these
- * interfaces). No component ever touches localStorage directly. Swapping in a
- * Supabase-backed implementation means writing one new adapter and changing
- * the factory at the bottom of this file.
+ * interfaces). No component ever touches localStorage directly. Swapping the
+ * storage backend means implementing this interface and changing the factory
+ * at the bottom of the file.
  */
 
 import type { AppData, CollectionKey } from '../../types'

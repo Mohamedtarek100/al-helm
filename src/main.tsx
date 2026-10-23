@@ -17,9 +17,13 @@ void initStore().finally(() => {
   )
 })
 
-// Phase 1 ships a minimal, non-push service worker so the app is installable
-// and offline-tolerant. Phase 2 adds real push delivery.
+// Minimal, non-push service worker so the app is installable and
+// offline-tolerant.
 void registerServiceWorker()
+
+// Best-effort activity heartbeat for signed-in users (throttled server-side
+// and locally to at most one call per 15 minutes).
+void import('./services/activity').then((m) => void m.maybeHeartbeat())
 
 
 // OTA update check: manual-mode Capacitor updater. Runs once at launch on

@@ -1,10 +1,10 @@
 /**
  * الحُلم — shared domain contracts.
  *
- * These types are the single source of truth for both the Phase 1 local
- * persistence adapter and the Phase 2 Supabase tables. Keep field names
- * aligned with the eventual database columns (camelCase in TS, snake_case in
- * SQL — the mapping lives in the repositories, never in components).
+ * These types are the single source of truth for both the local persistence
+ * adapter and the Supabase tables. Keep field names aligned with the database
+ * columns (camelCase in TS, snake_case in SQL — the mapping lives in the
+ * repositories, never in components).
  */
 
 /* ------------------------------------------------------------------ */
@@ -58,10 +58,7 @@ export interface Settings {
   soundEnabled: boolean
   customMotivation: string
   reminders: ReminderPreference[]
-  /**
-   * Where these preferences currently live. Phase 2 flips this to 'cloud'
-   * once Supabase is wired up.
-   */
+  /** Whether these preferences currently live locally or in the cloud. */
   storage: 'local' | 'cloud'
 }
 
@@ -203,9 +200,9 @@ export interface Artwork extends Timestamped {
   /** yyyy-mm-dd */
   date: string
   /**
-   * Phase 1 stores an object URL / data URL produced by the upload service.
-   * Phase 2 replaces it with a Supabase Storage public URL — the shape of the
-   * field stays identical so no UI code has to change.
+   * Object URL / data URL produced by the upload service, or a Supabase
+   * Storage public URL — the shape of the field stays identical so no UI
+   * code has to change.
    */
   imageUrl: string
   imagePath: string | null

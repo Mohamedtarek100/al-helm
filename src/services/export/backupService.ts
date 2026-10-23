@@ -1,9 +1,8 @@
 /**
  * Export / import service — "نسخة احتياطية" in settings.
  *
- * Phase 1 exports the local snapshot as JSON. Phase 2 will additionally offer
- * a cloud backup once Supabase persistence is live; the UI already labels
- * which one is which.
+ * Exports the local snapshot as JSON. Cloud accounts keep their own
+ * server-side copy; the UI labels which one is which.
  */
 
 import type { AppData } from '../../types'
