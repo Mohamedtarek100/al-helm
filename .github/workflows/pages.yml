@@ -1,50 +1,83 @@
-name: Deploy Al-Helm PWA to GitHub Pages
+name: Deploy 4uLife web build to al-helm-app (GitHub Pages)
+
+# Builds the validated source from this repository and publishes the
+# generated dist/ to the public distribution repository
+# (Mohamedtarek100/al-helm-app), which serves
+# https://mohamedtarek100.github.io/al-helm-app/
+#
+# Required repository configuration (source repo Settings):
+#   Variables:
+#     SUPABASE_URL        — public Supabase project URL
+#     SUPABASE_ANON_KEY   — public publishable/anon key (browser-safe only)
+#   Secrets:
+#     GH_PAGES_DEPLOY_TOKEN — PAT with contents:write on
+#         Mohamedtarek100/al-helm-app. Never printed or hardcoded.
+#
+# The public site URL includes /al-helm-app/, so the build base path is
+# fixed to that directory regardless of which repository runs the build.
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
+
 concurrency:
-  group: pages
+  group: pages-deploy
   cancel-in-progress: true
+
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - name: Install dependencies
         run: npm ci
-      - name: Typecheck and build
+
+      - name: Quality gates
+        run: |
+          npm run check:types
+          npm run test:i18n
+          npm run test
+          npm run lint
+
+      - name: Build
         env:
-          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          # The public URL lives under /al-helm-app/ even though this workflow
+          # runs in the source repository.
+          VITE_BASE_PATH: /al-helm-app/
           # Public publishable configuration only — never the service-role key.
-          # Configure SUPABASE_URL and SUPABASE_ANON_KEY as repository
-          # variables (or secrets) in the deployment repo's Settings. When
-          # absent the app falls back to local-only mode by design.
           VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
         run: npm run build
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+
+      - name: Deploy dist to al-helm-app
+        # Pushes only the generated dist/ contents to the distribution
+        # repository's main branch. Token comes from GH_PAGES_DEPLOY_TOKEN.
+        run: |
+          git config --global user.name "4uLife deploy bot"
+          git config --global user.email "actions@users.noreply.github.com"
+          git clone --depth 1 --branch main \
+            "https://x-access-token:${GH_PAGES_DEPLOY_TOKEN}@github.com/Mohamedtarek100/al-helm-app.git" publish
+          cd publish
+          git rm -rf . 2>/dev/null || true
+          cp -r ../dist/* .
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to publish."
+          else
+            git commit -m "Deploy build from al-helm@${GITHUB_SHA}"
+            git push origin main
+          fi
+        env:
+          GH_PAGES_DEPLOY_TOKEN: ${{ secrets.GH_PAGES_DEPLOY_TOKEN }}

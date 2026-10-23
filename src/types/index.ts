@@ -253,6 +253,7 @@ export type AppNotificationKind =
   | 'goal'
   | 'system'
   | 'dream'
+  | 'announcement'
 
 export interface AppNotification extends Timestamped {
   id: Id

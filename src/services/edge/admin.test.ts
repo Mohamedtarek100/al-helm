@@ -30,6 +30,8 @@ import {
   getAdminHistory,
   heartbeat,
   adminFetch,
+  getAnnouncementFeed,
+  markAnnouncementRead,
 } from './admin'
 
 function okResponse(payload: unknown): Response {
@@ -68,6 +70,30 @@ describe('admin edge client contract', () => {
     expect(res.hasMore).toBe(false)
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body).toEqual({ action: 'users', page: 2, search: 'ali' })
+  })
+
+  it('user rows use the pushOptIn field (not optedIn) — contract regression', async () => {
+    // The Edge Function must return pushOptIn; the UI reads u.pushOptIn.
+    // This test pins the wire contract so a backend rename cannot silently
+    // break the dashboard again.
+    fetchMock.mockResolvedValueOnce(okResponse({
+      users: [{ id: 'u1', email: 'a@b.c', displayName: 'A', createdAt: '2026-01-01', lastSeenAt: null, pushOptIn: true }],
+      page: 1,
+      hasMore: false,
+    }))
+    const res = await getAdminUsers(1)
+    expect(res.users[0].pushOptIn).toBe(true)
+    expect('optedIn' in res.users[0]).toBe(false)
+  })
+
+  it('feed and read actions hit their endpoints with the announcement id', async () => {
+    fetchMock
+      .mockResolvedValueOnce(okResponse({ feed: [{ id: 'a1', title: 'T', body: 'B', createdAt: '2026-01-01', deliveredAt: '2026-01-01', readAt: null }] }))
+      .mockResolvedValueOnce(okResponse({ ok: true }))
+    const feed = await getAnnouncementFeed()
+    expect(feed.feed[0].readAt).toBeNull()
+    await markAnnouncementRead('a1')
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ action: 'read', announcementId: 'a1' })
   })
 
   it('sendAnnouncement passes title, message and audience', async () => {

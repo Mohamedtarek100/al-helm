@@ -40,5 +40,7 @@ jobs:
         env:
           # Public Supabase config only — the anon/publishable key is safe for
           # the browser bundle. No service-role or privileged secrets here.
-          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+          # Empty fallback keeps CI deterministic when the variables are not
+          # configured: the app explicitly falls back to local-only mode.
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || '' }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || '' }}

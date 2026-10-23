@@ -112,3 +112,22 @@ export function getAdminHistory(): Promise<{ history: AnnouncementHistoryRow[] }
 export function heartbeat(): Promise<{ ok: true }> {
   return adminFetch<{ ok: true }>('heartbeat')
 }
+
+export interface AnnouncementFeedRow {
+  id: string
+  title: string
+  body: string
+  createdAt: string
+  deliveredAt: string
+  readAt: string | null
+}
+
+/** Signed-in user: their own received announcements. */
+export function getAnnouncementFeed(): Promise<{ feed: AnnouncementFeedRow[] }> {
+  return adminFetch<{ feed: AnnouncementFeedRow[] }>('feed')
+}
+
+/** Mark one of the user's own announcements as read. */
+export function markAnnouncementRead(announcementId: string): Promise<{ ok: true }> {
+  return adminFetch<{ ok: true }>('read', { announcementId })
+}

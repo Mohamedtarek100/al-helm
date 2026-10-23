@@ -37,6 +37,7 @@ import { PersistenceCoordinator } from './persistence/coordinator'
 import { createId, nowIso } from './persistence/repository'
 import { createInitialData, hydrateData } from './domain'
 import { syncReminders } from './reminders'
+import { getAnnouncementFeed, markAnnouncementRead, type AnnouncementFeedRow } from './edge/admin'
 
 export type CollectionItem<K extends CollectionKey> = AppData[K][number]
 
@@ -452,6 +453,53 @@ export async function markAllNotificationsRead(): Promise<void> { await withColl
 export async function deleteNotification(id: string): Promise<void> { await withCollectionPersist('notifications',items=>items.filter(item=>item.id!==id)) }
 
 export async function clearNotifications(): Promise<void> { await withCollectionPersist('notifications',()=>[]) }
+
+/* ------------------------------------------------------------------ */
+/* Server announcements                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Pull the signed-in user's server announcements into the local notifications
+ * collection. Adds any announcement not yet mirrored locally (matched by id
+ * prefix 'ann-<announcementId>'), and marks them read both locally and on the
+ * server when the user marks them read. Safe to call repeatedly; no-ops when
+ * the backend isn't configured or the user isn't signed in.
+ */
+export async function syncServerAnnouncements(): Promise<number> {
+  if (!supabase) return 0
+  let feed: AnnouncementFeedRow[]
+  try {
+    feed = (await getAnnouncementFeed()).feed
+  } catch {
+    return 0 // not signed in / backend unreachable — local data stays authoritative
+  }
+  if (feed.length === 0) return 0
+  const existing = new Set(state.notifications.map((n) => n.id))
+  const fresh = feed.filter((row) => !existing.has(`ann-${row.id}`))
+  if (fresh.length === 0) return 0
+  const items: AppNotification[] = fresh.map((row) => {
+    const stamp = nowIso()
+    return {
+      id: `ann-${row.id}`,
+      kind: 'announcement',
+      title: row.title,
+      body: row.body,
+      at: row.deliveredAt || row.createdAt,
+      read: row.readAt !== null,
+      createdAt: stamp,
+      updatedAt: stamp,
+    }
+  })
+  await withCollectionPersist('notifications', (current) => [...current, ...items])
+  return items.length
+}
+
+/** Mark an announcement read in both local state and on the server. */
+export async function markAnnouncementReadEverywhere(announcementId: string): Promise<void> {
+  const localId = `ann-${announcementId}`
+  await withCollectionPersist('notifications', (items) => items.map((item) => (item.id === localId ? { ...item, read: true, updatedAt: nowIso() } : item)))
+  await markAnnouncementRead(announcementId).catch(() => undefined)
+}
 
 /* ------------------------------------------------------------------ */
 /* React binding                                                       */
