@@ -84,15 +84,27 @@ export class PersistenceCoordinator {
   constructor(local: DataAdapter, cloud: CloudPersistence | null) { this.local=local; this.cloud=cloud }
   snapshot(): PersistenceState { return this.state }
   private markerKey(userId:string):string{return `alhelm.v1.migration.${userId}`}
+  /** Injectable storage for test isolation (defaults to localStorage). */
+  private storageImpl: Pick<Storage, 'getItem' | 'setItem'> = {
+    getItem: (key) => localStorage.getItem(key),
+    setItem: (key, value) => localStorage.setItem(key, value),
+  }
+  /** Replaces the migration-marker store; used by tests to isolate instances. */
+  useMarkerStorage(storage: Pick<Storage, 'getItem' | 'setItem'> | null): void {
+    this.storageImpl = storage ?? {
+      getItem: (key) => localStorage.getItem(key),
+      setItem: (key, value) => localStorage.setItem(key, value),
+    }
+  }
   private async wasMigrated(userId:string):Promise<boolean>{
     if(this.migrateCompleted.has(userId))return true
-    try{return localStorage.getItem(this.markerKey(userId))==='complete'}catch{return false}
+    try{return this.storageImpl.getItem(this.markerKey(userId))==='complete'}catch{return false}
   }
   async isMigrationComplete(userId:string):Promise<boolean>{return this.wasMigrated(userId)}
   private async markMigrated(userId:string):Promise<void>{
-    if(typeof localStorage!=='undefined'){
-      try{localStorage.setItem(this.markerKey(userId),'complete')}
-      catch{throw new Error('Could not persist the migration marker; migration was not completed.')}
+    try{
+      this.storageImpl.setItem(this.markerKey(userId),'complete')
+    }catch{throw new Error('Could not persist the migration marker; migration was not completed.')
     }
     this.migrateCompleted.add(userId)
   }

@@ -26,7 +26,7 @@ function localWithTask(){const d=createInitialData();d.tasks.push({id:'task-loca
 
 describe('PersistenceCoordinator local/cloud contract (mock cloud; no live backend)',()=>{
  let local:MemoryAdapter,cloud:MockCloud,coordinator:PersistenceCoordinator
- beforeEach(async()=>{local=new MemoryAdapter();cloud=new MockCloud();coordinator=new PersistenceCoordinator(local,cloud);await coordinator.initialize()})
+ beforeEach(async()=>{local=new MemoryAdapter();cloud=new MockCloud();coordinator=new PersistenceCoordinator(local,cloud);coordinator.useMarkerStorage({getItem:()=>null,setItem:()=>{}});await coordinator.initialize()})
  it('keeps local writes local until authentication and persists the local snapshot',async()=>{const data=localWithTask();await coordinator.persist(data);expect((await local.load())?.tasks).toHaveLength(1);expect(cloud.calls).toBe(0);expect(coordinator.snapshot().mode).toBe('local')})
  it('refuses cloud restore without a valid session and retains local state',async()=>{await coordinator.persist(localWithTask());await coordinator.initialize();cloud.session=false;const result=await coordinator.authenticate('user-a');expect(result.mode).toBe('local');expect(result.data.tasks).toHaveLength(1);expect(result.error).toContain('session')})
  it('loads cloud only for the matching authenticated identity',async()=>{cloud.remote=localWithTask();await coordinator.initialize();const result=await coordinator.authenticate('user-a');expect(result.mode).toBe('cloud');expect(result.data.tasks[0].id).toBe('task-local');cloud.user='user-b';await expect(coordinator.persist(result.data)).rejects.toThrow('expired');expect(coordinator.snapshot().userId).toBeNull()})

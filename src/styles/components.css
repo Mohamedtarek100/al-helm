@@ -419,6 +419,44 @@
     box-shadow: var(--shadow-xs);
 }
 
+/* DurationStepper */
+.dur {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+}
+.dur__btn {
+    min-width: 44px;
+    min-height: 44px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--paper-2);
+    color: var(--ink);
+    font-size: 1.2rem;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.dur__btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+.dur__value {
+    min-width: 72px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    padding: 10px 4px;
+    border-bottom: 1px solid var(--line);
+}
+.dur__suffix {
+    opacity: 0.7;
+    font-size: 0.9em;
+}
+
 .swatches {
     display: flex;
     align-items: center;

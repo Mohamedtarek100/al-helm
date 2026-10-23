@@ -32,6 +32,12 @@ export function Modal({
   const panelRef = useRef<HTMLDivElement>(null)
   const lastFocused = useRef<HTMLElement | null>(null)
 
+  // Keep the latest callback in a ref so the open/close lifecycle effect does
+  // not re-run when the caller passes a fresh inline onClose on every render
+  // (re-running it would restore/steal focus and break typing mid-word).
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
   // Escape closes; focus is trapped inside while open.
   useEffect(() => {
     if (!open) return
@@ -40,7 +46,7 @@ export function Modal({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.stopPropagation()
-        onClose()
+        onCloseRef.current()
         return
       }
       if (event.key !== 'Tab' || !panelRef.current) return
@@ -78,7 +84,7 @@ export function Modal({
       window.clearTimeout(timer)
       lastFocused.current?.focus?.()
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 
@@ -86,7 +92,7 @@ export function Modal({
     <div
       className={cn('modal-scrim', variant === 'sheet' && 'modal-scrim--sheet')}
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose()
+        if (event.target === event.currentTarget) onCloseRef.current()
       }}
     >
       <div
@@ -106,7 +112,7 @@ export function Modal({
             </h2>
             {subtitle && <p className="modal__subtitle">{subtitle}</p>}
           </div>
-          <IconButton label="إغلاق" onClick={onClose} size="sm">
+          <IconButton label="إغلاق" onClick={() => onCloseRef.current()} size="sm">
             <CloseIcon size={18} />
           </IconButton>
         </header>

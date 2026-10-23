@@ -4,6 +4,24 @@ import type { DataAdapter } from './persistence/adapter'
 import { createInitialData } from './domain'
 import type { AppData } from '../types'
 
+// In-memory marker storage so tests never leak migration state via localStorage.
+function memoryStorage(): Pick<Storage, 'getItem' | 'setItem'> {
+  const map = new Map<string, string>()
+  return {
+    getItem: (key) => map.get(key) ?? null,
+    setItem: (key, value) => void map.set(key, value),
+  }
+}
+
+function freshCoordinator(local: DataAdapter, cloud: CloudPersistence): PersistenceCoordinator {
+  const coordinator = new PersistenceCoordinator(local, cloud)
+  coordinator.useMarkerStorage(memoryStorage())
+  return coordinator
+}
+
+let uid = 0
+const nextUser = (prefix = 'u') => `${prefix}-${++uid}`
+
 function data(overrides: Partial<AppData> = {}): AppData {
   const base = createInitialData()
   return { ...base, ...overrides }
@@ -49,24 +67,24 @@ describe('PersistenceCoordinator: initialized-but-empty cloud migration', () => 
     const localData = data({ tasks: [{ id: 't1' } as never] })
     const local = makeLocal(localData)
     // Cloud returns profile/settings only (non-null), no user content.
-    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'u1' })
-    const coordinator = new PersistenceCoordinator(local, cloud)
+    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'user-1' })
+    const coordinator = freshCoordinator(local, cloud)
 
-    const state = await coordinator.authenticate('u1')
+    const state = await coordinator.authenticate('user-1')
     expect(state.mode).toBe('local')
     expect(state.migrationRequired).toBe(true)
-    expect(state.userId).toBe('u1')
+    expect(state.userId).toBe('user-1')
     expect(state.data.tasks).toEqual(localData.tasks)
   })
 
   it('completes explicit migration from this state', async () => {
     const localData = data({ tasks: [{ id: 't1' } as never], subjects: [{ id: 's1' } as never] })
     const local = makeLocal(localData)
-    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'u1' })
-    const coordinator = new PersistenceCoordinator(local, cloud)
+    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'user-1' })
+    const coordinator = freshCoordinator(local, cloud)
 
-    await coordinator.authenticate('u1')
-    const migrated = await coordinator.migrateLocalToCloud('u1')
+    await coordinator.authenticate('user-1')
+    const migrated = await coordinator.migrateLocalToCloud('user-1')
     expect(migrated.tasks).toEqual(localData.tasks)
     expect(cloud.save).toHaveBeenCalled()
     expect(coordinator.snapshot().mode).toBe('cloud')
@@ -76,11 +94,11 @@ describe('PersistenceCoordinator: initialized-but-empty cloud migration', () => 
   it('reports migration failure with local data preserved for recovery', async () => {
     const localData = data({ tasks: [{ id: 't1' } as never] })
     const local = makeLocal(localData)
-    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'u1', saveShouldFail: true })
-    const coordinator = new PersistenceCoordinator(local, cloud)
+    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'user-1', saveShouldFail: true })
+    const coordinator = freshCoordinator(local, cloud)
 
-    await coordinator.authenticate('u1')
-    await expect(coordinator.migrateLocalToCloud('u1')).rejects.toThrow('cloud save failed')
+    await coordinator.authenticate('user-1')
+    await expect(coordinator.migrateLocalToCloud('user-1')).rejects.toThrow('cloud save failed')
     expect(coordinator.snapshot().mode).toBe('local')
     expect(coordinator.snapshot().data.tasks).toEqual(localData.tasks)
     expect(coordinator.snapshot().migrationRequired).toBe(true)
@@ -90,10 +108,10 @@ describe('PersistenceCoordinator: initialized-but-empty cloud migration', () => 
     const localData = data({ tasks: [{ id: 'local-task' } as never] })
     const remoteData = data({ tasks: [{ id: 'cloud-task' } as never] })
     const local = makeLocal(localData)
-    const cloud = makeCloud({ hasSession: true, remoteData, userId: 'u1' })
-    const coordinator = new PersistenceCoordinator(local, cloud)
+    const cloud = makeCloud({ hasSession: true, remoteData, userId: 'user-1' })
+    const coordinator = freshCoordinator(local, cloud)
 
-    const state = await coordinator.authenticate('u1')
+    const state = await coordinator.authenticate('user-1')
     expect(state.mode).toBe('cloud')
     expect(state.data.tasks).toEqual(remoteData.tasks)
     expect(cloud.save).not.toHaveBeenCalled()
@@ -101,20 +119,20 @@ describe('PersistenceCoordinator: initialized-but-empty cloud migration', () => 
 
   it('refuses to migrate the same snapshot twice', async () => {
     const local = makeLocal(data({ tasks: [{ id: 't1' } as never] }))
-    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'u1' })
-    const coordinator = new PersistenceCoordinator(local, cloud)
-    await coordinator.authenticate('u1')
-    await coordinator.migrateLocalToCloud('u1')
-    await expect(coordinator.migrateLocalToCloud('u1')).rejects.toThrow('already been migrated')
+    const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'user-1' })
+    const coordinator = freshCoordinator(local, cloud)
+    await coordinator.authenticate('user-1')
+    await coordinator.migrateLocalToCloud('user-1')
+    await expect(coordinator.migrateLocalToCloud('user-1')).rejects.toThrow('already been migrated')
   })
 })
 
 describe('PersistenceCoordinator: account switching', () => {
   it("never exposes another user's cloud data after a failed switch", async () => {
     const local = makeLocal(data({ tasks: [{ id: 'local-t' } as never] }))
-    const cloud = makeCloud({ hasSession: false, userId: 'u2' })
-    const coordinator = new PersistenceCoordinator(local, cloud)
-    const state = await coordinator.authenticate('u2')
+    const cloud = makeCloud({ hasSession: false, userId: nextUser('v') })
+    const coordinator = freshCoordinator(local, cloud)
+    const state = await coordinator.authenticate(nextUser('v'))
     expect(state.mode).toBe('local')
     expect(state.data.tasks).toEqual([{ id: 'local-t' } as never])
     expect(state.data.tasks.some((t: { id: string }) => t.id === 'u1-task')).toBe(false)

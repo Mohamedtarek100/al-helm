@@ -155,6 +155,61 @@ export function Segmented<T extends string>({
   )
 }
 
+/* ---- Duration stepper ---------------------------------------------- */
+
+interface DurationStepperProps {
+  value: number
+  onChange: (value: number) => void
+  min?: number
+  max?: number
+  step?: number
+  suffix?: string
+  label: string
+  disabled?: boolean
+}
+
+/**
+ * Accessible numeric stepper with explicit minus/plus buttons, so duration
+ * editing works reliably on mobile where native number spinners are hidden.
+ */
+export function DurationStepper({
+  value,
+  onChange,
+  min = 1,
+  max = 120,
+  step = 1,
+  suffix = 'د',
+  label,
+  disabled = false,
+}: DurationStepperProps) {
+  const clamp = (n: number) => Math.min(max, Math.max(min, Math.round(n)))
+  return (
+    <div className={cn('dur', disabled && 'dur--disabled')}>
+      <button
+        type="button"
+        className="dur__btn"
+        aria-label={`${label} −`}
+        disabled={disabled || value <= min}
+        onClick={() => onChange(clamp(value - step))}
+      >
+        −
+      </button>
+      <span className="dur__value" aria-live="polite" aria-label={label}>
+        {value} <span className="dur__suffix">{suffix}</span>
+      </span>
+      <button
+        type="button"
+        className="dur__btn"
+        aria-label={`${label} +`}
+        disabled={disabled || value >= max}
+        onClick={() => onChange(clamp(value + step))}
+      >
+        +
+      </button>
+    </div>
+  )
+}
+
 /* ---- Colour swatch picker ------------------------------------------ */
 
 interface ColorSwatchesProps {
