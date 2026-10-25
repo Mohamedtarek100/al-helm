@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { AppData } from '../../types'
 import { hydrateData } from '../domain'
+import { subjectNameKey } from '../subjects'
 import type { CloudPersistence } from './coordinator'
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
@@ -18,6 +19,21 @@ const toDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entri
   k === 'paper' ? 'paper' : k === 'drawing' ? 'drawing_model' : k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`),
   v,
 ]))
+
+/**
+ * Subjects additionally carry their canonical key.
+ *
+ * `subjectNameKey()` in TypeScript is the only implementation that applies
+ * NFKC (PostgreSQL has no portable equivalent), so the client is authoritative
+ * for the key. Migration 008 verifies the value server-side instead of silently
+ * recomputing a different one — which previously allowed two devices to create
+ * names the unique index considered distinct.
+ */
+const subjectsRow = (item: Record<string, unknown>) => {
+  const mapped = toDb(item)
+  if (typeof item.name === 'string') mapped.name_key = subjectNameKey(item.name)
+  return mapped
+}
 const fromDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'user_id').map(([k,v]) => [k.replace(/_([a-z])/g, (_,m:string) => m.toUpperCase()),v]))
 
 /** Cloud persistence adapter. Requires a signed-in Supabase user; RLS remains authoritative. */
@@ -166,7 +182,7 @@ export class SupabaseAdapter implements CloudPersistence {
         continue
       }
       const rows: Record<string, unknown>[] = (data[slice] as unknown as Record<string, unknown>[]).map(item => {
-        const mapped = toDb(item)
+        const mapped = slice === 'subjects' ? subjectsRow(item) : toDb(item)
         if (slice === 'sessions') { mapped.session_date = item.date || new Date().toISOString().slice(0,10); delete mapped.date }
         if (slice === 'focusSessions') { mapped.session_date = item.date; delete mapped.date }
         if (slice === 'journal') { mapped.entry_date = item.date; delete mapped.date }

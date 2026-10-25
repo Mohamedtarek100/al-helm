@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { subjectNameKey } from './subjects'
 
 /**
@@ -36,7 +38,8 @@ describe('presentation differences that MUST collapse', () => {
     ['Advanced\tMath', 'Advanced Math'],
     ['محاسبة', 'مُحَاسَبَة'],
     ['محاسبة', 'مـحـاسبة'],
-    ['Ｃ＋', 'c＋'], // full-width LATIN letters fold (＋ is already fullwidth form)
+    // NFKC folds fullwidth characters to their ASCII equivalents. Verified by
+    // code point: Ｍａｔｈ ２ (Math 2 in fullwidth) -> "math 2".
     ['Ｍａｔｈ ２', 'Math 2'],
   ]
 
@@ -66,6 +69,79 @@ describe('supported Arabic mark handling', () => {
     // Full-width PLUS is likewise not folded to ASCII '+': no accidental
     // merging of symbol-bearing names.
     expect(subjectNameKey('Ｃ＋')).not.toBe(subjectNameKey('C++'))
+  })
+})
+
+describe('fullwidth Plus (U+FF0B) NFKC folding', () => {
+  const FF_C = String.fromCharCode(0xff23)
+  const FF_PLUS = String.fromCharCode(0xff0b)
+
+  it('folds FULLWIDTH PLUS SIGN to ASCII plus under NFKC', () => {
+    // Verified empirically: U+FF0B normalises to U+002B.
+    expect(FF_PLUS.normalize('NFKC')).toBe('+')
+    expect(FF_C.normalize('NFKC')).toBe('C')
+  })
+
+  it('Ｃ＋ (two fullwidth pluses) equals C++', () => {
+    // Regression: the previous test compared a single fullwidth plus against
+    // two ASCII pluses, which can never be equal and proved nothing.
+    expect(subjectNameKey(FF_C + FF_PLUS + FF_PLUS)).toBe(subjectNameKey('C++'))
+  })
+
+  it('a single fullwidth plus is C+, which is NOT the same subject as C++', () => {
+    expect(subjectNameKey(FF_C + FF_PLUS)).toBe(subjectNameKey('C+'))
+    expect(subjectNameKey(FF_C + FF_PLUS)).not.toBe(subjectNameKey('C++'))
+  })
+
+  it('still keeps C++ distinct from C#', () => {
+    expect(subjectNameKey('C++')).not.toBe(subjectNameKey('C#'))
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Client/SQL parity                                                   */
+/* ------------------------------------------------------------------ */
+
+const migration007 = readFileSync(
+  join(process.cwd(), 'supabase', 'migrations', '202610250007_subject_name_key_correction.sql'),
+  'utf8',
+)
+
+/**
+ * The SQL function cannot be executed here (no database), so parity is asserted
+ * against the documented contract: the SQL must implement every rule the
+ * client applies. Any drift between the two would let two devices create
+ * "different" names that the database then treats as the same, or vice versa.
+ */
+describe('SQL subject_name_key() implements the same contract as the client', () => {
+  const body = migration007.slice(migration007.indexOf('create or replace function public.subject_name_key'))
+
+  it('lower-cases', () => {
+    expect(body).toContain('lower(')
+  })
+
+  it('trims and collapses whitespace to a single space', () => {
+    expect(body).toContain('btrim(')
+    expect(body).toContain("[[:space:]]+'")
+  })
+
+  it('strips the same Arabic mark ranges and tatweel as the client', () => {
+    expect(body).toContain(String.raw`\u0617-\u061A`)
+    expect(body).toContain(String.raw`\u064B-\u0652`)
+    expect(body).toContain(String.raw`\u0670`)
+    expect(body).toContain(String.raw`\u06D6-\u06ED`)
+    expect(body).toContain(String.raw`\u0640`)
+  })
+
+  it('preserves punctuation, symbols and digits (no broad category stripping)', () => {
+    expect(body).not.toMatch(/\\p\{[PSMZ]\}/)
+  })
+
+  it('documents the NFKC limitation instead of pretending to match it', () => {
+    // 007 was corrected during review: it now states plainly that the SQL
+    // function does NOT apply NFKC, and points at 008 for the resolution.
+    expect(migration007).toMatch(/does NOT apply NFKC/i)
+    expect(migration007).toMatch(/Migration 008/)
   })
 })
 

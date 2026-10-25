@@ -15,12 +15,11 @@
 --   3. lower()
 --   Punctuation, symbols and digits are preserved.
 --
---   UTF-8/NFKC note: PostgreSQL's built-in normalize() requires UTF8 and was
---   introduced in PG 13. Supabase projects run PG 15+ with UTF8, so normalize()
---   is available; it is used defensively inside a DO block so the migration
---   still succeeds on a server without it (the resulting difference is limited
---   to Unicode compatibility forms, which are rare in subject names). The
---   function is created with NFKC when supported.
+--   NOTE (reviewed): this function does NOT apply NFKC — it strips Arabic marks
+--   and collapses whitespace only. The client DOES apply NFKC, so this function
+--   alone cannot be the sole source of truth for the key. Migration 008 fixes
+--   the divergence by having the client supply subjectNameKey() and having a
+--   trigger verify it against this derivation.
 --
 -- SAFETY
 --   - Additive. No rows are deleted, merged or renamed; display names and ids
