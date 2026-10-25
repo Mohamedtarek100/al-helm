@@ -37,6 +37,8 @@ import { PersistenceCoordinator } from './persistence/coordinator'
 import { createId, nowIso } from './persistence/repository'
 import { createInitialData, hydrateData } from './domain'
 import { syncReminders } from './reminders'
+import { markSynced, markSyncFailed, markSyncing, reconcileWithStore } from './syncStatus'
+import { cleanSubjectName, findSubjectIncludingArchived, SubjectDuplicateError, subjectNameKey } from './subjects'
 import { getAnnouncementFeed, markAnnouncementRead, type AnnouncementFeedRow } from './edge/admin'
 
 export type CollectionItem<K extends CollectionKey> = AppData[K][number]
@@ -69,14 +71,18 @@ let persistenceError: string | null = null
 let cloudSaveError: string | null = null
 const persistence = new PersistenceCoordinator(dataAdapter, cloudAdapter())
 async function persistCloudSnapshot(snapshot: AppData): Promise<void> {
+  const cloudActive = persistence.snapshot().mode === 'cloud'
+  if (cloudActive) markSyncing()
   try {
     await persistence.persist(snapshot)
     persistenceError = null
     cloudSaveError = null
+    if (cloudActive) { markSynced(); reconcileWithStore() }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Persistence failed.'
     if (persistence.snapshot().mode === 'cloud') cloudSaveError = message
     else persistenceError = message
+    if (cloudActive) markSyncFailed(message)
     if (persistence.snapshot().mode === 'local') void persistence.refreshLocalSnapshot(state).catch(() => undefined)
     emit()
     throw error
@@ -135,6 +141,20 @@ export async function initStore(force = false): Promise<void> {
         await dataAdapter.save({ ...trimmed, settings: { ...trimmed.settings, storage: 'local' } })
       }
     } catch { /* legacy records keep working via the URL fallback */ }
+    // One-time write-back of normalised task fields (e.g. legacy records with
+    // no priority). Hydration fixes the in-memory copy; without this the stored
+    // snapshot — and therefore every export — keeps the legacy shape forever.
+    // Only written when something is genuinely stale, and only while the store
+    // is still in local mode, so a cloud restore that follows can never be
+    // overwritten by this snapshot.
+    try {
+      // The coordinator captured staleness from the RAW snapshot, because
+      // initialize() returns an already-hydrated copy where nothing looks stale.
+      if (persistence.needsNormalization()) {
+        await dataAdapter.save({ ...state, settings: { ...state.settings, storage: 'local' }})
+        persistence.clearPendingNormalization()
+      }
+    } catch { /* storage unavailable: keep the hydrated in-memory state */ }
     const cloud = cloudAdapter()
     if (cloud && await cloud.hasSession().catch(() => false)) {
       const { data: { user }, error } = await supabase!.auth.getUser()
@@ -243,6 +263,15 @@ export async function updateProfile(patch: Partial<Profile>): Promise<void> {
 let systemThemeQuery: MediaQueryList | null = null
 function applyTheme(theme: Settings['theme']): void {
   if (typeof document === 'undefined') return
+  // Some webviews and test environments expose no matchMedia; without it the
+  // 'system' preference simply has nothing to follow, so skip quietly rather
+  // than throwing during startup.
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    const isDark = theme === 'dark'
+    if (isDark) document.documentElement.dataset.theme = 'dark'
+    else delete document.documentElement.dataset.theme
+    return
+  }
   const query = window.matchMedia('(prefers-color-scheme: dark)')
   const apply = (dark: boolean) => {
     if (dark) document.documentElement.dataset.theme = 'dark'
@@ -281,13 +310,24 @@ export async function updateSettings(patch: Partial<Settings>): Promise<void> {
 export type NewSubject = Omit<Subject, keyof Timestamped | 'id'>
 
 export async function createSubject(input: NewSubject): Promise<Subject> {
-  const item={...(input as object),id:createId('sub'),createdAt:nowIso(),updatedAt:nowIso()} as Subject
-  await withCollectionPersist('subjects',items=>[...items,item])
+  // Reuse an existing subject with the same normalised name (including an
+  // archived one) instead of creating a near-duplicate. This mirrors the
+  // database's user-scoped unique index, so a second device — or a snapshot
+  // merged from another device — converges on one record rather than two.
+  const existing = findSubjectIncludingArchived(state.subjects, input.name)
+  if (existing) return existing
+  const item = { ...(input as object), name: cleanSubjectName(input.name), id: createId('sub'), createdAt: nowIso(), updatedAt: nowIso() } as Subject
+  await withCollectionPersist('subjects', items => [...items, item])
   return item
 }
 
 export async function updateSubject(id: string, patch: Partial<Subject>): Promise<void> {
-  await withCollectionPersist('subjects',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item))
+  if (patch.name) {
+    const clash = state.subjects.find((subject) => subject.id !== id && subjectNameKey(subject.name) === subjectNameKey(patch.name as string))
+    if (clash) throw new SubjectDuplicateError(clash.id)
+  }
+  const next = patch.name ? { ...patch, name: cleanSubjectName(patch.name) } : patch
+  await withCollectionPersist('subjects', items => items.map(item => item.id === id ? { ...item, ...next, updatedAt: nowIso() } : item))
 }
 
 /** Removing a subject also detaches it from sessions and tasks (no orphans). */

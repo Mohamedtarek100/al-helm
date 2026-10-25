@@ -1,318 +1,368 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { PageFrame, PageHeading } from './PageFrame'
 import { useI18n } from '../i18n/useI18n'
 import { useToast } from '../components/toastContext'
 import {
-  getAdminGate,
-  getAdminMetrics,
-  getAdminUsers,
-  sendAnnouncement,
-  getAdminHistory,
-  type AdminMetrics,
-  type AdminUserRow,
-  type AnnouncementHistoryRow,
+  getAdminGate, getAdminHistory, getAdminMetrics, getAdminUsers, sendAnnouncement,
+  type AdminGate, type AdminMetrics, type AdminUserRow, type AnnouncementHistoryRow,
 } from '../services/edge/admin'
-import { Card, CardHeader, CardBody } from '../components/Card'
 import { Button } from '../components/Button'
-import { Field, TextInput, TextArea, Select } from '../components/Field'
+import { Card } from '../components/Card'
+import { EmptyState } from '../components/Display'
+import { Field, TextArea, TextInput } from '../components/Field'
+import { ConfirmDialog } from '../components/Modal'
+import { BellIcon, TrendIcon, UserIcon } from '../components/icons'
+import { supabase } from '../services/persistence/supabase'
 
-const TABS = ['metrics', 'users', 'send', 'history'] as const
-type Tab = (typeof TABS)[number]
+/**
+ * Owner-only admin dashboard.
+ *
+ * Security model: this page is only a view. Every privileged read and write
+ * goes through the `admin` Edge Function, which re-verifies the caller's JWT
+ * and checks the server-side ADMIN_EMAILS allowlist. The gate result only
+ * decides which UI to render — it never grants access by itself.
+ */
+
+type Tab = 'overview' | 'users' | 'send' | 'history'
+const TABS: { id: Tab; key: 'adminTab_metrics' | 'adminTab_users' | 'adminTab_send' | 'adminTab_history' }[] = [
+  { id: 'overview', key: 'adminTab_metrics' },
+  { id: 'users', key: 'adminTab_users' },
+  { id: 'send', key: 'adminTab_send' },
+  { id: 'history', key: 'adminTab_history' },
+]
 
 export function AdminPage() {
-  const { t } = useI18n()
-  const [gateLoading, setGateLoading] = useState(true)
-  const [gateError, setGateError] = useState<string | null>(null)
-  const [isAdmin, setIsAdmin] = useState(false)
-  const [unconfigured, setUnconfigured] = useState(false)
-  const [tab, setTab] = useState<Tab>('metrics')
+  const { t, language } = useI18n()
+  const en = language === 'en'
+  const [status, setStatus] = useState<'loading' | 'denied' | 'unconfigured' | 'signed-out' | 'ready' | 'error'>('loading')
+  const [gate, setGate] = useState<AdminGate | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [tab, setTab] = useState<Tab>('overview')
+  const [nonce, setNonce] = useState(0)
 
   useEffect(() => {
     let cancelled = false
-    setGateLoading(true)
-    getAdminGate()
-      .then((gate) => {
+    setStatus('loading'); setError(null)
+    void (async () => {
+      try {
+        if (!supabase) { if (!cancelled) setStatus('unconfigured'); return }
+        const { data } = await supabase.auth.getSession()
+        if (!data.session) { if (!cancelled) setStatus('signed-out'); return }
+        const result = await getAdminGate()
         if (cancelled) return
-        setIsAdmin(gate.isAdmin)
-        setUnconfigured(false)
-        setGateError(null)
-      })
-      .catch((e: unknown) => {
+        setGate(result)
+        if (result.error === 'not_configured') setStatus('unconfigured')
+        else setStatus(result.isAdmin ? 'ready' : 'denied')
+      } catch (e) {
         if (cancelled) return
         const message = e instanceof Error ? e.message : String(e)
-        setGateError(message)
-        setUnconfigured(message.toLowerCase().includes('not_configured'))
-      })
-      .finally(() => {
-        if (!cancelled) setGateLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+        setError(message)
+        setStatus(/unauthenticated|sign in|bearer/i.test(message) ? 'signed-out' : 'error')
+      }
+    })()
+    return () => { cancelled = true }
+  }, [nonce])
 
-  if (gateLoading) {
+  const refresh = () => setNonce((value) => value + 1)
+
+  if (status === 'loading') {
     return (
-      <PageFrame className="admin-page">
-        <PageHeading title={t('adminTitle')} subtitle={t('adminLoading')} />
+      <PageFrame className="page-stack admin-page">
+        <PageHeading eyebrow={en ? 'Owner tools' : 'أدوات المالك'} title={t('adminTitle')} subtitle={t('adminLoading')} />
+        <div className="skeleton-stack" aria-hidden="true"><span className="skeleton skeleton--card" /><span className="skeleton skeleton--card" /></div>
       </PageFrame>
     )
   }
 
-  if (!isAdmin) {
+  if (status !== 'ready') {
+    const copy = status === 'unconfigured' ? t('adminUnconfigured')
+      : status === 'signed-out' ? (en ? 'Sign in with the owner account to open this dashboard.' : 'سجّلي الدخول بحساب المالك لفتح اللوحة.')
+        : status === 'denied' ? t('adminDenied')
+          : t('adminUnavailable')
     return (
-      <PageFrame className="admin-page">
-        <PageHeading
-          title={t('adminTitle')}
-          subtitle={unconfigured ? t('adminUnconfigured') : t('adminDenied')}
-        />
-        {gateError && !unconfigured && (
-          <Card className="admin-page__card"><p className="t-muted">{gateError}</p></Card>
-        )}
+      <PageFrame className="page-stack admin-page">
+        <PageHeading eyebrow={en ? 'Owner tools' : 'أدوات المالك'} title={t('adminTitle')} subtitle={copy} />
+        <Card>
+          <EmptyState
+            icon={<UserIcon size={26} />}
+            title={status === 'denied' ? t('adminDenied') : t('adminTitle')}
+            message={error && status === 'error' ? error : copy}
+            action={
+              <div className="row">
+                <Button size="sm" variant="secondary" onClick={refresh}>{t('adminRefresh')}</Button>
+                {status === 'signed-out' && <Link to="/settings" className="link-button">{t('settings')}</Link>}
+              </div>
+            }
+          />
+        </Card>
       </PageFrame>
     )
   }
 
   return (
-    <PageFrame className="admin-page">
-      <PageHeading title={t('adminTitle')} subtitle={t('adminRegistered')} />
-      <nav className="admin-page__tabs" aria-label={t('adminTitle')}>
-        {TABS.map((key) => (
-          <Button key={key} variant={tab === key ? 'primary' : 'ghost'} onClick={() => setTab(key)}>
-            {t(`adminTab_${key}` as Parameters<ReturnType<typeof useI18n>['t']>[0])}
-          </Button>
+    <PageFrame className="page-stack admin-page">
+      <PageHeading
+        eyebrow={en ? 'Owner tools' : 'أدوات المالك'}
+        title={t('adminTitle')}
+        subtitle={gate?.email ?? ''}
+        action={<Button variant="secondary" onClick={refresh}>{t('adminRefresh')}</Button>}
+      />
+      <nav className="subnav admin-subnav" aria-label={t('adminTitle')}>
+        {TABS.map((item) => (
+          <button key={item.id} type="button" className={`subnav__item ${tab === item.id ? 'subnav__item--active' : ''}`} aria-current={tab === item.id} onClick={() => setTab(item.id)}>
+            {t(item.key)}
+          </button>
         ))}
       </nav>
-      {tab === 'metrics' && <MetricsTab />}
-      {tab === 'users' && <UsersTab />}
-      {tab === 'send' && <SendTab />}
-      {tab === 'history' && <HistoryTab />}
+      {tab === 'overview' && <Overview />}
+      {tab === 'users' && <Users />}
+      {tab === 'send' && <Send onSent={() => setTab('history')} />}
+      {tab === 'history' && <History refreshKey={nonce} />}
     </PageFrame>
   )
 }
 
-function MetricsTab() {
-  const { t } = useI18n()
-  const [metrics, setMetrics] = useState<AdminMetrics | null>(null)
-  const [error, setError] = useState<string | null>(null)
+/* ------------------------------------------------------------------ */
+/* Shared async state                                                 */
+/* ------------------------------------------------------------------ */
 
+function useAsync<T>(loader: () => Promise<T>, deps: unknown[]) {
+  const [state, setState] = useState<{ data: T | null; error: string | null; loading: boolean }>({ data: null, error: null, loading: true })
+  const [retryKey, setRetryKey] = useState(0)
   useEffect(() => {
     let cancelled = false
-    getAdminMetrics()
-      .then((m) => {
-        if (!cancelled) setMetrics(m)
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    setState((prev) => ({ ...prev, loading: true, error: null }))
+    loader()
+      .then((data) => { if (!cancelled) setState({ data, error: null, loading: false }) })
+      .catch((error: unknown) => { if (!cancelled) setState({ data: null, error: error instanceof Error ? error.message : String(error), loading: false }) })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, retryKey])
+  return { ...state, retry: () => setRetryKey((value) => value + 1) }
+}
 
-  if (error) return <Card className="admin-page__card"><p className="t-muted">{error}</p></Card>
-  if (!metrics) return <Card className="admin-page__card"><p className="t-muted">{t('adminLoading')}</p></Card>
+function LoadingCards() {
+  return <div className="skeleton-stack" aria-hidden="true"><span className="skeleton skeleton--card" /><span className="skeleton skeleton--card" /></div>
+}
 
-  type Key = Parameters<ReturnType<typeof useI18n>['t']>[0]
-  const cards: Array<[Key, number]> = [
-    ['adminRegistered', metrics.totalRegistered],
-    ['adminNew7', metrics.newUsers7d],
-    ['adminNew30', metrics.newUsers30d],
-    ['adminActive7', metrics.active7],
-    ['adminActive30', metrics.active30],
-    ['adminOptIn', metrics.pushOptIns],
+function ErrorCard({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const { t } = useI18n()
+  return (
+    <Card>
+      <EmptyState
+        icon={<TrendIcon size={24} />}
+        title={t('adminUnavailable')}
+        message={message}
+        action={<Button size="sm" onClick={onRetry}>{t('adminRefresh')}</Button>}
+      />
+    </Card>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Tabs                                                               */
+/* ------------------------------------------------------------------ */
+
+function Overview() {
+  const { t } = useI18n()
+  const { data, error, loading, retry } = useAsync<AdminMetrics>(() => getAdminMetrics(), [])
+  if (loading) return <LoadingCards />
+  if (error || !data) return <ErrorCard message={error ?? ''} onRetry={retry} />
+  const cards: { label: string; value: number; accent: string }[] = [
+    { label: t('adminRegistered'), value: data.totalRegistered, accent: 'var(--clay)' },
+    { label: t('adminNew7'), value: data.newUsers7d, accent: 'var(--sage)' },
+    { label: t('adminNew30'), value: data.newUsers30d, accent: 'var(--dusty-blue)' },
+    { label: t('adminActive7'), value: data.active7, accent: 'var(--amber)' },
+    { label: t('adminActive30'), value: data.active30, accent: 'var(--plum)' },
+    { label: t('adminOptIn'), value: data.pushOptIns, accent: 'var(--charcoal)' },
   ]
   return (
-    <Card className="admin-page__card">
-      <div className="admin-page__metrics">
-        {cards.map(([key, value]) => (
-          <div key={key} className="admin-page__metric">
-            <strong>{value}</strong>
-            <span>{t(key)}</span>
-          </div>
-        ))}
-      </div>
-    </Card>
+    <div className="admin-metrics">
+      {cards.map((card) => (
+        <Card key={card.label} className="admin-metric">
+          <span className="admin-metric__icon" style={{ background: card.accent }} aria-hidden="true"><TrendIcon size={16} /></span>
+          <strong className="admin-metric__value">{card.value.toLocaleString()}</strong>
+          <span className="admin-metric__label">{card.label}</span>
+        </Card>
+      ))}
+    </div>
   )
 }
 
-function UsersTab() {
-  const { t } = useI18n()
+function Users() {
+  const { t, language } = useI18n()
+  const en = language === 'en'
   const [search, setSearch] = useState('')
-  const [rows, setRows] = useState<AdminUserRow[]>([])
-  const [page, setPage] = useState(0)
-  const [hasMore, setHasMore] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [page, setPage] = useState(1)
 
   useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    const timer = setTimeout(() => {
-      getAdminUsers(page + 1, search)
-        .then((res) => {
-          if (cancelled) return
-          setRows(res.users)
-          setHasMore(res.hasMore)
-          setError(null)
-        })
-        .catch((e: unknown) => {
-          if (!cancelled) setError(e instanceof Error ? e.message : String(e))
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false)
-        })
-    }, 300)
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [page, search])
+    const timer = setTimeout(() => { setQuery(search.trim()); setPage(1) }, 300)
+    return () => clearTimeout(timer)
+  }, [search])
+
+  const { data, error, loading, retry } = useAsync(() => getAdminUsers(page, query), [page, query])
 
   return (
-    <Card className="admin-page__card">
-      <Field label={t('adminSearchPlaceholder')}>
-        <TextInput value={search} onChange={(e) => { setSearch(e.target.value); setPage(0) }} />
-      </Field>
-      {error && <p className="t-muted">{error}</p>}
-      {loading ? (
-        <p className="t-muted">{t('adminLoading')}</p>
-      ) : (
-        <table className="admin-page__table">
-          <thead><tr>
-            <th>{t('adminEmail')}</th>
-            <th>{t('adminDisplayName')}</th>
-            <th>{t('adminRegisteredCol')}</th>
-            <th>{t('adminLastSeen')}</th>
-            <th>{t('adminOptIn')}</th>
-          </tr></thead>
-          <tbody>
-            {rows.map((u) => (
-              <tr key={u.id}>
-                <td>{u.email ?? '—'}</td>
-                <td>{u.displayName || '—'}</td>
-                <td>{new Date(u.createdAt).toLocaleDateString()}</td>
-                <td>{u.lastSeenAt ? new Date(u.lastSeenAt).toLocaleDateString() : '—'}</td>
-                <td>{u.pushOptIn ? t('adminYes') : t('adminNo')}</td>
-              </tr>
-            ))}
-            {rows.length === 0 && <tr><td colSpan={5}>{t('adminNoUsers')}</td></tr>}
-          </tbody>
-        </table>
-      )}
-      <div className="admin-page__pager">
-        <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>{t('adminPrev')}</Button>
-        <Button variant="ghost" size="sm" disabled={!hasMore} onClick={() => setPage((p) => p + 1)}>{t('adminNext')}</Button>
+    <Card className="admin-panel">
+      <div className="admin-panel__toolbar">
+        <TextInput
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder={t('adminSearchPlaceholder')}
+          aria-label={t('adminSearchPlaceholder')}
+          type="search"
+          className="admin-panel__search"
+        />
       </div>
+      {loading && <LoadingCards />}
+      {!loading && error && <ErrorCard message={error} onRetry={retry} />}
+      {!loading && !error && data && (
+        <>
+          {data.users.length === 0 ? (
+            <EmptyState title={t('adminNoUsers')} message={en ? 'No registered account matches this search.' : 'مفيش حساب مطابق للبحث.'} />
+          ) : (
+            <div className="table-scroll">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>{t('adminEmail')}</th>
+                    <th>{t('adminDisplayName')}</th>
+                    <th>{t('adminRegisteredCol')}</th>
+                    <th>{t('adminLastSeen')}</th>
+                    <th>{t('adminOptIn')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.users.map((user: AdminUserRow) => (
+                    <tr key={user.id}>
+                      <td className="admin-table__email">{user.email ?? '—'}</td>
+                      <td>{user.displayName || '—'}</td>
+                      <td>{new Date(user.createdAt).toLocaleDateString()}</td>
+                      <td>{user.lastSeenAt ? new Date(user.lastSeenAt).toLocaleString() : '—'}</td>
+                      <td><span className={`status-dot ${user.pushOptIn ? 'status-dot--on' : ''}`} />{user.pushOptIn ? t('adminYes') : t('adminNo')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="admin-pager">
+            <Button size="sm" variant="ghost" disabled={page <= 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))}>{t('adminPrev')}</Button>
+            <span className="t-xs t-muted">{en ? `Page ${page}` : `صفحة ${page}`}</span>
+            <Button size="sm" variant="ghost" disabled={!data.hasMore || loading} onClick={() => setPage((value) => value + 1)}>{t('adminNext')}</Button>
+          </div>
+        </>
+      )}
     </Card>
   )
 }
 
-function SendTab() {
-  const { t } = useI18n()
+function Send({ onSent }: { onSent: () => void }) {
+  const { t, language } = useI18n()
   const { notify } = useToast()
+  const en = language === 'en'
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [audience, setAudience] = useState<'all' | 'opted_in'>('all')
+  const [confirming, setConfirming] = useState(false)
   const [sending, setSending] = useState(false)
-  const [preview, setPreview] = useState(false)
 
   const send = async () => {
+    setConfirming(false)
     setSending(true)
     try {
-      const result = await sendAnnouncement(title, body, audience)
-      notify(t('adminSent', { count: result.recipientCount }), 'success')
-      setTitle('')
-      setBody('')
-      setPreview(false)
-    } catch (e: unknown) {
-      notify(e instanceof Error ? e.message : t('adminSendFailed'), 'danger')
+      const result = await sendAnnouncement(title.trim(), body.trim(), audience)
+      notify(t('adminSentOk', { count: result.recipientCount }), 'success')
+      setTitle(''); setBody('')
+      onSent()
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('adminSendFailed'), 'danger')
     } finally {
       setSending(false)
     }
   }
 
-  if (preview) {
-    return (
-      <Card className="admin-page__card">
-        <CardHeader title={title} subtitle={audience === 'all' ? t('adminAudienceAll') : t('adminAudienceOptedIn')} />
-        <CardBody>
-          <p className="admin-page__preview-body">{body}</p>
-          <div className="admin-page__actions">
-            <Button variant="ghost" onClick={() => setPreview(false)}>{t('adminCancel')}</Button>
-            <Button variant="primary" loading={sending} onClick={() => void send()}>
-              {sending ? t('adminSending') : t('adminSend')}
-            </Button>
-          </div>
-        </CardBody>
-      </Card>
-    )
-  }
+  const valid = title.trim().length > 0 && body.trim().length > 0
 
   return (
-    <Card className="admin-page__card">
-      <Field label={t('adminTitlePlaceholder')}>
-        <TextInput value={title} onChange={(e) => setTitle(e.target.value)} />
-      </Field>
-      <Field label={t('adminMessagePlaceholder')}>
-        <TextArea value={body} onChange={(e) => setBody(e.target.value)} rows={6} />
-      </Field>
-      <Field label={t('adminAudience')}>
-        <Select value={audience} onChange={(e) => setAudience(e.target.value === 'opted_in' ? 'opted_in' : 'all')}>
-          <option value="all">{t('adminAudienceAll')}</option>
-          <option value="opted_in">{t('adminAudienceOptedIn')}</option>
-        </Select>
-      </Field>
-      <div className="admin-page__actions">
-        <Button variant="primary" disabled={!title.trim() || !body.trim()} onClick={() => setPreview(true)}>
-          {t('adminPreview')}
-        </Button>
-      </div>
-    </Card>
+    <div className="admin-send">
+      <Card className="admin-panel">
+        <div className="form-grid">
+          <Field label={t('adminTitleCol')} required className="form-grid__full">
+            <TextInput value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t('adminTitlePlaceholder')} maxLength={120} />
+          </Field>
+          <Field label={t('adminMessagePlaceholder')} required className="form-grid__full">
+            <TextArea rows={6} value={body} onChange={(event) => setBody(event.target.value)} placeholder={t('adminMessagePlaceholder')} maxLength={2000} />
+          </Field>
+          <Field label={t('adminAudience')} className="form-grid__full">
+            <div className="segmented" role="radiogroup" aria-label={t('adminAudience')}>
+              <button type="button" role="radio" aria-checked={audience === 'all'} className={`segmented__item ${audience === 'all' ? 'segmented__item--active' : ''}`} onClick={() => setAudience('all')}>{t('adminAudienceAll')}</button>
+              <button type="button" role="radio" aria-checked={audience === 'opted_in'} className={`segmented__item ${audience === 'opted_in' ? 'segmented__item--active' : ''}`} onClick={() => setAudience('opted_in')}>{t('adminAudienceOptIn')}</button>
+            </div>
+          </Field>
+        </div>
+        <div className="row row--end" style={{ marginTop: 14 }}>
+          <Button variant="primary" disabled={!valid || sending} loading={sending} leadingIcon={<BellIcon size={16} />} onClick={() => setConfirming(true)}>
+            {sending ? t('adminSending') : audience === 'all' ? t('adminConfirmSend') : t('adminSend')}
+          </Button>
+        </div>
+      </Card>
+
+      <Card className="admin-preview">
+        <p className="t-xs t-muted">{t('adminPreview')}</p>
+        <div className="notification-row">
+          <span className="notification-row__icon"><BellIcon size={18} /></span>
+          <div className="notification-row__body">
+            <b>{title || t('adminTitlePlaceholder')}</b>
+            <p style={{ whiteSpace: 'pre-wrap' }}>{body || t('adminMessagePlaceholder')}</p>
+            <time>{new Date().toLocaleString(en ? 'en-US' : 'ar-EG', { dateStyle: 'medium', timeStyle: 'short' })}</time>
+          </div>
+        </div>
+      </Card>
+
+      <ConfirmDialog
+        open={confirming}
+        title={t('adminSend')}
+        message={audience === 'all' ? t('adminSendingToAll') : (en ? 'Send this announcement to push-opted-in users only?' : 'إرسال الإعلان للمفعّلين للإشعارات فقط؟')}
+        confirmLabel={t('adminSend')}
+        cancelLabel={t('adminCancel')}
+        onConfirm={() => { void send() }}
+        onCancel={() => setConfirming(false)}
+      />
+    </div>
   )
 }
 
-function HistoryTab() {
-  const { t } = useI18n()
-  const [rows, setRows] = useState<AnnouncementHistoryRow[]>([])
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    getAdminHistory()
-      .then((res) => {
-        if (!cancelled) setRows(res.history)
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  if (error) return <Card className="admin-page__card"><p className="t-muted">{error}</p></Card>
-  if (!rows.length) return <Card className="admin-page__card"><p className="t-muted">{t('adminNoHistory')}</p></Card>
+function History({ refreshKey }: { refreshKey: number }) {
+  const { t, language } = useI18n()
+  const en = language === 'en'
+  const { data, error, loading, retry } = useAsync(() => getAdminHistory(), [refreshKey])
+  if (loading) return <LoadingCards />
+  if (error || !data) return <ErrorCard message={error ?? ''} onRetry={retry} />
+  if (data.history.length === 0) {
+    return <Card><EmptyState icon={<BellIcon size={24} />} title={t('adminNoHistory')} message={en ? 'Announcements you send will appear here.' : 'الإعلانات اللي ترسليها هتظهر هنا.'} /></Card>
+  }
   return (
-    <Card className="admin-page__card">
-      <table className="admin-page__table">
-        <thead><tr>
-          <th>{t('adminTitleCol')}</th>
-          <th>{t('adminSentAt')}</th>
-          <th>{t('adminAudience')}</th>
-          <th>{t('adminRecipientsCol')}</th>
-        </tr></thead>
-        <tbody>
-          {rows.map((a) => (
-            <tr key={a.id}>
-              <td>{a.title}</td>
-              <td>{new Date(a.createdAt).toLocaleString()}</td>
-              <td>{a.audience === 'opted_in' ? t('adminAudienceOptedIn') : t('adminAudienceAll')}</td>
-              <td>{t('adminRecipients', { count: a.recipientCount })}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <Card className="admin-panel">
+      <div className="table-scroll">
+        <table className="admin-table">
+          <thead>
+            <tr><th>{t('adminTitleCol')}</th><th>{t('adminAudience')}</th><th>{t('adminSentAt')}</th><th>{t('adminRecipientsCol')}</th></tr>
+          </thead>
+          <tbody>
+            {data.history.map((row: AnnouncementHistoryRow) => (
+              <tr key={row.id}>
+                <td>{row.title}</td>
+                <td>{row.audience === 'opted_in' ? t('adminAudienceOptIn') : t('adminAudienceAll')}</td>
+                <td>{new Date(row.createdAt).toLocaleString()}</td>
+                <td>{t('adminRecipients', { count: row.recipientCount })}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Card>
   )
 }

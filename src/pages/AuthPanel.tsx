@@ -5,29 +5,149 @@ import { Field, TextInput } from '../components/Field'
 import { authConfigured, requestPasswordReset, signIn, signInWithGoogle, signOut, signUp } from '../services/auth'
 import { supabase } from '../services/persistence/supabase'
 import { migrateLocalDataToCloud } from '../services/persistence/cloud-sync'
-import { authenticateCloudUser, getActivePersistenceCoordinator, logoutCloudUser } from '../services/store'
+import { activePersistenceMode, authenticateCloudUser, getActivePersistenceCoordinator, logoutCloudUser, useAppData } from '../services/store'
 import { useI18n } from '../i18n/useI18n'
 
+/**
+ * Cloud account panel.
+ *
+ * Migration is explicit and never automatic: when local data exists and the
+ * account is empty, the user sees a button that describes exactly what will be
+ * uploaded. A populated account is never overwritten by local data.
+ */
 export function AuthPanel() {
   const { language } = useI18n()
+  const data = useAppData()
   const en = language === 'en'
-  const [email,setEmail]=useState(''), [password,setPassword]=useState(''), [name,setName]=useState(''), [error,setError]=useState(''), [message,setMessage]=useState(''), [busy,setBusy]=useState(false), [mode,setMode]=useState<'login'|'register'>('login'), [user,setUser]=useState<string|null>(null)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [name, setName] = useState('')
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [user, setUser] = useState<string | null>(null)
+  const [userId, setUserId] = useState<string | null>(null)
+  const [storageMode, setStorageMode] = useState<'local' | 'cloud'>(() => activePersistenceMode())
+
   useEffect(() => {
     if (!supabase) return
     let active = true
-    void supabase.auth.getUser().then(async ({data}) => {
-      if(!active)return
-      setUser(data.user?.email??null)
-      if(data.user) await authenticateCloudUser(data.user.id)
+    void supabase.auth.getUser().then(async ({ data: result }) => {
+      if (!active) return
+      setUser(result.user?.email ?? null)
+      setUserId(result.user?.id ?? null)
+      if (result.user) await authenticateCloudUser(result.user.id)
+      if (active) setStorageMode(activePersistenceMode())
     })
-    const {data}=supabase.auth.onAuthStateChange((event,session)=>{
-      if(!active)return
-      setUser(session?.user.email??null)
-      if(event==='SIGNED_OUT'||!session) logoutCloudUser()
-      else if(event==='SIGNED_IN'||event==='TOKEN_REFRESHED') void authenticateCloudUser(session.user.id)
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!active) return
+      setUser(session?.user.email ?? null)
+      setUserId(session?.user.id ?? null)
+      if (event === 'SIGNED_OUT' || !session) {
+        void logoutCloudUser().then(() => setStorageMode(activePersistenceMode()))
+      } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        void authenticateCloudUser(session.user.id).then(() => setStorageMode(activePersistenceMode()))
+      }
     })
-    return ()=>{active=false;data.subscription.unsubscribe()}
-  },[])
-  const run = async (action:()=>Promise<unknown>) => { setBusy(true); setError('');setMessage('');try{await action();if(supabase){const {data,error:authError}=await supabase.auth.getUser();if(authError)throw authError;setUser(data.user?.email??null);if(data.user)await authenticateCloudUser(data.user.id)}setMessage(en?'Done. Check your email if confirmation is enabled.':'تم. راجعي بريدك لو تأكيد البريد مفعّل.')}catch(e){setError(e instanceof Error?e.message:(en?'Something went wrong.':'حصلت مشكلة.'))}finally{setBusy(false)} }
-  return <Card><h2 className="section-head__title">{en?'Cloud account':'الحساب السحابي'}</h2><p className="t-sm t-muted">{!authConfigured?(en?'Cloud account is not configured yet.':'الحساب السحابي غير مهيأ بعد.'):user?(en?`Signed in as ${user}`:`تم تسجيل الدخول: ${user}`):(en?'Sign in to enable cloud data sync.':'سجلي الدخول لتفعيل مزامنة البيانات.')}</p>{authConfigured&&!user&&<><div className="row row--wrap"><Button variant={mode==='login'?'primary':'secondary'} onClick={()=>setMode('login')}>{en?'Sign in':'دخول'}</Button><Button variant={mode==='register'?'primary':'secondary'} onClick={()=>setMode('register')}>{en?'Create account':'حساب جديد'}</Button></div><form className="form-grid" onSubmit={e=>{e.preventDefault();void run(()=>mode==='login'?signIn(email,password):signUp(email,password,name))}}>{mode==='register'&&<Field label={en?'Display name':'الاسم'}><TextInput value={name} onChange={e=>setName(e.target.value)} required /></Field>}<Field label="Email"><TextInput type="email" value={email} onChange={e=>setEmail(e.target.value)} required autoComplete="email" /></Field><Field label={en?'Password':'كلمة المرور'}><TextInput type="password" value={password} onChange={e=>setPassword(e.target.value)} required minLength={8} autoComplete={mode==='login'?'current-password':'new-password'} /></Field><Button type="submit" loading={busy}>{mode==='login'?(en?'Sign in':'دخول'):(en?'Create account':'إنشاء الحساب')}</Button></form><div className="row row--wrap"><Button variant="ghost" onClick={()=>void run(()=>requestPasswordReset(email))}>{en?'Forgot password?':'نسيت كلمة المرور؟'}</Button><Button variant="secondary" onClick={()=>void run(signInWithGoogle)}>{en?'Continue with Google':'المتابعة عبر Google'}</Button></div></>}{authConfigured&&user&&<div className="row row--wrap"><Button variant="primary" onClick={()=>void run(async()=>{const {data:{user},error}=await supabase!.auth.getUser();if(error)throw error;if(!user)throw new Error('Sign in is required.');const coordinator=getActivePersistenceCoordinator();await migrateLocalDataToCloud(window.confirm(en?'Upload device data only when cloud is empty?':'ارفعي بيانات الجهاز إذا كانت السحابة فارغة؟'),user.id,coordinator);await authenticateCloudUser(user.id)})}>{en?'Migrate local data to cloud':'نقل البيانات للسحابة'}</Button><Button variant="secondary" onClick={()=>void run(async()=>{await signOut();logoutCloudUser()})}>{en?'Sign out':'تسجيل الخروج'}</Button></div>}{error&&<p role="alert" className="t-sm">{error}</p>}{message&&<p role="status" className="t-sm">{message}</p>}</Card>
+    return () => { active = false; sub.subscription.unsubscribe() }
+  }, [])
+
+  const run = async (action: () => Promise<unknown>, successText?: string) => {
+    setBusy(true); setError(''); setMessage('')
+    try {
+      await action()
+      if (supabase) {
+        const { data: auth, error: authError } = await supabase.auth.getUser()
+        if (authError) throw authError
+        setUser(auth.user?.email ?? null)
+        setUserId(auth.user?.id ?? null)
+        if (auth.user) await authenticateCloudUser(auth.user.id)
+        setStorageMode(activePersistenceMode())
+      }
+      setMessage(successText ?? (en ? 'Done. Check your email if confirmation is enabled.' : 'تم. راجعي بريدك لو تأكيد البريد مفعّل.'))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : (en ? 'Something went wrong.' : 'حصلت مشكلة.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const hasLocalContent = data.tasks.length + data.subjects.length + data.sessions.length + data.artworks.length > 0
+  const needsMigration = Boolean(userId) && storageMode === 'local'
+
+  return (
+    <Card className="settings-card">
+      <h2 className="section-head__title">{en ? 'Cloud account' : 'الحساب السحابي'}</h2>
+      <p className="t-sm t-muted">
+        {!authConfigured
+          ? (en ? 'Cloud account is not configured in this build — everything stays on this device.' : 'الحساب السحابي غير مهيأ في هذا الإصدار — كل حاجة محفوظة على الجهاز.')
+          : user
+            ? (en ? `Signed in as ${user}` : `تم تسجيل الدخول: ${user}`)
+            : (en ? 'Sign in to sync your tasks, subjects and artwork across devices.' : 'سجلي الدخول لمزامنة المهام والمواد والأعمال بين الأجهزة.')}
+      </p>
+      {user && (
+        <p className={`alert ${storageMode === 'cloud' ? 'alert--success' : 'alert--warning'}`}>
+          {storageMode === 'cloud'
+            ? (en ? 'Cloud sync is active. Changes are saved to your account.' : 'المزامنة السحابية شغالة. كل التغييرات بتتحفظ في حسابك.')
+            : (en ? 'This device is using local data only for now.' : 'الجهاز ده بيستخدم البيانات المحلية حاليًا.')}
+        </p>
+      )}
+
+      {authConfigured && !user && (
+        <>
+          <div className="segmented segmented--block" role="tablist" aria-label={en ? 'Account action' : 'إجراء الحساب'} style={{ marginBottom: 12 }}>
+            <button type="button" role="tab" aria-selected={mode === 'login'} className={`segmented__item ${mode === 'login' ? 'segmented__item--active' : ''}`} onClick={() => setMode('login')}>{en ? 'Sign in' : 'دخول'}</button>
+            <button type="button" role="tab" aria-selected={mode === 'register'} className={`segmented__item ${mode === 'register' ? 'segmented__item--active' : ''}`} onClick={() => setMode('register')}>{en ? 'Create account' : 'حساب جديد'}</button>
+          </div>
+          <form className="form-grid" onSubmit={(event) => { event.preventDefault(); void run(() => mode === 'login' ? signIn(email, password) : signUp(email, password, name)) }}>
+            {mode === 'register' && (
+              <Field label={en ? 'Display name' : 'الاسم'} className="form-grid__full">
+                <TextInput value={name} onChange={(event) => setName(event.target.value)} required autoComplete="name" />
+              </Field>
+            )}
+            <Field label="Email" className="form-grid__full">
+              <TextInput type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" />
+            </Field>
+            <Field
+              label={en ? 'Password' : 'كلمة المرور'}
+              className="form-grid__full"
+              hint={mode === 'register' ? (en ? 'At least 8 characters.' : '٨ حروف على الأقل.') : undefined}
+            >
+              <TextInput type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={8} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} />
+            </Field>
+            <Button type="submit" variant="primary" loading={busy} className="form-grid__full">
+              {mode === 'login' ? (en ? 'Sign in' : 'دخول') : (en ? 'Create account' : 'إنشاء الحساب')}
+            </Button>
+          </form>
+          <div className="row row--wrap" style={{ marginTop: 10 }}>
+            <Button size="sm" variant="ghost" onClick={() => void run(() => requestPasswordReset(email))}>{en ? 'Forgot password?' : 'نسيت كلمة المرور؟'}</Button>
+            <Button size="sm" variant="secondary" onClick={() => void run(signInWithGoogle)}>{en ? 'Continue with Google' : 'المتابعة عبر Google'}</Button>
+          </div>
+        </>
+      )}
+
+      {authConfigured && user && (
+        <div className="row row--wrap" style={{ marginTop: 10 }}>
+          {needsMigration && hasLocalContent && (
+            <Button
+              variant="primary"
+              loading={busy}
+              onClick={() => void run(async () => {
+                if (!userId) throw new Error('Sign in is required.')
+                await migrateLocalDataToCloud(true, userId, getActivePersistenceCoordinator())
+                setStorageMode(activePersistenceMode())
+              }, en ? 'Local data uploaded to your account.' : 'تم رفع البيانات المحلية لحسابك.')}
+            >
+              {en ? `Upload ${data.subjects.length} subjects & ${data.tasks.length} tasks to this account` : `ارفعي ${data.subjects.length} مادة و${data.tasks.length} مهمة للحساب ده`}
+            </Button>
+          )}
+          <Button variant="secondary" loading={busy} onClick={() => void run(signOut)}>{en ? 'Sign out' : 'تسجيل الخروج'}</Button>
+        </div>
+      )}
+
+      {error && <p className="alert alert--danger" role="alert">{error}</p>}
+      {message && <p className="alert alert--success">{message}</p>}
+    </Card>
+  )
 }

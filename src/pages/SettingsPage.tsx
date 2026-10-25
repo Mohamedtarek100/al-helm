@@ -1,7 +1,7 @@
-﻿import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
-import { Field, Select, TextInput, Toggle, DurationStepper } from '../components/Field'
+import { Field, TextInput, Toggle } from '../components/Field'
 import { DownloadIcon, UploadIcon } from '../components/icons'
 import { importBackup, downloadBackup } from '../services/export/backupService'
 import { resetAllData, updateProfile, updateSettings, useProfile, useSettings } from '../services/store'
@@ -9,9 +9,132 @@ import { PageFrame, PageHeading } from './PageFrame'
 import { useToast } from '../components/toastContext'
 import { ConfirmDialog } from '../components/Modal'
 import { useI18n } from '../i18n/useI18n'
-import type { Language } from '../i18n/translations'
 import { AuthPanel } from './AuthPanel'
-import { sendTestNotification } from '../services/reminders'
+import { ReminderSettings } from './ReminderSettings'
 
-export function SettingsPage() { const profile = useProfile(), settings = useSettings(), { notify } = useToast(), { t, language, setLanguage } = useI18n(); const input = useRef<HTMLInputElement>(null); const [confirm, setConfirm] = useState(false); const [importing, setImporting] = useState(false); const [testSending, setTestSending] = useState(false); const [testResult, setTestResult] = useState<string | null>(null); const runTestNotification = async () => { setTestSending(true); setTestResult(null); try { const result = await sendTestNotification(); if (result.ok) { setTestResult(language==='en'?'Test notification sent. Check your notification shade.':'تم إرسال إشعار تجريبي. تأكدي من شريط الإشعارات.'); notify(language==='en'?'Test notification sent.':'تم إرسال الإشعار التجريبي.', 'success') } else if (result.error === 'web_unsupported') { setTestResult(t('testNotificationWebUnsupported')) } else if (result.error === 'permission_denied') { setTestResult(t('testNotificationPermission')) } else { setTestResult(`${t('testNotificationFailed')}: ${result.error}`) } } finally { setTestSending(false) } }; const backup = () => { const name = downloadBackup(); notify(`${t('backupDownloaded')}: ${name}`, 'success') }; const load = async (file?: File) => { if (!file) return; setImporting(true); try { await importBackup(file); notify(t('backupRestored'), 'success') } catch (e) { notify(e instanceof Error ? e.message : 'ØªØ¹Ø°Ø± Ø§Ø³ØªÙŠØ±Ø§Ø¯ Ø§Ù„Ù…Ù„Ù.', 'danger') } finally { setImporting(false); if (input.current) input.current.value = '' } }; const reminder = (id: string, patch: Partial<(typeof settings.reminders)[number]>) => { void updateSettings({ reminders: settings.reminders.map(r => r.id === id ? { ...r, ...patch } : r) }).catch(e => notify(e instanceof Error ? e.message : t('retry'), 'danger')) }; return <PageFrame className="page-stack"><PageHeading eyebrow={t('settings')} title={t('settings')} subtitle={t('localStorageNotice')} /><div className="notice-card">{t('localStorageNotice')}</div><AuthPanel /><Card padded={false}><section className="settings-group"><h2 className="settings-group__title">{language === 'en' ? 'Profile' : 'Ù…Ù„ÙÙŠ Ø§Ù„Ø´Ø®ØµÙŠ'}</h2><p className="settings-group__hint">{language === 'en' ? 'Changes are saved automatically.' : 'Ø§Ù„ØªØºÙŠÙŠØ± Ø¨ÙŠØªØ­ÙØ¸ ØªÙ„Ù‚Ø§Ø¦ÙŠÙ‹Ø§.'}</p><div className="form-grid"><Field label={t('profileName')}><TextInput value={profile.displayName} maxLength={40} onChange={e => { void updateProfile({ displayName:e.target.value }).catch(error=>notify(error instanceof Error?error.message:t('retry'),'danger')) }} /></Field><Field label={t('dailyGoal')}><TextInput value={profile.motto} maxLength={120} placeholder={language==='en'?'e.g. Review two pages and draw for 15 minutes':'Ù…Ø«Ù„Ø§Ù‹: Ø£Ø±Ø§Ø¬Ø¹ ØµÙØ­ØªÙŠÙ† ÙˆØ£Ø±Ø³Ù… Ù¡Ù¥ Ø¯Ù‚ÙŠÙ‚Ø©'} onChange={e => { void updateProfile({ motto:e.target.value }).catch(error=>notify(error instanceof Error?error.message:t('retry'),'danger')) }} /></Field></div></section><section className="settings-group"><h2 className="settings-group__title">{language === 'en' ? 'Language, appearance & focus' : 'Ø§Ù„Ù„ØºØ© ÙˆØ§Ù„Ù…Ø¸Ù‡Ø± ÙˆØ§Ù„ØªØ±ÙƒÙŠØ²'}</h2><div className="form-grid"><Field label={t('language')}><Select value={language} onChange={e => { void Promise.resolve(setLanguage(e.target.value as Language)).catch(error=>notify(error instanceof Error?error.message:t('retry'),'danger')) }}><option value="en">{t('english')}</option><option value="ar">{t('arabic')}</option></Select></Field><Field label={t('theme')}><Select value={settings.theme} onChange={e => { const theme = e.target.value; if (theme === 'light' || theme === 'dark' || theme === 'system') void updateSettings({ theme }).catch(error=>notify(error instanceof Error?error.message:t('retry'),'danger')) }}><option value="light">{t('themeLight')}</option><option value="dark">{t('themeDark')}</option><option value="system">{t('themeSystem')}</option></Select></Field><Field label={t('customMotivation')}><TextInput value={settings.customMotivation} onChange={e => { void updateSettings({ customMotivation:e.target.value }).catch(error=>notify(error instanceof Error?error.message:t('retry'),'danger')) }} placeholder={language==='en'?'A phrase you want to remember':'Ø¬Ù…Ù„Ø© ØªØ­Ø¨ÙŠ ØªÙØªÙƒØ±ÙŠÙ‡Ø§'} /></Field><Field label={t('focusDuration')}><DurationStepper label={t('focusDuration')} value={settings.focusMinutes} min={1} max={120} onChange={v=>{ void updateSettings({ focusMinutes:v }).catch(error=>notify(error instanceof Error?error.message:t('retry'),'danger')) }} /></Field><Field label={t('shortBreakDuration')}><DurationStepper label={t('shortBreakDuration')} value={settings.shortBreakMinutes} min={1} max={60} onChange={v=>{ void updateSettings({ shortBreakMinutes:v }).catch(error=>notify(error instanceof Error?error.message:t('retry'),'danger')) }} /></Field></div><Toggle label={t('timerSound')} checked={settings.soundEnabled} onChange={soundEnabled => { void updateSettings({soundEnabled}).catch(error=>notify(error instanceof Error?error.message:t('retry'),'danger')) }} /></section><section className="settings-group"><h2 className="settings-group__title">{t('reminders')}</h2><p className="settings-group__hint">{t('remindersLocalOnly')}</p>{settings.reminders.map(r => <div className="reminder-setting" key={r.id}><Toggle label={({rem_morning:t('reminderMorning'),rem_afternoon:t('reminderAfternoon'),rem_evening:t('reminderEvening'),rem_studio:t('reminderStudio')} as Record<string,string>)[r.id]??r.label} checked={r.enabled} onChange={enabled => reminder(r.id, { enabled })} /><TextInput aria-label={`${language==='en'?'Time for':'وقت'} ${({rem_morning:t('reminderMorning'),rem_afternoon:t('reminderAfternoon'),rem_evening:t('reminderEvening'),rem_studio:t('reminderStudio')} as Record<string,string>)[r.id]??r.label}`} type="time" value={r.time} onChange={e => reminder(r.id, { time: e.target.value })} /></div>)}<Button variant="secondary" loading={testSending} onClick={() => void runTestNotification()}>{t('testNotification')}</Button>{testResult && <p className="t-xs t-muted">{testResult}</p>}</section><section className="settings-group"><h2 className="settings-group__title">{t('backupData')}</h2><p className="settings-group__hint">{t('backupHint')}</p><div className="row row--wrap"><Button variant="secondary" leadingIcon={<DownloadIcon size={17} />} onClick={backup}>{t('downloadBackup')}</Button><Button variant="secondary" leadingIcon={<UploadIcon size={17} />} loading={importing} onClick={() => input.current?.click()}>{t('restoreBackup')}</Button><input ref={input} type="file" accept="application/json,.json" className="visually-hidden" onChange={e => void load(e.target.files?.[0])} /><Button variant="danger" onClick={() => setConfirm(true)}>{t('clearLocalData')}</Button></div><p className="t-xs t-muted">{language==='en'?'Storage: local to this device · Cloud sync uses your Supabase account when signed in.':'التخزين: محلي على هذا الجهاز · مزامنة السحابة تعمل بحسابك في Supabase عند تسجيل الدخول.'}</p></section></Card><ConfirmDialog open={confirm} title={t('clearDataConfirmTitle')} message={t('clearDataConfirmBody')} confirmLabel={t('clearDataConfirm')} destructive onConfirm={async () => { try { await resetAllData(); setConfirm(false); notify(language==='en'?'Local data cleared.':'Ø§ØªÙ…Ø³Ø­Øª Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…Ø­Ù„ÙŠØ©.', 'info') } catch(error) { notify(error instanceof Error?error.message:t('retry'),'danger') } }} onCancel={() => setConfirm(false)} /></PageFrame> }
+export function SettingsPage() {
+  const profile = useProfile()
+  const settings = useSettings()
+  const { notify } = useToast()
+  const { t, language, setLanguage } = useI18n()
+  const en = language === 'en'
+  const input = useRef<HTMLInputElement>(null)
+  const [confirm, setConfirm] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [name, setName] = useState(profile.displayName)
+  const [motto, setMotto] = useState(profile.motto)
+  const [savingProfile, setSavingProfile] = useState(false)
 
+  useEffect(() => { setName(profile.displayName); setMotto(profile.motto) }, [profile.displayName, profile.motto])
+
+  const backup = () => {
+    try {
+      const fileName = downloadBackup()
+      notify(`${t('backupDownloaded')}: ${fileName}`, 'success')
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('retry'), 'danger')
+    }
+  }
+
+  const load = async (file?: File) => {
+    if (!file) return
+    setImporting(true)
+    try {
+      await importBackup(file)
+      notify(t('backupRestored'), 'success')
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('importInvalid'), 'danger')
+    } finally {
+      setImporting(false)
+      if (input.current) input.current.value = ''
+    }
+  }
+
+  const saveProfile = async () => {
+    setSavingProfile(true)
+    try {
+      await updateProfile({ displayName: name.trim() || (en ? 'Artist' : 'فنانة'), motto })
+      notify(t('save'), 'success')
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('retry'), 'danger')
+    } finally {
+      setSavingProfile(false)
+    }
+  }
+
+  return (
+    <PageFrame className="page-stack">
+      <PageHeading eyebrow={t('settings')} title={t('settings')} subtitle={t('localStorageNotice')} />
+
+      <div className="settings-grid">
+        <div className="settings-column">
+          <Card className="settings-card">
+            <h2 className="section-head__title">{en ? 'Your profile' : 'ملفك'}</h2>
+            <div className="form-grid">
+              <Field label={t('profileName')} className="form-grid__full">
+                <TextInput value={name} onChange={(event) => setName(event.target.value)} maxLength={60} />
+              </Field>
+              <Field label={t('dailyGoal')} className="form-grid__full" hint={t('intentionHint')}>
+                <TextInput value={motto} onChange={(event) => setMotto(event.target.value)} maxLength={140} />
+              </Field>
+            </div>
+            <div className="row row--end" style={{ marginTop: 12 }}>
+              <Button variant="primary" loading={savingProfile} onClick={() => { void saveProfile() }}>{t('save')}</Button>
+            </div>
+          </Card>
+
+          <Card className="settings-card">
+            <h2 className="section-head__title">{t('language')}</h2>
+            <div className="row row--wrap" style={{ marginBottom: 14 }}>
+              <Button variant={language === 'en' ? 'primary' : 'secondary'} onClick={() => setLanguage('en')}>{t('english')}</Button>
+              <Button variant={language === 'ar' ? 'primary' : 'secondary'} onClick={() => setLanguage('ar')}>{t('arabic')}</Button>
+            </div>
+            <Toggle
+              label={t('soundEnabled')}
+              description={t('timerSound')}
+              checked={settings.soundEnabled}
+              onChange={(checked) => { void updateSettings({ soundEnabled: checked }).catch((error) => notify(error instanceof Error ? error.message : t('retry'), 'danger')) }}
+            />
+          </Card>
+
+          <AuthPanel />
+        </div>
+
+        <div className="settings-column">
+          <ReminderSettings />
+
+          <Card className="settings-card">
+            <h2 className="section-head__title">{t('backupData')}</h2>
+            <p className="t-sm t-muted">{t('backupHint')}</p>
+            <div className="row row--wrap" style={{ marginTop: 12 }}>
+              <Button variant="secondary" leadingIcon={<DownloadIcon size={16} />} onClick={backup}>{t('downloadBackup')}</Button>
+              <Button variant="secondary" leadingIcon={<UploadIcon size={16} />} loading={importing} onClick={() => input.current?.click()}>{t('restoreBackup')}</Button>
+              <input ref={input} type="file" accept="application/json,.json" hidden onChange={(event) => { void load(event.target.files?.[0]) }} />
+            </div>
+          </Card>
+
+          <Card className="settings-card settings-card--danger">
+            <h2 className="section-head__title">{t('clearLocalData')}</h2>
+            <p className="t-sm t-muted">{t('clearDataConfirmBody')}</p>
+            <Button variant="danger" onClick={() => setConfirm(true)} style={{ marginTop: 12 }}>{t('clearLocalData')}</Button>
+          </Card>
+        </div>
+      </div>
+
+      <ConfirmDialog
+        open={confirm}
+        title={t('clearDataConfirmTitle')}
+        message={t('clearDataConfirmBody')}
+        confirmLabel={t('clearDataConfirm')}
+        cancelLabel={t('cancel')}
+        destructive
+        onConfirm={async () => {
+          setConfirm(false)
+          try { await resetAllData(); notify(t('notificationsCleared'), 'info') }
+          catch (error) { notify(error instanceof Error ? error.message : t('retry'), 'danger') }
+        }}
+        onCancel={() => setConfirm(false)}
+      />
+    </PageFrame>
+  )
+}

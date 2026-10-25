@@ -57,6 +57,8 @@ export interface Settings {
   longBreakEvery: number
   soundEnabled: boolean
   customMotivation: string
+  /** Whether the student opted in to announcement notifications. */
+  notificationsOptIn: boolean
   reminders: ReminderPreference[]
   /** Whether these preferences currently live locally or in the cloud. */
   storage: 'local' | 'cloud'
@@ -116,7 +118,12 @@ export interface StudySession extends Timestamped {
 /* Tasks                                                               */
 /* ------------------------------------------------------------------ */
 
-export type TaskPriority = 'low' | 'medium' | 'high'
+/**
+ * Task priority. `urgent` is the top level; existing records without a value
+ * default to `medium` (see hydrateTask). Persisted in localStorage, backups,
+ * the cloud `tasks.priority` column and the admin/edge contracts.
+ */
+export type TaskPriority = 'urgent' | 'high' | 'medium' | 'low'
 
 export type TaskCategory =
   | 'study'
@@ -206,8 +213,12 @@ export interface Artwork extends Timestamped {
    */
   imageUrl: string
   imagePath: string | null
-  /** Local image bytes persisted in IndexedDB so drawings survive reloads. */
+  /** How a drawing was made. Drives the studio restore path. */
   imageData?: string
+  /** Paper style used when the drawing was made (studio restore). */
+  paper?: 'white' | 'cream' | 'grid'
+  /** Serialised vector stroke model (JSON) so drawings can be edited again. */
+  drawing?: string
   /** Where the artwork came from: drawn in-app, camera photo, or imported file. */
   source?: 'drawn' | 'photo' | 'imported'
   /** Category key (see ART_CATEGORIES). Empty string = uncategorised. */

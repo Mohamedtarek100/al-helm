@@ -2,6 +2,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import { BellIcon, CogIcon, HomeIcon, CalendarIcon, CheckSquareIcon, MenuIcon, CloseIcon, PaletteIcon, TimerIcon, TrendIcon, SunIcon, MoonIcon, MonitorIcon } from '../components/icons'
 import { useCollection, updateSettings, useSettings } from '../services/store'
+import { SyncIndicator } from '../components/SyncIndicator'
 import { cn } from '../utils/cn'
 import { useI18n } from '../i18n/useI18n'
 import type { TranslationKey } from '../i18n/translations'
@@ -73,6 +74,7 @@ export function AppShell() {
           <Brand />
         </div>
         <div className="topbar-actions">
+          <SyncIndicator />
           <ThemeToggle />
           <button className="language-toggle" type="button" onClick={() => setLanguage(language === 'en' ? 'ar' : 'en')} aria-label={language === 'en' ? 'Switch to Arabic' : 'Switch to English'}>{language === 'en' ? 'العربية' : 'English'}</button>
           <NavLink className="topbar-bell" to="/notifications" aria-label={t('notifications')}>

@@ -1,6 +1,6 @@
 import type { AppData } from '../../types'
 import type { DataAdapter } from './adapter'
-import { createInitialData, hydrateData } from '../domain'
+import { createInitialData, hydrateData, needsTaskNormalization } from '../domain'
 
 export type PersistenceMode = 'local' | 'cloud'
 export type PersistenceStatus = 'ready' | 'saving' | 'error'
@@ -69,7 +69,14 @@ function sameRecordContent(left:AppData,right:AppData):boolean {
  * Coordinates the local recovery snapshot and authenticated cloud state. Local
  * data remains the source until an explicit, verified migration succeeds.
  */
+/**
+ * Whether the last `initialize()` found user content on disk that still needs
+ * normalising. `initialize()` deliberately returns a HYDRATED snapshot, so the
+ * store cannot inspect raw storage through it — this flag is captured while the
+ * raw value is still available.
+ */
 export class PersistenceCoordinator {
+  private pendingNormalization = false
   private localSnapshot: AppData = createInitialData()
   private cloudRecoverySnapshot: AppData | null = null
   private state: PersistenceState = { data:this.localSnapshot, mode:'local', status:'ready', error:null, userId:null, migrationRequired:false }
@@ -111,11 +118,19 @@ export class PersistenceCoordinator {
 
   async initialize(): Promise<PersistenceState> {
     const local = await this.local.load()
+    // Capture staleness BEFORE hydrating: hydrateData repairs the copy, so
+    // inspecting the returned state can never detect a legacy record.
+    this.pendingNormalization = needsTaskNormalization(local)
     this.localSnapshot = hydrateData(local)
-
     this.state = { data:this.localSnapshot, mode:'local', status:'ready', error:null, userId:null, migrationRequired:false }
     return this.state
   }
+
+  /** True when the snapshot loaded by `initialize()` contained legacy records. */
+  needsNormalization(): boolean { return this.pendingNormalization }
+
+  /** Called by the store once it has written the normalised snapshot back. */
+  clearPendingNormalization(): void { this.pendingNormalization = false }
   async refreshLocalSnapshot(data:AppData):Promise<void>{
     if(this.state.mode!=='local')throw new Error('Local edits cannot replace cloud state.')
     this.localSnapshot=structuredClone(data)

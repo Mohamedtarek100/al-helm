@@ -12,3 +12,7 @@
 @import './pages.css';
 @import './dashboard.css';
 @import './art-library.css';
+/* Overhaul addendum: new components only (combobox, priority, reminders,
+   admin, skeletons). Imported last so it can never be overridden by the
+   legacy sheets, and it redefines no existing selector. */
+@import './components-addendum.css';

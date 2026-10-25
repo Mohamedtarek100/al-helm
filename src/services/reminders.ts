@@ -14,8 +14,9 @@ import type { ReminderPreference } from '../types'
  * first, then reschedules exactly the enabled ones. No duplicates.
  */
 
-const REMINDER_CHANNEL_ID = 'al-helm-reminders'
+const REMINDER_CHANNEL_ID = '4ulife-reminders'
 const REMINDER_CHANNEL_NAME = 'Study reminders'
+const TEST_NOTIFICATION_ID = 1_999_999_999
 
 /** Registry of pending scheduled ids, persisted locally for cancellation. */
 const SCHEDULE_KEY = 'alhelm:reminder-schedule'
@@ -25,8 +26,17 @@ interface StoredSchedule {
   [reminderId: string]: string
 }
 
-function isNative(): boolean {
-  return Capacitor.isNativePlatform()
+export function isNative(): boolean {
+  try {
+    return Capacitor.isNativePlatform()
+  } catch {
+    return false
+  }
+}
+
+/** Whether this platform can schedule OS-level notifications at all. */
+export function canScheduleReminders(): boolean {
+  return isNative()
 }
 
 function readStored(): StoredSchedule {
@@ -72,11 +82,14 @@ function ensureChannel(): Promise<void> {
   const channel: Channel = {
     id: REMINDER_CHANNEL_ID,
     name: REMINDER_CHANNEL_NAME,
+    description: 'Study and studio reminders from 4uLife',
     importance: 5,
     visibility: 1,
     vibration: true,
     sound: 'default',
   }
+  // createChannel is idempotent on Android; a failure here is not fatal because
+  // the schedule call reports the real outcome to the UI.
   return LocalNotifications.createChannel(channel).then(
     () => undefined,
     () => undefined,
@@ -96,10 +109,14 @@ export interface ReminderSyncResult {
 
 export async function requestReminderPermission(): Promise<boolean> {
   if (!isNative()) return false
-  const current = await LocalNotifications.checkPermissions()
-  if (current.display === 'granted') return true
-  const result = await LocalNotifications.requestPermissions()
-  return result.display === 'granted'
+  try {
+    const current = await LocalNotifications.checkPermissions()
+    if (current.display === 'granted') return true
+    const result = await LocalNotifications.requestPermissions()
+    return result.display === 'granted'
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -114,6 +131,14 @@ export async function syncReminders(
   if (!isNative()) {
     return { scheduled: 0, permissionGranted: false, webUnsupported: true, error: null }
   }
+  const enabled = reminders.filter((reminder) => reminder.enabled)
+  const storedBefore = readStored()
+  // A user who disabled every reminder should not even be prompted.
+  if (enabled.length === 0) {
+    await cancelNativeIds(Object.keys(storedBefore).map(hashId))
+    writeStored({})
+    return { scheduled: 0, permissionGranted: false, webUnsupported: false, error: null }
+  }
   const granted = await requestReminderPermission()
   if (!granted) {
     return { scheduled: 0, permissionGranted: false, webUnsupported: false, error: 'permission_denied' }
@@ -125,8 +150,7 @@ export async function syncReminders(
   let scheduled = 0
   let failure: string | null = null
 
-  for (const reminder of reminders) {
-    if (!reminder.enabled) continue
+  for (const reminder of enabled) {
     const when = nextOccurrence(reminder.time)
     if (!when) {
       failure = failure ?? `invalid time: ${reminder.time}`
@@ -140,16 +164,9 @@ export async function syncReminders(
       continue
     }
 
-    // Cancel any stale native schedule for this reminder id.
-    if (stored[reminder.id]) {
-      try {
-        await LocalNotifications.cancel({
-          notifications: [{ id: hashId(reminder.id) }],
-        })
-      } catch {
-        /* nothing pending */
-      }
-    }
+    // Cancel any stale native schedule for this reminder id before
+    // rescheduling so a time change never leaves two pending alarms.
+    if (stored[reminder.id]) await cancelNativeIds([hashId(reminder.id)])
 
     try {
       await LocalNotifications.schedule({
@@ -171,18 +188,8 @@ export async function syncReminders(
   }
 
   // Cancel schedules for reminders that were removed entirely.
-  const enabledIds = new Set(reminders.filter((r) => r.enabled).map((r) => r.id))
-  for (const id of Object.keys(stored)) {
-    if (!enabledIds.has(id)) {
-      try {
-        await LocalNotifications.cancel({
-          notifications: [{ id: hashId(id) }],
-        })
-      } catch {
-        /* nothing pending */
-      }
-    }
-  }
+  const enabledIds = new Set(enabled.map((r) => r.id))
+  await cancelNativeIds(Object.keys(stored).filter((id) => !enabledIds.has(id)).map(hashId))
 
   writeStored(next)
   return { scheduled, permissionGranted: true, webUnsupported: false, error: failure }
@@ -215,20 +222,20 @@ export async function sendTestNotification(): Promise<{ ok: boolean; error: stri
   }
 }
 
-const TEST_NOTIFICATION_ID = 1999999999
-
-/** Cancel every Al-Helm native reminder (used on clear/reset). */
-export async function cancelAllReminders(): Promise<void> {
-  if (!isNative()) return
-  const stored = readStored()
-  const ids = Object.keys(stored).map((id) => ({ id: hashId(id) }))
-  if (ids.length > 0) {
-    try {
-      await LocalNotifications.cancel({ notifications: ids })
+async function cancelNativeIds(ids: number[]): Promise<void> {
+  if (!isNative() || ids.length === 0) return
+  try {
+    await LocalNotifications.cancel({ notifications: ids.map((id) => ({ id })) })
     } catch {
       /* nothing pending */
     }
   }
+
+  /** Cancel every native reminder (used on clear/reset). */
+export async function cancelAllReminders(): Promise<void> {
+  if (!isNative()) return
+  const stored = readStored()
+  await cancelNativeIds(Object.keys(stored).map(hashId))
   writeStored({})
 }
 
@@ -242,7 +249,7 @@ function hashId(id: string): number {
     hash = (hash << 5) - hash + id.charCodeAt(i)
     hash |= 0 // force int32
   }
-  return Math.abs(hash)
+  return (Math.abs(hash) % 2_000_000_000) + 1
 }
 
 /* ------------------------------------------------------------------ */

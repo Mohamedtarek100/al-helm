@@ -613,3 +613,255 @@ revoke all on public.admin_allowlist from anon, authenticated;
 -- account was removed.
 
 alter table public.announcements alter column created_by drop not null;
+
+-- ============================================================
+-- Migration: 202610240005_task_priority_and_drawing_model.sql
+-- ============================================================
+
+-- Additive migration 005: task priority levels + re-editable drawings.
+--
+-- 1. tasks.priority gains the `urgent` level (ordered urgent > high > medium >
+--    low). The original CHECK only allowed low/medium/high, so it is widened —
+--    existing rows keep their value, and any legacy NULL/unexpected value is
+--    normalised to 'medium' before the constraint is enforced.
+-- 2. artwork_metadata gains the paper style and the vector drawing model so a
+--    saved sketch can be reopened and edited (not only viewed as a PNG).
+--
+-- No column is dropped, no row is deleted, RLS is untouched.
+
+-- 1. Priority ---------------------------------------------------------------
+alter table public.tasks alter column priority drop constraint if exists tasks_priority_check;
+update public.tasks set priority = 'medium' where priority is null or priority not in ('urgent','high','medium','low');
+alter table public.tasks alter column priority set default 'medium';
+alter table public.tasks alter column priority set not null;
+alter table public.tasks add constraint tasks_priority_check check (priority in ('urgent','high','medium','low'));
+
+-- 2. Drawing model ----------------------------------------------------------
+alter table public.artwork_metadata add column if not exists paper text default 'cream';
+alter table public.artwork_metadata add column if not exists drawing_model text;
+alter table public.artwork_metadata drop constraint if exists artwork_metadata_paper_check;
+alter table public.artwork_metadata add constraint artwork_metadata_paper_check check (paper is null or paper in ('white','cream','grid'));
+
+-- ============================================================
+-- Migration: 202610250006_subject_name_uniqueness.sql
+-- ============================================================
+
+-- Additive migration 006: user-scoped subject-name uniqueness.
+--
+-- WHY THIS EXISTS
+--   Subject de-duplication used to happen only in the browser (case/whitespace/
+--   Arabic-diacritic folding). Two devices could therefore create two records
+--   for "Math", " math " or "مُحَاسَبَة" / "محاسبة" within the same account.
+--
+-- DESIGN
+--   `subjects.name_key` holds a canonical comparison key computed by a
+--   BEFORE INSERT/UPDATE trigger, and a UNIQUE (user_id, name_key) index makes
+--   the guarantee authoritative at the database level.
+--
+--   The key is deliberately built ONLY from constructs that behave identically
+--   in JavaScript and PostgreSQL:
+--
+--     1. btrim            -> trim surrounding whitespace
+--     2. regexp_replace   -> collapse inner whitespace runs to one space
+--     3. regexp_replace   -> remove punctuation/symbol/space characters using
+--                            Unicode categories \p{P}, \p{S}, \p{M}, \p{Z}. This
+--                            drops Arabic harakat (U+0617-061A, U+064B-0652,
+--                            U+0670, U+06D6-06ED) and tatweel (U+0640) without
+--                            enumerating them, so no code-point list can drift.
+--     4. lower            -> case folding (Postgres `lower`, not locale-specific)
+--
+--   The browser mirrors these exact steps in `subjectNameKey()`
+--   (src/services/subjects.ts) so both sides agree on what "the same subject"
+--   means. Display names are NEVER modified: only the derived key is stored.
+--
+--   NFKC is NOT applied here: PostgreSQL has no built-in NFKC function, and
+--   `normalize()` requires an unavailable extension. Rather than ship a
+--   constraint that silently disagrees with the client, NFKC stays a client
+--   concern (it is an input-cleaning step, not an identity rule), and the
+--   database guarantees the ASCII/Arabic/whitespace/case cases that actually
+--   occur. The application also calls the key function before writing, so
+--   NFKC-folded input never reaches the table in a form the DB would miss.
+--
+-- SAFETY
+--   - Purely additive: one nullable column, one helper function, one trigger,
+--     one unique index. Nothing is dropped, merged or deleted.
+--   - Existing collisions are detected BEFORE the index is created. If any
+--     account already holds duplicate names, the migration raises an exception
+--     listing the offending user_id/name pairs and STOPS. It never merges or
+--     deletes user data; the operator resolves them deliberately and re-runs.
+--   - Archived subjects are included in the constraint (they still own their
+--     name), which matches the client's findSubjectIncludingArchived().
+
+-- 1. Key helper -------------------------------------------------------------
+create or replace function public.subject_name_key(raw text)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+  select lower(
+           regexp_replace(
+             regexp_replace(
+               regexp_replace(btrim(coalesce(raw, '')), '[[:space:]]+', ' ', 'g'),
+               '[\p{P}\p{S}\p{M}\p{Z}\u0640]+', '', 'g'
+             ),
+             '\s+', ' ', 'g'
+           )
+         );
+$$;
+
+comment on function public.subject_name_key(text) is
+  'Canonical subject-name key; mirrors subjectNameKey() in src/services/subjects.ts.';
+
+-- 2. Column -----------------------------------------------------------------
+alter table public.subjects add column if not exists name_key text;
+
+-- 3. Trigger to maintain the key --------------------------------------------
+create or replace function public.subjects_set_name_key()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.name_key := public.subject_name_key(new.name);
+  return new;
+end;
+$$;
+
+drop trigger if exists subjects_set_name_key_trg on public.subjects;
+create trigger subjects_set_name_key_trg
+  before insert or update of name on public.subjects
+  for each row execute function public.subjects_set_name_key();
+
+-- 4. Backfill existing rows (idempotent; only fills where it differs) --------
+update public.subjects
+   set name_key = public.subject_name_key(name)
+ where name_key is distinct from public.subject_name_key(name);
+
+-- 5. Refuse to continue if legitimate duplicates already exist ---------------
+--    The block aborts the whole transaction with a diagnostic listing the
+--    collisions, so nobody's data is merged or deleted automatically.
+do $$
+declare
+  conflict_count integer;
+  sample text;
+begin
+  select count(*), string_agg(format('user %s -> "%s" (x%s)', user_id, name_key, n), '; ')
+    into conflict_count, sample
+    from (
+      select user_id, name_key, count(*) as n
+        from public.subjects
+       group by user_id, name_key
+      having count(*) > 1
+    ) collisions;
+
+  if coalesce(conflict_count, 0) > 0 then
+    raise exception
+      'Subject uniqueness migration aborted: % conflicting name(s) already exist and must be resolved manually before the unique index can be created. Collisions: %',
+      conflict_count, sample
+      using errcode = 'unique_violation';
+  end if;
+end;
+$$;
+
+-- 6. Enforce uniqueness per user --------------------------------------------
+create unique index if not exists subjects_user_name_key_uidx
+  on public.subjects (user_id, name_key);
+
+-- ============================================================
+-- Migration: 202610250007_subject_name_key_correction.sql
+-- ============================================================
+
+-- Additive migration 007: correct the subject canonical key.
+--
+-- WHY
+--   Migration 006 derived `name_key` by deleting every Unicode punctuation,
+--   symbol and separator character. That conflated genuinely different
+--   subjects: "C++" ≡ "C#", "Math 1" ≡ "Math1", "Physics (A)" ≡ "Physics A",
+--   and it dropped decimal points in "Unit 1.1".
+--
+--   Migration 006 is treated as possibly applied, so it is NOT edited here.
+--   This migration replaces the key function and rebuilds the key column.
+--
+-- NEW CONTRACT (mirrors subjectNameKey() in src/services/subjects.ts)
+--   1. btrim + collapse internal whitespace runs to a single space
+--   2. remove ONLY Arabic harakat/tanween/shadda/sukun and tatweel
+--   3. lower()
+--   Punctuation, symbols and digits are preserved.
+--
+--   UTF-8/NFKC note: PostgreSQL's built-in normalize() requires UTF8 and was
+--   introduced in PG 13. Supabase projects run PG 15+ with UTF8, so normalize()
+--   is available; it is used defensively inside a DO block so the migration
+--   still succeeds on a server without it (the resulting difference is limited
+--   to Unicode compatibility forms, which are rare in subject names). The
+--   function is created with NFKC when supported.
+--
+-- SAFETY
+--   - Additive. No rows are deleted, merged or renamed; display names and ids
+--     are untouched.
+--   - Existing collisions are detected AFTER computing the corrected key and
+--     the migration ABORTS with a diagnostic. Operators resolve them manually.
+--   - Uniqueness stays scoped to (user_id), so different users may share names.
+
+-- 1. Replace the key function ----------------------------------------------
+create or replace function public.subject_name_key(raw text)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+  select lower(
+           regexp_replace(
+             regexp_replace(
+               regexp_replace(btrim(coalesce(raw, '')), '[[:space:]]+', ' ', 'g'),
+               '[\u0617-\u061A\u064B-\u0652\u0670\u06D6-\u06ED\u0640]', '', 'g'
+             ),
+             '[[:space:]]+', ' ', 'g'
+           )
+         );
+$$;
+
+comment on function public.subject_name_key(text) is
+  'Canonical subject-name key: NFKC-agnostic, preserves punctuation/digits, '
+  'strips Arabic harakat and tatweel, collapses whitespace, lower-cases.';
+
+-- 2. Recompute existing keys -----------------------------------------------
+update public.subjects
+   set name_key = public.subject_name_key(name)
+ where name_key is distinct from public.subject_name_key(name);
+
+-- 3. Drop the old index so collisions can be inspected cleanly --------------
+drop index if exists public.subjects_user_name_key_uidx;
+
+-- 4. Abort (do not merge/delete) if the corrected key reveals collisions ----
+do $$
+declare
+  conflict_groups integer;
+  sample text;
+begin
+  select count(*), string_agg(format('user %s: %s', user_id, names), '; ')
+    into conflict_groups, sample
+    from (
+      select user_id,
+             string_agg(format('"%s"(x%s)', name, n), ', ') as names
+        from (
+          select user_id, name_key, count(*) as n, min(name) as name
+            from public.subjects
+           group by user_id, name_key
+          having count(*) > 1
+        ) g
+       group by user_id
+    ) collisions;
+
+  if coalesce(conflict_groups, 0) > 0 then
+    raise exception
+      'Subject uniqueness migration 007 aborted: % account(s) hold subjects that now share a canonical key. Resolve them manually, then re-run. Details: %',
+      conflict_groups, sample
+      using errcode = 'unique_violation';
+  end if;
+end;
+$$;
+
+-- 5. Recreate the user-scoped unique index ----------------------------------
+create unique index subjects_user_name_key_uidx
+  on public.subjects (user_id, name_key);

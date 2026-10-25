@@ -25,6 +25,10 @@ void registerServiceWorker()
 // and locally to at most one call per 15 minutes).
 void import('./services/activity').then((m) => void m.maybeHeartbeat())
 
+// Connectivity/sync status: installs online/offline listeners and performs one
+// throttled reachability probe. Never blocks startup.
+void import('./services/syncStatus').then((m) => m.initConnectivity())
+
 
 // OTA update check: manual-mode Capacitor updater. Runs once at launch on
 // native builds only; on web this is a no-op. Activation is deferred so it

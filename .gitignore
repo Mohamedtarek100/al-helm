@@ -42,3 +42,8 @@ android/keystore.properties
 
 supabase/.temp/
 dbdata.sql
+
+# Local deployment clone and QA output (not source)
+al-helm-app-deploy/
+qa-artifacts/
+*.log

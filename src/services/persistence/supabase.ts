@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { AppData } from '../../types'
+import { hydrateData } from '../domain'
 import type { CloudPersistence } from './coordinator'
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
@@ -12,7 +13,11 @@ const tableBySlice = {
   journal: 'journal_entries', goals: 'artistic_goals', artworks: 'artwork_metadata', challenges: 'drawing_challenges',
   letters: 'future_letters', exams: 'exam_dates', notifications: null,
 } as const
-const toDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).filter(([key]) => !['imageUrl','imagePath','imageData'].includes(key)).map(([k,v]) => [k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`),v]))
+const toDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).filter(([key]) => !['imageUrl','imagePath','imageData'].includes(key)).map(([k,v]) => [
+  // DB column overrides where the camelCase name is ambiguous.
+  k === 'paper' ? 'paper' : k === 'drawing' ? 'drawing_model' : k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`),
+  v,
+]))
 const fromDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'user_id').map(([k,v]) => [k.replace(/_([a-z])/g, (_,m:string) => m.toUpperCase()),v]))
 
 /** Cloud persistence adapter. Requires a signed-in Supabase user; RLS remains authoritative. */
@@ -47,22 +52,23 @@ export class SupabaseAdapter implements CloudPersistence {
     const { data: profile, error } = await this.client.from('profiles').select('*').eq('id', userId).maybeSingle()
     if (error) throw error
     const result: Partial<AppData> = {}
+    const defaults = hydrateData(null)
     if (profile) {
       result.profile = { displayName: profile.display_name, motto: profile.motto, journeyStart: profile.journey_start, avatarSeed: profile.avatar_seed }
-      result.settings = { theme: profile.theme, language: profile.language, focusMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15, longBreakEvery: 4, soundEnabled: true, customMotivation: '', reminders: [], storage: 'cloud' }
+      result.settings = { ...defaults.settings, theme: profile.theme, language: profile.language, storage: 'cloud' }
     }
     const { data: prefRow, error: prefError } = await this.client.from('user_preferences').select('preferences').eq('user_id', userId).maybeSingle()
     if (prefError) throw prefError
     if (prefRow?.preferences) {
       const prefs = prefRow.preferences as Partial<AppData['settings']>
-      result.settings = { ...(result.settings ?? { theme:'light', language:'en', focusMinutes:25, shortBreakMinutes:5, longBreakMinutes:15, longBreakEvery:4, soundEnabled:true, customMotivation:'', reminders:[], storage:'cloud' }), ...prefs, storage:'cloud' }
+      result.settings = { ...defaults.settings, ...(result.settings ?? {}), ...prefs, storage:'cloud' }
     }
     if (!result.profile) {
       const { data: authProfile, error: authError } = await this.client.auth.getUser()
       if (authError) throw authError
       result.profile = { displayName: String(authProfile.user?.user_metadata?.display_name ?? ''), motto:'', journeyStart:new Date().toISOString().slice(0,10), avatarSeed:'alhelm' }
     }
-    if (!result.settings) result.settings = { theme:'light', language:'en', focusMinutes:25, shortBreakMinutes:5, longBreakMinutes:15, longBreakEvery:4, soundEnabled:true, customMotivation:'', reminders:[], storage:'cloud' }
+    if (!result.settings) result.settings = { ...defaults.settings, storage:'cloud' }
     const { data: exams, error: examsError } = await this.client.from('exam_dates').select('*').eq('user_id', userId)
     if (examsError) throw examsError
     result.exams = (exams ?? []).map(row => ({ id:row.id, title:row.title, subjectId:row.subject_id, examAt:row.exam_at, timezone:row.timezone, notes:row.notes, createdAt:row.created_at, updatedAt:row.updated_at }))

@@ -9,7 +9,7 @@ import { timeToMinutes, todayKey } from './date'
 export type TaskStatusFilter = 'all' | 'open' | 'done' | 'overdue' | 'today'
 export type TaskSortKey = 'due' | 'priority' | 'created'
 
-const priorityWeight: Record<TaskPriority, number> = { high: 3, medium: 2, low: 1 }
+const priorityWeight: Record<TaskPriority, number> = { urgent: 4, high: 3, medium: 2, low: 1 }
 
 /** A task is overdue when its due date/time has passed and it is not done. */
 export function isTaskOverdue(task: Task, now: Date = new Date()): boolean {

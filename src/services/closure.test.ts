@@ -22,6 +22,28 @@ function freshCoordinator(local: DataAdapter, cloud: CloudPersistence): Persiste
 let uid = 0
 const nextUser = (prefix = 'u') => `${prefix}-${++uid}`
 
+/**
+ * Task fixtures must be real tasks: `hydrateData` now normalises every task
+ * (missing priority defaults to 'medium'), so partial stubs would change shape
+ * on the round trip. This helper builds a complete, valid Task.
+ */
+const task = (id: string, extra: Record<string, unknown> = {}) => ({
+  id,
+  title: `Task ${id}`,
+  description: '',
+  subjectId: null,
+  dueDate: '2026-10-01',
+  dueTime: '',
+  priority: 'medium' as const,
+  category: 'study' as const,
+  estimatedMinutes: 30,
+  completed: false,
+  completedAt: null,
+  createdAt: '2026-10-01T00:00:00.000Z',
+  updatedAt: '2026-10-01T00:00:00.000Z',
+  ...extra,
+})
+
 function data(overrides: Partial<AppData> = {}): AppData {
   const base = createInitialData()
   return { ...base, ...overrides }
@@ -64,7 +86,7 @@ function makeCloud(opts: {
 
 describe('PersistenceCoordinator: initialized-but-empty cloud migration', () => {
   it('keeps local mode with local data and userId so migration can complete', async () => {
-    const localData = data({ tasks: [{ id: 't1' } as never] })
+    const localData = data({ tasks: [task('t1')] })
     const local = makeLocal(localData)
     // Cloud returns profile/settings only (non-null), no user content.
     const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'user-1' })
@@ -78,7 +100,7 @@ describe('PersistenceCoordinator: initialized-but-empty cloud migration', () => 
   })
 
   it('completes explicit migration from this state', async () => {
-    const localData = data({ tasks: [{ id: 't1' } as never], subjects: [{ id: 's1' } as never] })
+    const localData = data({ tasks: [task('t1')], subjects: [{ id: 's1' } as never] })
     const local = makeLocal(localData)
     const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'user-1' })
     const coordinator = freshCoordinator(local, cloud)
@@ -92,7 +114,7 @@ describe('PersistenceCoordinator: initialized-but-empty cloud migration', () => 
   })
 
   it('reports migration failure with local data preserved for recovery', async () => {
-    const localData = data({ tasks: [{ id: 't1' } as never] })
+    const localData = data({ tasks: [task('t1')] })
     const local = makeLocal(localData)
     const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'user-1', saveShouldFail: true })
     const coordinator = freshCoordinator(local, cloud)
@@ -105,8 +127,8 @@ describe('PersistenceCoordinator: initialized-but-empty cloud migration', () => 
   })
 
   it('does not overwrite existing cloud content during migration', async () => {
-    const localData = data({ tasks: [{ id: 'local-task' } as never] })
-    const remoteData = data({ tasks: [{ id: 'cloud-task' } as never] })
+    const localData = data({ tasks: [task('local-task')] })
+    const remoteData = data({ tasks: [task('cloud-task')] })
     const local = makeLocal(localData)
     const cloud = makeCloud({ hasSession: true, remoteData, userId: 'user-1' })
     const coordinator = freshCoordinator(local, cloud)
@@ -118,7 +140,7 @@ describe('PersistenceCoordinator: initialized-but-empty cloud migration', () => 
   })
 
   it('refuses to migrate the same snapshot twice', async () => {
-    const local = makeLocal(data({ tasks: [{ id: 't1' } as never] }))
+    const local = makeLocal(data({ tasks: [task('t1')] }))
     const cloud = makeCloud({ hasSession: true, remoteData: data(), userId: 'user-1' })
     const coordinator = freshCoordinator(local, cloud)
     await coordinator.authenticate('user-1')
@@ -129,12 +151,12 @@ describe('PersistenceCoordinator: initialized-but-empty cloud migration', () => 
 
 describe('PersistenceCoordinator: account switching', () => {
   it("never exposes another user's cloud data after a failed switch", async () => {
-    const local = makeLocal(data({ tasks: [{ id: 'local-t' } as never] }))
+    const local = makeLocal(data({ tasks: [task('local-t')] }))
     const cloud = makeCloud({ hasSession: false, userId: nextUser('v') })
     const coordinator = freshCoordinator(local, cloud)
     const state = await coordinator.authenticate(nextUser('v'))
     expect(state.mode).toBe('local')
-    expect(state.data.tasks).toEqual([{ id: 'local-t' } as never])
+    expect(state.data.tasks).toEqual([task('local-t')])
     expect(state.data.tasks.some((t: { id: string }) => t.id === 'u1-task')).toBe(false)
   })
 })
