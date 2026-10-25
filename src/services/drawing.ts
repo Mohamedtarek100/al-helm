@@ -136,12 +136,22 @@ function drawPaper(ctx: Ctx, paper: PaperKind, width: number, height: number): v
 }
 
 export function drawStroke(ctx: Ctx, stroke: Stroke): void {
-  const { points } = stroke
-  if (!points.length) return
   ctx.save()
   ctx.globalCompositeOperation = stroke.eraser ? 'destination-out' : 'source-over'
   ctx.strokeStyle = stroke.eraser ? 'rgba(0,0,0,1)' : stroke.color
   ctx.fillStyle = stroke.color
+  drawStrokePath(ctx, stroke)
+  ctx.restore()
+}
+
+/**
+ * Traces and paints the stroke path using the context's CURRENT composite
+ * operation, style and line settings. Callers set up the context; this keeps
+ * one implementation of point-to-path smoothing for every tool.
+ */
+export function drawStrokePath(ctx: Ctx, stroke: Stroke): void {
+  const { points } = stroke
+  if (!points.length) return
   ctx.lineWidth = stroke.size
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
@@ -161,7 +171,6 @@ export function drawStroke(ctx: Ctx, stroke: Stroke): void {
     ctx.lineTo(last.x, last.y)
     ctx.stroke()
   }
-  ctx.restore()
 }
 
 /**
@@ -192,8 +201,54 @@ export function renderDocument(
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
   drawPaper(ctx, doc.paper, width, height)
-  for (const stroke of doc.strokes) drawStroke(ctx, stroke)
-  if (options.live) drawStroke(ctx, options.live)
+  // Eraser strokes use destination-out, which removes EVERYTHING under them —
+  // including the paper fill — leaving a transparent hole that shows the page
+  // background. To make erasing reduce to paper (not to nothing), the paper is
+  // re-applied underneath each eraser pass: the eraser then only removes the
+  // ink that came before it, which is the behaviour users expect. This also
+  // keeps patterned papers (grid) intact under an eraser.
+  for (const stroke of doc.strokes) {
+    if (stroke.eraser) {
+      // Composite the eraser on the ink layer only, then restore the paper.
+      ctx.save()
+      ctx.globalCompositeOperation = 'destination-out'
+      ctx.globalAlpha = 1
+      drawStrokePath(ctx, stroke)
+      ctx.restore()
+      // Re-paint paper where the eraser removed it, without touching ink.
+      repaintPaperWhereTransparent(ctx, doc.paper, width, height)
+    } else {
+      drawStroke(ctx, stroke)
+    }
+  }
+  if (options.live) {
+    if (options.live.eraser) {
+      ctx.save()
+      ctx.globalCompositeOperation = 'destination-out'
+      drawStrokePath(ctx, options.live)
+      ctx.restore()
+      repaintPaperWhereTransparent(ctx, doc.paper, width, height)
+    } else {
+      drawStroke(ctx, options.live)
+    }
+  }
+  // Eraser marks never leave the paper layer punched out.
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.globalCompositeOperation = 'source-over'
+}
+
+/**
+ * Paints the paper fill underneath transparent pixels only.
+ * Equivalent to "flatten onto paper", applied efficiently per run of erasing.
+ */
+function repaintPaperWhereTransparent(ctx: Ctx, paper: PaperKind, width: number, height: number): void {
+  ctx.save()
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.globalCompositeOperation = 'destination-over'
+  // destination-over draws BEHIND existing pixels, so ink is preserved and any
+  // hole left by the eraser is filled with the paper colour/pattern.
+  drawPaper(ctx, paper, width, height)
+  ctx.restore()
 }
 
 /* ------------------------------------------------------------------ */

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Field, TextInput } from '../components/Field'
-import { authConfigured, requestPasswordReset, signIn, signInWithGoogle, signOut, signUp } from '../services/auth'
+import { authConfigured, describeAuthError, requestPasswordReset, signIn, signInWithGoogle, signOut, signUp } from '../services/auth'
 import { supabase } from '../services/persistence/supabase'
 import { migrateLocalDataToCloud } from '../services/persistence/cloud-sync'
 import { activePersistenceMode, authenticateCloudUser, getActivePersistenceCoordinator, logoutCloudUser, useAppData } from '../services/store'
@@ -67,7 +67,13 @@ export function AuthPanel() {
       }
       setMessage(successText ?? (en ? 'Done. Check your email if confirmation is enabled.' : 'تم. راجعي بريدك لو تأكيد البريد مفعّل.'))
     } catch (e) {
-      setError(e instanceof Error ? e.message : (en ? 'Something went wrong.' : 'حصلت مشكلة.'))
+      // Provider/config failures return raw codes such as
+      // "Unsupported provider: provider is not enabled"; translate them into a
+      // message the user can act on instead of leaking backend internals.
+      setError(
+        describeAuthError(e instanceof Error ? { message: e.message } : null) ??
+        (en ? 'Something went wrong.' : 'حصلت مشكلة.'),
+      )
     } finally {
       setBusy(false)
     }
