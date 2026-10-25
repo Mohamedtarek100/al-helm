@@ -1193,6 +1193,33 @@
 }
 
 /* ------------------------------------------------------------------ */
+/* 11. Studio section tabs (subnav)                                    */
+/* ------------------------------------------------------------------ */
+
+/* Seven studio sections needed 874px inside a 358px strip at 390px wide:
+   four tabs were visible and the rest were reachable only by a hidden
+   horizontal scroll, so they looked like they did not exist. Wrap instead. */
+.subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow: visible;
+}
+
+.subnav__item {
+  flex: 0 1 auto;
+  min-height: 40px;
+  white-space: nowrap;
+}
+
+@media (max-width: 420px) {
+  .subnav__item {
+    padding-inline: 12px;
+    font-size: var(--t-xs);
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* 10. Top-bar fit with the sync indicator                             */
 /* ------------------------------------------------------------------ */
 
