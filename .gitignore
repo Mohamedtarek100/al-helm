@@ -47,3 +47,4 @@ dbdata.sql
 al-helm-app-deploy/
 qa-artifacts/
 *.log
+scripts/qa/probe-*.mjs
