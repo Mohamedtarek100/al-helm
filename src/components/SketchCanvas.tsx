@@ -6,6 +6,7 @@ import { EraserIcon, PencilIcon, RedoIcon, TrashIcon, UndoIcon, DownloadIcon, Sa
 import { createArtwork, updateArtwork, useAppData } from '../services/store'
 import { todayKey } from '../services/date'
 import { useI18n } from '../i18n/useI18n'
+import { compositeLayers, createLayers, renderInkLayer, type InkLayers } from '../services/inkLayers'
 import {
   CANVAS_H, CANVAS_W, PAPER_SWATCH, appendPoint, clearDraft, emptyDocument,
   loadDraft, parseDocument, pointFromClient, redoStroke, renderDocument, saveDraft, undoStroke,
@@ -66,10 +67,26 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveRef = useRef<() => Promise<void>>(async () => undefined)
 
-  /* ---------------- rendering ---------------- */
+  /* ---------------- rendering (two-layer model) ---------------- */
+
+  /**
+   * Paper and ink live on separate offscreen canvases. The visible canvas is
+   * only ever a composite of the two, so an eraser (destination-out) can only
+   * remove ink — it cannot damage the paper, and it cannot affect ink outside
+   * the stroke it covers. This replaces the previous single-canvas approach,
+   * which let erasing destroy unrelated strokes.
+   */
+  const layersRef = useRef<InkLayers | null>(null)
 
   const paint = useCallback((live?: Stroke | null) => {
-    renderDocument(canvasRef.current, docRef.current, { live: live ?? null, pixelRatio: dpr })
+    const document = docRef.current
+    if (!layersRef.current) {
+      layersRef.current = createLayers(document.width * dpr, document.height * dpr)
+    }
+    const layers = layersRef.current
+    if (!layers) return
+    renderInkLayer(layers.ink, document, { live: live ?? null, pixelRatio: dpr })
+    compositeLayers(canvasRef.current, layers, document.paper, document.width, document.height)
   }, [dpr])
 
   // Repaint whenever the document, DPR or paper changes. Never clears state.
@@ -343,6 +360,40 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     openArtwork(initialArtworkId)
   }, [initialArtworkId, openArtwork])
 
+  /* ---------------- full screen / focus mode ---------------- */
+
+  /**
+   * Focus mode expands the workspace in place. The canvas element is never
+   * unmounted or re-created, so the document, stroke history and undo stack are
+   * untouched; only layout changes. Native fullscreen is requested as an
+   * enhancement, and the in-page overlay is the guaranteed fallback.
+   */
+  const [focusMode, setFocusMode] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  const enterFocus = useCallback(async () => {
+    setFocusMode(true)
+    try {
+      if (rootRef.current?.requestFullscreen) await rootRef.current.requestFullscreen()
+    } catch { /* the overlay alone is enough */ }
+    window.setTimeout(() => paint(null), 60)
+  }, [paint])
+
+  const exitFocus = useCallback(async () => {
+    setFocusMode(false)
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen()
+    } catch { /* ignore */ }
+    window.setTimeout(() => paint(null), 60)
+  }, [paint])
+
+  // Keep focus mode in sync with the browser's own fullscreen state (Esc).
+  useEffect(() => {
+    const onChange = () => { if (!document.fullscreenElement) setFocusMode(false) }
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+
   /* ---------------- gallery list ---------------- */
 
   const recent = useMemo(
@@ -353,7 +404,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   const statusLabel = saveState === 'saving' ? t('sketchSaving') : saveState === 'error' ? t('sketchSaveFailed') : saveState === 'dirty' ? t('sketchUnsaved') : t('sketchSaved')
 
   return (
-    <div className="page-stack sketch-studio">
+    <div className={`page-stack sketch-studio ${focusMode ? 'sketch-studio--focus' : ''}`} ref={rootRef}>
       <Card padded={false} className="sketch-card">
         <div className="sketch-toolbar" role="toolbar" aria-label={t('canvasTab')}>
           <div className="sketch-toolbar__group">
@@ -431,6 +482,9 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
             {statusLabel}
           </span>
           <div className="sketch-footer__actions">
+            <Button size="sm" variant="ghost" onClick={() => { void (focusMode ? exitFocus() : enterFocus()) }}>
+              {focusMode ? t('exitFullScreen') : t('fullScreen')}
+            </Button>
             <Button size="sm" variant="secondary" leadingIcon={<DownloadIcon size={15} />} onClick={exportPng}>{t('sketchExport')}</Button>
             <Button size="sm" variant="primary" leadingIcon={<SaveIcon size={15} />} loading={saveState === 'saving'} onClick={() => { void saveRef.current() }}>{t('save')}</Button>
           </div>

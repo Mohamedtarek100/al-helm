@@ -1282,3 +1282,63 @@
     font-size: 12px;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* 12. Dream Studio focus (full screen) mode                           */
+/* ------------------------------------------------------------------ */
+
+/* The workspace is expanded in place; the canvas is never remounted, so the
+   drawing, undo stack and tool state survive entirely. */
+.sketch-studio--focus {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  margin: 0;
+  padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+           max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  background: var(--paper);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.sketch-studio--focus .sketch-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border-radius: var(--r-md);
+}
+
+.sketch-studio--focus .sketch-surface {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+}
+
+.sketch-studio--focus .sketch-canvas {
+  max-height: 100%;
+  width: auto;
+  max-width: 100%;
+}
+
+/* The recent-drawings card is irrelevant while focusing. */
+.sketch-studio--focus > .card:not(.sketch-card) {
+  display: none;
+}
+
+.sketch-studio--focus .sketch-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+@media (max-width: 640px) {
+  .sketch-studio--focus .sketch-footer {
+    position: sticky;
+    bottom: 0;
+    background: var(--paper-3);
+    z-index: 2;
+  }
+}
