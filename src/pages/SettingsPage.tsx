@@ -10,6 +10,7 @@ import { useToast } from '../components/toastContext'
 import { ConfirmDialog } from '../components/Modal'
 import { useI18n } from '../i18n/useI18n'
 import { AuthPanel } from './AuthPanel'
+import { AppLockSettings } from '../components/AppLockSettings'
 import { ReminderSettings } from './ReminderSettings'
 
 export function SettingsPage() {
@@ -98,6 +99,8 @@ export function SettingsPage() {
           </Card>
 
           <AuthPanel />
+
+          <AppLockSettings />
         </div>
 
         <div className="settings-column">

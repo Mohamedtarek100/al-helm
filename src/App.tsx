@@ -14,13 +14,18 @@ import { ExamPage } from './pages/ExamPage'
 import { ToastProvider } from './components/Toast'
 import { I18nProvider } from './i18n/I18nProvider'
 import { AdminPage } from './pages/AdminPage'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { LockGate } from './app/LockGate'
 
 function App() {
   return (
     <I18nProvider>
       <ToastProvider>
+      <ErrorBoundary>
       <Routes>
-        <Route element={<AppShell />}>
+        {/* The lock is an overlay inside the shell, so unlocking returns to the
+            exact screen instead of remounting the route. */}
+        <Route element={<LockGate><AppShell /></LockGate>}>
           <Route index element={<HomePage />} />
           <Route path="schedule" element={<SchedulePage />} />
           <Route path="calendar" element={<CalendarPage />} />
@@ -36,6 +41,7 @@ function App() {
           <Route path="*" element={<HomePage />} />
         </Route>
       </Routes>
+      </ErrorBoundary>
       </ToastProvider>
     </I18nProvider>
   )

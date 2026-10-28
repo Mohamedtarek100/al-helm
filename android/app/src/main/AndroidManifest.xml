@@ -22,6 +22,27 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!--
+                OAuth return leg for Google sign-in.
+
+                signInWithOAuth() opens Chrome; Google then redirects to
+                com.alhelm.studyplanner://auth-callback. Without this filter the
+                OS has no handler for that scheme and the user stays trapped in
+                the browser. With it, the OS re-launches this activity
+                (launchMode="singleTask" keeps the existing instance) and
+                Capacitor emits `appUrlOpen`, which services/nativeAuth.ts
+                exchanges for a session.
+
+                The scheme must match ANDROID_AUTH_CALLBACK in
+                src/services/nativeAuth.ts and the Supabase redirect allow-list.
+            -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.alhelm.studyplanner" android:host="auth-callback" />
+            </intent-filter>
+
         </activity>
 
         <provider

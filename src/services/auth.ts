@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import { Capacitor } from '@capacitor/core'
 import { supabase } from './persistence/supabase'
+import { ANDROID_AUTH_CALLBACK } from './nativeAuth'
 
 /**
  * Authentication service.
@@ -86,10 +88,18 @@ export async function signIn(email: string, password: string) {
 
 export async function signInWithGoogle(next?: string) {
   if (!supabase) throw new Error('Supabase is not configured.')
+  // On Android the flow opens Chrome; returning requires the app's own custom
+  // scheme (registered by the manifest intent-filter), otherwise the user is
+  // stranded in the browser. On web the bare document URL is correct.
+  const platform = Capacitor.getPlatform()
+  const redirectTo = platform === 'android' ? ANDROID_AUTH_CALLBACK : authRedirectUrl(next)
   return supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      redirectTo: authRedirectUrl(next),
+      redirectTo,
+      // Required for the deep-link return: Supabase sends `code` to the custom
+      // scheme, which handleAuthCallback() exchanges for a session.
+      skipBrowserRedirect: false,
       // Ask Google for a fresh account choice instead of silently reusing the
       // previously consented account.
       queryParams: { prompt: 'select_account' },
@@ -121,9 +131,20 @@ export type AuthStatus =
  * shows a signed-out user as authenticated before the session check finishes.
  * Falls back to 'local-only' when Supabase is not configured.
  */
-export function useAuthStatus(): { status: AuthStatus; email: string | null; error: string | null } {
-  const [state, setState] = useState<{ status: AuthStatus; email: string | null; error: string | null }>(() =>
-    supabase ? { status: 'loading', email: null, error: null } : { status: 'local-only', email: null, error: null },
+/** Minimal shape needed by the UI — never the raw session or tokens. */
+export interface AuthUserView {
+  email: string | null
+  user_metadata: Record<string, unknown> | null
+}
+
+function toView(user: { email?: string | null; user_metadata?: Record<string, unknown> | null } | null | undefined): AuthUserView | null {
+  if (!user) return null
+  return { email: user.email ?? null, user_metadata: user.user_metadata ?? null }
+}
+
+export function useAuthStatus(): { status: AuthStatus; email: string | null; user: AuthUserView | null; error: string | null } {
+  const [state, setState] = useState<{ status: AuthStatus; email: string | null; user: AuthUserView | null; error: string | null }>(() =>
+    supabase ? { status: 'loading', email: null, user: null, error: null } : { status: 'local-only', email: null, user: null, error: null },
   )
 
   useEffect(() => {
@@ -135,24 +156,28 @@ export function useAuthStatus(): { status: AuthStatus; email: string | null; err
       .then(({ data, error }) => {
         if (!active) return
         if (error) {
-          setState({ status: 'error', email: null, error: describeAuthError(error) })
+          setState({ status: 'error', email: null, user: null, error: describeAuthError(error) })
           return
         }
-        const email = data.session?.user?.email ?? null
-        setState({ status: email ? 'authenticated' : 'signed-out', email, error: null })
+        const sessionUser = data.session?.user
+        const email = sessionUser?.email ?? null
+        setState({ status: email ? 'authenticated' : 'signed-out', email, user: toView(sessionUser), error: null })
       })
       .catch((err: unknown) => {
         if (!active) return
-        setState({ status: 'error', email: null, error: describeAuthError({ message: err instanceof Error ? err.message : '' }) })
+        setState({ status: 'error', email: null, user: null, error: describeAuthError({ message: err instanceof Error ? err.message : '' }) })
       })
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       if (!active) return
       if (event === 'SIGNED_OUT' || !session) {
-        setState({ status: 'signed-out', email: null, error: null })
-      } else if (event === 'SIGNED_IN') {
-        setState({ status: 'authenticated', email: session.user.email ?? null, error: null })
+        setState({ status: 'signed-out', email: null, user: null, error: null })
+        return
       }
+      // SIGNED_IN, TOKEN_REFRESHED and USER_UPDATED all carry a fresher user.
+      // Handling only SIGNED_IN meant a changed Google photo never propagated
+      // until a full reload.
+      setState({ status: 'authenticated', email: session.user.email ?? null, user: toView(session.user), error: null })
     })
 
     return () => {

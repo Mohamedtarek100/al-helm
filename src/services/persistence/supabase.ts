@@ -1,7 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { AppData } from '../../types'
 import { hydrateData } from '../domain'
-import { subjectNameKey } from '../subjects'
 import type { CloudPersistence } from './coordinator'
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
@@ -21,20 +20,25 @@ const toDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entri
 ]))
 
 /**
- * Subjects additionally carry their canonical key.
+ * Subjects are written WITHOUT `name_key`.
  *
- * `subjectNameKey()` in TypeScript is the only implementation that applies
- * NFKC (PostgreSQL has no portable equivalent), so the client is authoritative
- * for the key. Migration 008 verifies the value server-side instead of silently
- * recomputing a different one — which previously allowed two devices to create
- * names the unique index considered distinct.
+ * The database is the single source of truth for the canonical key: the
+ * BEFORE INSERT/UPDATE trigger in migration 006 derives it from `name` via
+ * public.subject_name_key(), and a UNIQUE (user_id, name_key) index enforces
+ * it. Sending a client-computed key would make correctness depend on trigger
+ * ordering and would let the two sides disagree silently, which is exactly the
+ * defect that made subject (and therefore whole-snapshot) writes fail.
+ *
+ * The TypeScript key still exists, but only for instant local duplicate
+ * feedback before a write is attempted — never as the persisted value.
  */
 const subjectsRow = (item: Record<string, unknown>) => {
   const mapped = toDb(item)
-  if (typeof item.name === 'string') mapped.name_key = subjectNameKey(item.name)
+  // Never send a derived key; the trigger owns it.
+  delete mapped.name_key
   return mapped
 }
-const fromDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'user_id').map(([k,v]) => [k.replace(/_([a-z])/g, (_,m:string) => m.toUpperCase()),v]))
+const fromDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'user_id' && key !== 'name_key').map(([k,v]) => [k.replace(/_([a-z])/g, (_,m:string) => m.toUpperCase()),v]))
 
 /** Cloud persistence adapter. Requires a signed-in Supabase user; RLS remains authoritative. */
 export class SupabaseAdapter implements CloudPersistence {

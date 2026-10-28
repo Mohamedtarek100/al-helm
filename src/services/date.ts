@@ -58,6 +58,37 @@ export function parseDateKey(key: string): Date {
   return new Date(year, month - 1, day)
 }
 
+/**
+ * Returns a usable Date, or null when the input cannot be parsed.
+ *
+ * A bare yyyy-mm-dd is read as a local calendar day (never UTC midnight), so a
+ * date key never shifts by a day depending on the machine's timezone. Every
+ * caller that formats a stored date goes through here first: passing an invalid
+ * Date straight to `Intl.DateTimeFormat.format()` throws
+ * `RangeError: Invalid time value`, which used to blank the entire route.
+ */
+export function toValidDate(input: Date | string | null | undefined): Date | null {
+  if (input instanceof Date) return Number.isNaN(input.getTime()) ? null : input
+  if (typeof input !== 'string' || !input.trim()) return null
+  const text = input.trim()
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(text) ? parseDateKey(text) : new Date(text)
+  if (Number.isNaN(date.getTime())) return null
+  // `new Date('2026-13-45')` does NOT throw — it silently rolls over to
+  // 2027-02-14. Re-read the parsed components for a date-only key so an
+  // impossible calendar date is rejected instead of being shifted.
+  const keyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
+  if (keyMatch) {
+    const [year, month, day] = [Number(keyMatch[1]), Number(keyMatch[2]), Number(keyMatch[3])]
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null
+  }
+  return date
+}
+
+/** True when `input` is a parseable date; the guard forms use before saving. */
+export function isValidDateInput(input: Date | string | null | undefined): boolean {
+  return toValidDate(input) !== null
+}
+
 export function todayKey(): string {
   return toDateKey(new Date())
 }

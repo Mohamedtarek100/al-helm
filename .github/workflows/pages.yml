@@ -18,7 +18,12 @@ name: Deploy 4uLife web build to al-helm-app (GitHub Pages)
 
 on:
   push:
-    branches: [main]
+    # `master` is the branch development actually happens on (it was the
+    # checked-out branch for every change in this release). `main` still exists
+    # on the remote at the same commit and is kept so a future branch rename or
+    # a manual push to either branch still deploys. Both point at the same tree
+    # today; this only removes the "pushed to master, nothing deployed" gap.
+    branches: [master, main]
   workflow_dispatch:
 
 permissions:

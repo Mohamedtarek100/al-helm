@@ -505,6 +505,8 @@
 /* Studio surface: keeps the canvas and paper legible on every width. */
 .sketch-surface {
   position: relative;
+  /* Panned/zoomed content is clipped to the surface instead of overflowing. */
+  overflow: hidden;
   background: var(--paper-sunk);
   padding: clamp(6px, 2vw, 16px);
 }

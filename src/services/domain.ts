@@ -10,6 +10,7 @@ import type {
   AppData,
   DrawingChallenge,
   Settings,
+  Subject,
   SubjectColorKey,
 } from '../types'
 import { nowIso } from './persistence/repository'
@@ -70,8 +71,8 @@ export const TASK_PRIORITY_LABELS = {
   medium: 'متوسطة',
   low: 'منخفضة',
 } as const
-/** Highest first — used for sorting and for the priority picker order. */
-export const TASK_PRIORITY_ORDER = ['urgent', 'high', 'medium', 'low'] as const
+/** Highest first — single source defined alongside the priority validation. */
+export { TASK_PRIORITY_ORDER } from './taskPriority'
 
 export const CHALLENGE_TRACK_LABELS = {
   sketch: 'اسكتش وتخطيط',
@@ -251,6 +252,21 @@ export function needsTaskNormalization(stored: Partial<AppData> | null | undefin
   })
 }
 
+/**
+ * Whether the snapshot holds real user content (not just seed records).
+ *
+ * Used by the launch gate to protect returning users: someone upgrading the app
+ * with local data must never be sent back through the first-launch screen.
+ * Seeded starter challenges are initialisation records, not user content.
+ */
+export function hasStoredUserContent(data: AppData | null | undefined): boolean {
+  if (!data) return false
+  const userChallenges = (data.challenges ?? []).filter((challenge) => !challenge.id.startsWith('chal_seed_'))
+  return (data.subjects?.length ?? 0) + (data.tasks?.length ?? 0) + (data.sessions?.length ?? 0) +
+    (data.exams?.length ?? 0) + (data.journal?.length ?? 0) + (data.artworks?.length ?? 0) +
+    (data.goals?.length ?? 0) + (data.letters?.length ?? 0) + userChallenges.length > 0
+}
+
 /** Fills missing slices of a stored snapshot so older local data still loads. */
 export function hydrateData(stored: Partial<AppData> | null): AppData {
   const base = createInitialData()
@@ -266,7 +282,16 @@ export function hydrateData(stored: Partial<AppData> | null): AppData {
       notificationsOptIn: stored.settings?.notificationsOptIn === true,
       reminders: hydrateReminders(stored.settings?.reminders),
     },
-    subjects: stored.subjects ?? base.subjects,
+    subjects: (stored.subjects ?? base.subjects).map((subject) => {
+      // `name_key` is derived and owned by the database. It is stripped here so
+      // it can never leak into application state, exports, or a later write
+      // (which would make the key client-authoritative again). A malformed
+      // entry is passed through untouched and repaired elsewhere.
+      if (!subject || typeof subject !== 'object') return subject
+      const copy: Record<string, unknown> = { ...(subject as unknown as Record<string, unknown>) }
+      delete copy.name_key
+      return copy as unknown as Subject
+    }),
     sessions: stored.sessions ?? base.sessions,
     tasks: (stored.tasks ?? base.tasks).map(hydrateTask),
     focusSessions: stored.focusSessions ?? base.focusSessions,

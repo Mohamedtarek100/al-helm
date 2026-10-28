@@ -3,7 +3,11 @@ import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router-dom'
 import './styles/index.css'
 import App from './App.tsx'
-import { initStore } from './services/store'
+import { authenticateCloudUser, initStore } from './services/store'
+import { installNativeAuthListener } from './services/nativeAuth'
+import { refreshAdminGate } from './services/edge/adminGate'
+import { initAdminGate } from './services/edge/adminGate'
+import { LaunchGate } from './app/LaunchGate'
 import { registerServiceWorker } from './services/pwa/registerServiceWorker'
 
 // Hydrate from the persistence adapter first so no empty state flashes.
@@ -11,7 +15,9 @@ void initStore().finally(() => {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <HashRouter>
-        <App />
+        <LaunchGate>
+          <App />
+        </LaunchGate>
       </HashRouter>
     </StrictMode>,
   )
@@ -28,6 +34,17 @@ void import('./services/activity').then((m) => void m.maybeHeartbeat())
 // Connectivity/sync status: installs online/offline listeners and performs one
 // throttled reachability probe. Never blocks startup.
 void import('./services/syncStatus').then((m) => m.initConnectivity())
+
+// Resolve (and keep resolving, across sign-in/out and account switches) whether
+// the signed-in account is on the server-side admin allowlist. Navigation only.
+initAdminGate()
+
+// Android: complete the Google OAuth return leg. Chrome hands the callback URL
+// back to the app via the custom scheme; this exchanges it for a session and
+// refreshes persistence + admin state exactly once. No-op on web.
+installNativeAuthListener((userId) => {
+  void authenticateCloudUser(userId).then(() => refreshAdminGate()).catch(() => undefined)
+})
 
 
 // OTA update check: manual-mode Capacitor updater. Runs once at launch on

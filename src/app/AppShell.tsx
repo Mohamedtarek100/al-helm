@@ -2,6 +2,8 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import { BellIcon, CogIcon, HomeIcon, CalendarIcon, CheckSquareIcon, MenuIcon, CloseIcon, PaletteIcon, TimerIcon, TrendIcon, SunIcon, MoonIcon, MonitorIcon } from '../components/icons'
 import { useCollection, updateSettings, useSettings } from '../services/store'
+import { useAdminGate } from '../services/edge/adminGate'
+import { UpdateBanner } from '../components/UpdateBanner'
 import { SyncIndicator } from '../components/SyncIndicator'
 import { cn } from '../utils/cn'
 import { useI18n } from '../i18n/useI18n'
@@ -21,6 +23,14 @@ const nav: { to: string; key: TranslationKey; icon: typeof HomeIcon; end?: boole
   { to: '/notifications', key: 'notifications', icon: BellIcon },
   { to: '/settings', key: 'settings', icon: CogIcon },
 ]
+
+/**
+ * Admin is never part of the static list: the entry is added only after the
+ * server confirms the signed-in account is on its allowlist. Leaving the route
+ * reachable is deliberate — the page itself renders an explicit denied state,
+ * and the Edge Function remains the real authorization gate.
+ */
+const adminNavItem: (typeof nav)[number] = { to: '/admin', key: 'adminTitle' as TranslationKey, icon: CogIcon }
 
 function Brand() {
   const { t } = useI18n()
@@ -63,6 +73,10 @@ export function AppShell() {
   const openTasks = tasks.filter((item) => !item.completed).length
   const [menuOpen, setMenuOpen] = useState(false)
   const location = useLocation()
+  const adminGate = useAdminGate()
+  // Only a server-confirmed answer adds the entry; loading/error/denied show
+  // nothing rather than flashing a link that may not be usable.
+  const items = adminGate.state === 'authorized' ? [...nav, adminNavItem] : nav
   useEffect(() => { setMenuOpen(false) }, [location.pathname])
   return (
     <div className="app-frame">
@@ -97,7 +111,7 @@ export function AppShell() {
               </button>
             </div>
             <nav className="mobile-drawer__nav">
-              {nav.map(({ to, key, icon: Icon, end }) => {
+              {items.map(({ to, key, icon: Icon, end }) => {
                 const label = t(key)
                 const badge = to === '/tasks' ? openTasks : to === '/notifications' ? unread : 0
                 return (
@@ -121,7 +135,7 @@ export function AppShell() {
         <aside className="sidebar" aria-label={t('primaryNavigation')}>
           <p className="sidebar__caption">{t('navigation')}</p>
           <nav className="nav-list">
-            {nav.map(({ to, key, icon: Icon, end }) => {
+            {items.map(({ to, key, icon: Icon, end }) => {
               const label = t(key)
               const badge = to === '/tasks' ? openTasks : to === '/notifications' ? unread : 0
               return (
@@ -145,7 +159,10 @@ export function AppShell() {
             </div>
           </div>
         </aside>
-        <main className="main-content" id="main-content"><Outlet /></main>
+        <main className="main-content" id="main-content">
+          <UpdateBanner />
+          <Outlet />
+        </main>
       </div>
       <nav className="mobile-nav" aria-label={t('quickNavigation')}>
         <div className="mobile-nav__items">

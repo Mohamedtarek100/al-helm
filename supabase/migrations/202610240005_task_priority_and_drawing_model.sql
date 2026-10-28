@@ -10,7 +10,11 @@
 -- No column is dropped, no row is deleted, RLS is untouched.
 
 -- 1. Priority ---------------------------------------------------------------
-alter table public.tasks alter column priority drop constraint if exists tasks_priority_check;
+-- DROP CONSTRAINT is a TABLE-level action; it cannot be attached to ALTER
+-- COLUMN (that form raises SQLSTATE 42601). This was the defect that aborted
+-- the first production push; the constraint name is unchanged, so existing
+-- rows and the widening below behave exactly as designed.
+alter table public.tasks drop constraint if exists tasks_priority_check;
 update public.tasks set priority = 'medium' where priority is null or priority not in ('urgent','high','medium','low');
 alter table public.tasks alter column priority set default 'medium';
 alter table public.tasks alter column priority set not null;

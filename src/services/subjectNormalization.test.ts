@@ -66,9 +66,6 @@ describe('supported Arabic mark handling', () => {
     // Verified behaviour: '٢' is not a compatibility equivalent of '2', so a
     // name written with Arabic-Indic digits stays a distinct subject.
     expect(subjectNameKey('رياضيات ٢')).not.toBe(subjectNameKey('رياضيات 2'))
-    // Full-width PLUS is likewise not folded to ASCII '+': no accidental
-    // merging of symbol-bearing names.
-    expect(subjectNameKey('Ｃ＋')).not.toBe(subjectNameKey('C++'))
   })
 })
 
@@ -102,6 +99,41 @@ describe('fullwidth Plus (U+FF0B) NFKC folding', () => {
 /* Client/SQL parity                                                   */
 /* ------------------------------------------------------------------ */
 
+describe('mandatory regression cases', () => {
+  const FF_C = String.fromCharCode(0xff23) // Ｃ
+  const FF_PLUS = String.fromCharCode(0xff0b) // ＋
+
+  it('Ｃ＋ and C++ produce the same key (NFKC folds before comparison)', () => {
+    expect(subjectNameKey(FF_C + FF_PLUS + FF_PLUS)).toBe(subjectNameKey('C++'))
+    expect(subjectNameKey(FF_C + FF_PLUS + FF_PLUS)).toBe('c++')
+  })
+
+  it('Ｃ＋ and C++ remain distinct (one operator is not two)', () => {
+    expect(subjectNameKey(FF_C + FF_PLUS)).toBe('c+')
+    expect(subjectNameKey(FF_C + FF_PLUS)).not.toBe(subjectNameKey('C++'))
+  })
+
+  it('Ｃ＋ and C+ are the same subject', () => {
+    expect(subjectNameKey(FF_C + FF_PLUS)).toBe(subjectNameKey('C+'))
+  })
+
+  it('other fullwidth compatibility characters fold to their ASCII form', () => {
+    expect(subjectNameKey('Ｍａｔｈ ２')).toBe('math 2')
+    expect(subjectNameKey('ＡＢＣ')).toBe('abc')
+  })
+
+  it('Arabic presentation forms fold to their base letters', () => {
+    // U+FEE3 is the isolated presentation form of ARABIC LETTER MEEM.
+    const presentationMeem = String.fromCharCode(0xfee3)
+    expect(subjectNameKey(presentationMeem + 'حاسبة')).toBe(subjectNameKey('محاسبة'))
+  })
+
+  it('English case differences normalise consistently', () => {
+    expect(subjectNameKey('Chemistry')).toBe(subjectNameKey('CHEMISTRY'))
+    expect(subjectNameKey('Chemistry')).toBe(subjectNameKey('  chemistry  '))
+  })
+})
+
 const migration007 = readFileSync(
   join(process.cwd(), 'supabase', 'migrations', '202610250007_subject_name_key_correction.sql'),
   'utf8',
@@ -116,13 +148,19 @@ const migration007 = readFileSync(
 describe('SQL subject_name_key() implements the same contract as the client', () => {
   const body = migration007.slice(migration007.indexOf('create or replace function public.subject_name_key'))
 
+  it('applies Unicode NFKC normalisation server-side', () => {
+    // This is the step whose absence caused the original divergence.
+    expect(body).toMatch(/normalize\(/i)
+    expect(body).toMatch(/, NFKC\)/i)
+  })
+
   it('lower-cases', () => {
     expect(body).toContain('lower(')
   })
 
   it('trims and collapses whitespace to a single space', () => {
     expect(body).toContain('btrim(')
-    expect(body).toContain("[[:space:]]+'")
+    expect(body).toContain('[[:space:]]+')
   })
 
   it('strips the same Arabic mark ranges and tatweel as the client', () => {
@@ -137,11 +175,8 @@ describe('SQL subject_name_key() implements the same contract as the client', ()
     expect(body).not.toMatch(/\\p\{[PSMZ]\}/)
   })
 
-  it('documents the NFKC limitation instead of pretending to match it', () => {
-    // 007 was corrected during review: it now states plainly that the SQL
-    // function does NOT apply NFKC, and points at 008 for the resolution.
-    expect(migration007).toMatch(/does NOT apply NFKC/i)
-    expect(migration007).toMatch(/Migration 008/)
+  it('does not claim to be missing NFKC support', () => {
+    expect(migration007).not.toMatch(/does NOT apply NFKC/i)
   })
 })
 

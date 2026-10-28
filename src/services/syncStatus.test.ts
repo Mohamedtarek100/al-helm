@@ -28,11 +28,12 @@ vi.mock('./persistence/supabase', () => {
   }
 })
 
-const persistenceState = vi.hoisted(() => ({ mode: 'local' as 'local' | 'cloud', error: null as string | null }))
+const persistenceState = vi.hoisted(() => ({ mode: 'local' as 'local' | 'cloud', error: null as string | null, pending: null as string | null }))
 
 vi.mock('./store', () => ({
   activePersistenceMode: () => persistenceState.mode,
   getPersistenceError: () => persistenceState.error,
+  getPendingCloudError: () => persistenceState.pending,
 }))
 
 const sync = await import('./syncStatus')
@@ -42,6 +43,7 @@ beforeEach(() => {
   state.sessionThrows = false
   persistenceState.mode = 'local'
   persistenceState.error = null
+  persistenceState.pending = null
   Object.defineProperty(navigator, 'onLine', { value: true, configurable: true })
 })
 
@@ -81,6 +83,30 @@ describe('honest state reporting', () => {
     sync.reconcileWithStore()
     expect(sync.getSyncStatus().sync).toBe('failed')
     expect(sync.getSyncStatus().error).toBe('Cloud save failed')
+  })
+
+  it('a pending cloud write beats a stale "synced" status', () => {
+    // Reproduces the real bug: the coordinator still reports cloud mode after a
+    // failed write, so without consulting the pending error the pill would keep
+    // saying "Synced" while the account copy was behind.
+    persistenceState.mode = 'cloud'
+    sync.markSynced()
+    expect(sync.getSyncStatus().sync).toBe('synced')
+    persistenceState.pending = 'new row violates check constraint "tasks_priority_check"'
+    sync.reconcileWithStore()
+    const status = sync.getSyncStatus()
+    expect(status.sync).toBe('failed')
+    expect(status.error).toContain('tasks_priority_check')
+    // Data still lives in the account, so this is a sync failure, not local-only.
+    expect(status.localOnly).toBe(false)
+  })
+
+  it('a pending error is reported even when the coordinator stayed in cloud mode', () => {
+    persistenceState.mode = 'cloud'
+    persistenceState.pending = 'timeout'
+    persistenceState.error = null
+    sync.reconcileWithStore()
+    expect(sync.getSyncStatus().sync).toBe('failed')
   })
 })
 

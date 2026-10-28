@@ -16,3 +16,4 @@
    admin, skeletons). Imported last so it can never be overridden by the
    legacy sheets, and it redefines no existing selector. */
 @import './components-addendum.css';
+@import './account.css';

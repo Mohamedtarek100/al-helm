@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Field, TextInput } from '../components/Field'
-import { authConfigured, describeAuthError, requestPasswordReset, signIn, signInWithGoogle, signOut, signUp } from '../services/auth'
+import { authConfigured, describeAuthError, requestPasswordReset, signIn, signInWithGoogle, signOut, signUp, type AuthUserView } from '../services/auth'
+import { AccountAvatar } from '../components/AccountAvatar'
+import { resolveProfilePhoto } from '../services/profilePhoto'
 import { supabase } from '../services/persistence/supabase'
 import { migrateLocalDataToCloud } from '../services/persistence/cloud-sync'
 import { activePersistenceMode, authenticateCloudUser, getActivePersistenceCoordinator, logoutCloudUser, useAppData } from '../services/store'
@@ -29,6 +31,9 @@ export function AuthPanel() {
   const [user, setUser] = useState<string | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
   const [storageMode, setStorageMode] = useState<'local' | 'cloud'>(() => activePersistenceMode())
+  /** Full user view (email + metadata) so the Google photo can be shown. */
+  const [authUser, setAuthUser] = useState<AuthUserView | null>(null)
+  const displayName = resolveProfilePhoto(authUser).displayName
 
   useEffect(() => {
     if (!supabase) return
@@ -37,6 +42,7 @@ export function AuthPanel() {
       if (!active) return
       setUser(result.user?.email ?? null)
       setUserId(result.user?.id ?? null)
+      setAuthUser(result.user ? { email: result.user.email ?? null, user_metadata: result.user.user_metadata ?? null } : null)
       if (result.user) await authenticateCloudUser(result.user.id)
       if (active) setStorageMode(activePersistenceMode())
     })
@@ -44,6 +50,7 @@ export function AuthPanel() {
       if (!active) return
       setUser(session?.user.email ?? null)
       setUserId(session?.user.id ?? null)
+      setAuthUser(session?.user ? { email: session.user.email ?? null, user_metadata: session.user.user_metadata ?? null } : null)
       if (event === 'SIGNED_OUT' || !session) {
         void logoutCloudUser().then(() => setStorageMode(activePersistenceMode()))
       } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
@@ -62,6 +69,7 @@ export function AuthPanel() {
         if (authError) throw authError
         setUser(auth.user?.email ?? null)
         setUserId(auth.user?.id ?? null)
+        setAuthUser(auth.user ? { email: auth.user.email ?? null, user_metadata: auth.user.user_metadata ?? null } : null)
         if (auth.user) await authenticateCloudUser(auth.user.id)
         setStorageMode(activePersistenceMode())
       }
@@ -85,13 +93,22 @@ export function AuthPanel() {
   return (
     <Card className="settings-card">
       <h2 className="section-head__title">{en ? 'Cloud account' : 'الحساب السحابي'}</h2>
-      <p className="t-sm t-muted">
-        {!authConfigured
-          ? (en ? 'Cloud account is not configured in this build — everything stays on this device.' : 'الحساب السحابي غير مهيأ في هذا الإصدار — كل حاجة محفوظة على الجهاز.')
-          : user
-            ? (en ? `Signed in as ${user}` : `تم تسجيل الدخول: ${user}`)
+      {user ? (
+        <div className="account-row">
+          {/* Google profile photo, with an initial-based fallback. */}
+          <AccountAvatar user={authUser} size={44} />
+          <div className="account-row__text">
+            <b className="account-row__name">{displayName || (en ? 'Signed in' : 'تم تسجيل الدخول')}</b>
+            <p className="t-sm t-muted">{en ? `Signed in as ${user}` : `تم تسجيل الدخول: ${user}`}</p>
+          </div>
+        </div>
+      ) : (
+        <p className="t-sm t-muted">
+          {!authConfigured
+            ? (en ? 'Cloud account is not configured in this build — everything stays on this device.' : 'الحساب السحابي غير مهيأ في هذا الإصدار — كل حاجة محفوظة على الجهاز.')
             : (en ? 'Sign in to sync your tasks, subjects and artwork across devices.' : 'سجلي الدخول لمزامنة المهام والمواد والأعمال بين الأجهزة.')}
-      </p>
+        </p>
+      )}
       {user && (
         <p className={`alert ${storageMode === 'cloud' ? 'alert--success' : 'alert--warning'}`}>
           {storageMode === 'cloud'

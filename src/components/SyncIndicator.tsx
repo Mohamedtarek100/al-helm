@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useSyncStatus, probeCloudReachable, type SyncStatus } from '../services/syncStatus'
-import { retryPersistence } from '../services/store'
+import { getPendingCloudError, retryPersistence, useAppData } from '../services/store'
 import { Button } from './Button'
 import { useI18n } from '../i18n/useI18n'
 
@@ -12,12 +12,21 @@ import { useI18n } from '../i18n/useI18n'
  */
 export function SyncIndicator() {
   const status = useSyncStatus()
+  // Subscribing to app data is what re-renders this component after a save:
+  // `emit()` fires on every persist (success or failure), and a failed cloud
+  // write changes `getPendingCloudError()` without changing the sync module's
+  // own state. Without this the pill could keep saying "Synced" after a
+  // cloud write failed.
+  useAppData()
+  const pending = getPendingCloudError()
+  const effective: SyncStatus = pending ? { ...status, sync: 'failed', error: pending, localOnly: false } : status
   const { t, language } = useI18n()
   const [open, setOpen] = useState(false)
   const [retrying, setRetrying] = useState(false)
+  const [retryError, setRetryError] = useState<string | null>(null)
   const en = language === 'en'
 
-  const view = describe(status, en)
+  const view = describe(effective, en)
 
   return (
     <div className="sync-indicator">
@@ -36,8 +45,9 @@ export function SyncIndicator() {
         <div className="sync-popover" role="dialog" aria-label={en ? 'Sync status' : 'حالة المزامنة'}>
           <p className="sync-popover__title">{view.label}</p>
           <p className="sync-popover__detail">{view.detail}</p>
-          {status.error && <p className="sync-popover__error">{status.error}</p>}
-          {status.lastSyncedAt && (
+          {effective.error && <p className="sync-popover__error">{effective.error}</p>}
+          {retryError && <p className="sync-popover__error">{retryError}</p>}
+          {status.lastSyncedAt && !pending && (
             <p className="t-xs t-muted">
               {en ? 'Last synced' : 'آخر مزامنة'}: {new Date(status.lastSyncedAt).toLocaleString(en ? 'en-US' : 'ar-EG')}
             </p>
@@ -49,9 +59,14 @@ export function SyncIndicator() {
               loading={retrying}
               onClick={async () => {
                 setRetrying(true)
+                setRetryError(null)
                 try {
                   await probeCloudReachable(true)
-                  await retryPersistence().catch(() => undefined)
+                  // Reports success only when the cloud write is confirmed;
+                  // a failed retry surfaces its reason instead of vanishing.
+                  await retryPersistence()
+                } catch (error) {
+                  setRetryError(error instanceof Error ? error.message : (en ? 'Retry failed.' : 'تعذرت إعادة المحاولة.'))
                 } finally {
                   setRetrying(false)
                 }

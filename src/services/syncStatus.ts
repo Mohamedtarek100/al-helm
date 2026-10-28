@@ -15,7 +15,7 @@
 
 import { useSyncExternalStore } from 'react'
 import { supabase } from './persistence/supabase'
-import { activePersistenceMode, getPersistenceError } from './store'
+import { activePersistenceMode, getPendingCloudError, getPersistenceError } from './store'
 
 export type ConnectionState = 'online' | 'offline' | 'unreachable'
 export type SyncState = 'local-only' | 'idle' | 'syncing' | 'synced' | 'failed' | 'sign-in-required'
@@ -137,13 +137,18 @@ export function markSyncFailed(error: string | null): void {
 /** Re-reads the store's persistence state without inventing any of it. */
 export function reconcileWithStore(): void {
   if (!supabase) {
-    setStatus({ localOnly: true, sync: 'local-only' })
+    setStatus({ localOnly: true, sync: 'local-only', error: null })
     return
   }
   const mode = activePersistenceMode()
-  const error = getPersistenceError()
-  if (error) setStatus({ sync: 'failed', error, localOnly: mode === 'local' })
-  else if (mode === 'local') setStatus({ sync: 'sign-in-required', localOnly: true })
+  // A pending cloud write outranks everything else: this device holds changes
+  // the account does not, so the only honest state is `failed` — even if the
+  // coordinator still reports cloud mode after the failed attempt.
+  const pending = getPendingCloudError()
+  const error = pending ?? getPersistenceError()
+  if (pending) setStatus({ sync: 'failed', error: pending, localOnly: false })
+  else if (error) setStatus({ sync: 'failed', error, localOnly: mode === 'local' })
+  else if (mode === 'local') setStatus({ sync: 'sign-in-required', localOnly: true, error: null })
   else setStatus({ sync: status.sync === 'syncing' ? 'syncing' : 'idle', error: null, localOnly: false })
 }
 

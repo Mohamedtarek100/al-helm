@@ -11,7 +11,7 @@ import { SubjectSelect } from '../components/SubjectSelect'
 import { CheckIcon, CheckSquareIcon, EditIcon, PlusIcon, TrashIcon } from '../components/icons'
 import { describeDueDate, formatMinutes, formatTime, todayKey } from '../services/date'
 import { emptyTaskFilter, filterTasks, sortTasks, type TaskFilter, type TaskSortKey, type TaskStatusFilter, isTaskOverdue } from '../services/taskSelectors'
-import { createTask, deleteTask, setTaskCompleted, updateTask, useAppData, type NewTask } from '../services/store'
+import { createTask, deleteTask, getPendingCloudError, getPersistenceError, setTaskCompleted, updateTask, useAppData, type NewTask } from '../services/store'
 import { PageFrame, PageHeading } from './PageFrame'
 import { useToast } from '../components/toastContext'
 import { useI18n } from '../i18n/useI18n'
@@ -58,6 +58,7 @@ export function TasksPage() {
     event.preventDefault()
     const next: Record<string, string> = {}
     if (!form.title.trim()) next.title = t('required')
+    if (!form.dueDate) next.dueDate = en ? 'Choose a due date.' : 'اختاري تاريخ الاستحقاق.'
     if (form.estimatedMinutes < 5 || form.estimatedMinutes > 600) next.estimatedMinutes = en ? 'Choose a duration from 5 to 600 minutes.' : 'اختاري مدة من ٥ إلى ٦٠ دقيقة.'
     if (Object.keys(next).length) { setErrors(next); return }
     setSaving(true)
@@ -67,7 +68,19 @@ export function TasksPage() {
       setOpen(false)
       notify(editing ? t('taskSaved') : t('taskAdded'), 'success')
     } catch (error) {
-      notify(error instanceof Error ? error.message : t('retry'), 'danger')
+      // Keep the sheet open with the draft intact — nothing typed is lost.
+      // Distinguish "saved here but not in your account" from a real failure.
+      if (getPendingCloudError() && !getPersistenceError()) {
+        notify(
+          en
+            ? 'Saved on this device, but not yet in your account. Use Retry in the sync indicator.'
+            : 'اتحفظت على الجهاز، لكن لسه مش في حسابك. استخدمي «أعيدي المحاولة» من شريط المزامنة.',
+          'warning',
+        )
+      } else {
+        const message = error instanceof Error ? error.message : ''
+        notify(message || (en ? 'Could not save the task. Your entry is still here — try again.' : 'تعذر حفظ المهمة. الكتابة لسه موجودة — جرّبي تاني.'), 'danger')
+      }
     } finally {
       setSaving(false)
     }
@@ -218,7 +231,7 @@ export function TasksPage() {
               {Object.entries(categoryLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
             </Select>
           </Field>
-          <Field label={t('dueDateLabel')}><TextInput type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} /></Field>
+          <Field label={t('dueDateLabel')} error={errors.dueDate}><TextInput type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} /></Field>
           <Field label={t('dueTimeOptional')}><TextInput type="time" value={form.dueTime} onChange={(e) => setForm({ ...form, dueTime: e.target.value })} /></Field>
           <Field label={t('taskPriority')} className="form-grid__full">
             <PriorityPicker value={form.priority} onChange={(priority) => setForm({ ...form, priority })} />

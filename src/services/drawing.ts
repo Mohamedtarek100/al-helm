@@ -20,7 +20,32 @@ export const CANVAS_H = 620
 export const DRAWING_MODEL_VERSION = 2
 
 export type PaperKind = 'white' | 'cream' | 'grid'
-export type Tool = 'pencil' | 'eraser'
+/**
+ * Drawing tools. `shape` and `text` are v3 additions; documents that never use
+ * them are byte-compatible with v2 (see parseDocument).
+ */
+export type Tool = 'pencil' | 'eraser' | 'shape' | 'text' | 'select' | 'pan'
+export type ShapeKind = 'line' | 'rect' | 'ellipse'
+
+/** A geometric shape, stored independently of freehand strokes. */
+export interface Shape {
+  id: string
+  kind: ShapeKind
+  from: Point
+  to: Point
+  color: string
+  size: number
+}
+
+/** A text element. `x`/`y` is the top-left of the drawn glyphs. */
+export interface TextElement {
+  id: string
+  x: number
+  y: number
+  text: string
+  color: string
+  size: number
+}
 
 export interface Point {
   x: number
@@ -40,6 +65,10 @@ export interface DrawingDocument {
   height: number
   paper: PaperKind
   strokes: Stroke[]
+  /** v3. Absent in older documents and always optional when reading. */
+  shapes?: Shape[]
+  /** v3. Absent in older documents and always optional when reading. */
+  texts?: TextElement[]
 }
 
 export const PAPER_BACKGROUND: Record<PaperKind, string> = {
@@ -55,7 +84,48 @@ export const PAPER_SWATCH: Record<PaperKind, string> = {
 }
 
 export function emptyDocument(paper: PaperKind = 'cream'): DrawingDocument {
-  return { version: DRAWING_MODEL_VERSION, width: CANVAS_W, height: CANVAS_H, paper, strokes: [] }
+  return { version: DRAWING_MODEL_VERSION, width: CANVAS_W, height: CANVAS_H, paper, strokes: [], shapes: [], texts: [] }
+}
+
+/** Defensive parse of a shape; malformed entries are dropped, never thrown. */
+function cleanShape(value: unknown): Shape | null {
+  if (!value || typeof value !== 'object') return null
+  const c = value as Partial<Shape>
+  const kind = c.kind === 'line' || c.kind === 'rect' || c.kind === 'ellipse' ? c.kind : null
+  const from = c.from as Point | undefined
+  const to = c.to as Point | undefined
+  if (!kind || !Number.isFinite(from?.x) || !Number.isFinite(from?.y) || !Number.isFinite(to?.x) || !Number.isFinite(to?.y)) return null
+  const size = Number(c.size)
+  return {
+    id: typeof c.id === 'string' && c.id ? c.id : `shp_${Math.random().toString(36).slice(2, 10)}`,
+    kind,
+    from: { x: Number(from!.x), y: Number(from!.y) },
+    to: { x: Number(to!.x), y: Number(to!.y) },
+    color: typeof c.color === 'string' && c.color ? c.color : '#34312f',
+    size: Number.isFinite(size) && size > 0 ? Math.min(60, size) : 3,
+  }
+}
+
+/** Defensive parse of a text element. */
+function cleanText(value: unknown): TextElement | null {
+  if (!value || typeof value !== 'object') return null
+  const c = value as Partial<TextElement>
+  if (typeof c.text !== 'string' || !c.text.trim()) return null
+  if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) return null
+  const size = Number(c.size)
+  return {
+    id: typeof c.id === 'string' && c.id ? c.id : `txt_${Math.random().toString(36).slice(2, 10)}`,
+    x: Number(c.x),
+    y: Number(c.y),
+    text: c.text.slice(0, 500),
+    color: typeof c.color === 'string' && c.color ? c.color : '#34312f',
+    size: Number.isFinite(size) && size >= 8 ? Math.min(160, size) : 28,
+  }
+}
+
+/** Stable id for a new shape/text element. */
+export function makeId(prefix: 'shp' | 'txt'): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 }
 
 /** Defensive parse: any malformed point/stroke is dropped, never thrown. */
@@ -89,12 +159,18 @@ export function parseDocument(raw: string | null | undefined): DrawingDocument |
   if (!Array.isArray(doc.strokes)) return null
   const strokes = doc.strokes.map(cleanStroke).filter((s): s is Stroke => s !== null)
   const paper: PaperKind = doc.paper === 'white' || doc.paper === 'grid' || doc.paper === 'cream' ? doc.paper : 'cream'
+  // v3 optional collections. A v2 document has neither, and parses to empty
+  // arrays — so reopening an old drawing never loses or invents content.
+  const shapes = Array.isArray(doc.shapes) ? doc.shapes.map(cleanShape).filter((s): s is Shape => s !== null) : []
+  const texts = Array.isArray(doc.texts) ? doc.texts.map(cleanText).filter((t): t is TextElement => t !== null) : []
   return {
     version: DRAWING_MODEL_VERSION,
     width: Number(doc.width) > 0 ? Number(doc.width) : CANVAS_W,
     height: Number(doc.height) > 0 ? Number(doc.height) : CANVAS_H,
     paper,
     strokes,
+    shapes,
+    texts,
   }
 }
 
@@ -106,9 +182,15 @@ export function strokeCount(doc: DrawingDocument): number {
   return doc.strokes.length
 }
 
+/** Total drawable elements, used by the dirty/empty checks. */
+export function elementCount(doc: DrawingDocument): number {
+  return doc.strokes.length + (doc.shapes?.length ?? 0) + (doc.texts?.length ?? 0)
+}
+
 export function isEmptyDocument(doc: DrawingDocument): boolean {
   // Eraser-only marks leave no visible ink even if strokes exist.
-  return doc.strokes.every((s) => s.eraser)
+  const hasInk = doc.strokes.some((s) => !s.eraser)
+  return !hasInk && (doc.shapes?.length ?? 0) === 0 && (doc.texts?.length ?? 0) === 0
 }
 
 /* ------------------------------------------------------------------ */
@@ -221,6 +303,11 @@ export function renderDocument(
       drawStroke(ctx, stroke)
     }
   }
+  // Shapes and text are rendered AFTER the stroke pass. Eraser strokes use
+  // destination-out and are followed by a paper repaint, so painting these
+  // first would let a later eraser punch through them.
+  for (const shape of doc.shapes ?? []) drawShape(ctx, shape)
+  for (const element of doc.texts ?? []) drawText(ctx, element)
   if (options.live) {
     if (options.live.eraser) {
       ctx.save()
@@ -235,6 +322,47 @@ export function renderDocument(
   // Eraser marks never leave the paper layer punched out.
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.globalCompositeOperation = 'source-over'
+}
+
+/** Draws one geometric shape (v3). Pure canvas; no state changes. */
+export function drawShape(ctx: Ctx, shape: Shape): void {
+  ctx.save()
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.strokeStyle = shape.color
+  ctx.lineWidth = shape.size
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.beginPath()
+  if (shape.kind === 'line') {
+    ctx.moveTo(shape.from.x, shape.from.y)
+    ctx.lineTo(shape.to.x, shape.to.y)
+  } else if (shape.kind === 'rect') {
+    // Normalise so dragging in any direction produces the same rectangle.
+    const x = Math.min(shape.from.x, shape.to.x)
+    const y = Math.min(shape.from.y, shape.to.y)
+    ctx.rect(x, y, Math.abs(shape.to.x - shape.from.x), Math.abs(shape.to.y - shape.from.y))
+  } else {
+    const cx = (shape.from.x + shape.to.x) / 2
+    const cy = (shape.from.y + shape.to.y) / 2
+    ctx.ellipse(cx, cy, Math.abs(shape.to.x - shape.from.x) / 2, Math.abs(shape.to.y - shape.from.y) / 2, 0, 0, Math.PI * 2)
+  }
+  ctx.stroke()
+  ctx.restore()
+}
+
+/** Draws one text element (v3) using the app's serif stack. */
+export function drawText(ctx: Ctx, element: TextElement): void {
+  ctx.save()
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.fillStyle = element.color
+  ctx.font = `${element.size}px "Cairo", "Tajawal", system-ui, sans-serif`
+  ctx.textBaseline = 'top'
+  // Multi-line: each \n starts a new line, spaced by 1.25em.
+  const lines = element.text.split('\n')
+  lines.forEach((line, index) => {
+    ctx.fillText(line, element.x, element.y + index * element.size * 1.25)
+  })
+  ctx.restore()
 }
 
 /**

@@ -630,7 +630,11 @@ alter table public.announcements alter column created_by drop not null;
 -- No column is dropped, no row is deleted, RLS is untouched.
 
 -- 1. Priority ---------------------------------------------------------------
-alter table public.tasks alter column priority drop constraint if exists tasks_priority_check;
+-- DROP CONSTRAINT is a TABLE-level action; it cannot be attached to ALTER
+-- COLUMN (that form raises SQLSTATE 42601). This was the defect that aborted
+-- the first production push; the constraint name is unchanged, so existing
+-- rows and the widening below behave exactly as designed.
+alter table public.tasks drop constraint if exists tasks_priority_check;
 update public.tasks set priority = 'medium' where priority is null or priority not in ('urgent','high','medium','low');
 alter table public.tasks alter column priority set default 'medium';
 alter table public.tasks alter column priority set not null;
@@ -654,9 +658,19 @@ alter table public.artwork_metadata add constraint artwork_metadata_paper_check 
 --   for "Math", " math " or "مُحَاسَبَة" / "محاسبة" within the same account.
 --
 -- DESIGN
---   `subjects.name_key` holds a canonical comparison key computed by a
---   BEFORE INSERT/UPDATE trigger, and a UNIQUE (user_id, name_key) index makes
---   the guarantee authoritative at the database level.
+--   `subjects.name_key` is a derived column owned by the DATABASE. A BEFORE
+--   INSERT/UPDATE trigger computes it from `name` with public.subject_name_key(),
+--   and UNIQUE (user_id, name_key) makes the guarantee authoritative. Clients
+--   never send this column; see subjectsRow() in persistence/supabase.ts.
+--
+--   NOTE ON THIS FILE'S FUNCTION BODY
+--   The function created below is the INITIAL implementation and is REPLACED
+--   wholesale by migration 007, which is the single source of truth for the
+--   key contract (NFKC + strip Arabic marks + lower + collapse whitespace).
+--   006 only needs to establish the column, the trigger and a first backfill;
+--   the index it creates here is dropped and rebuilt by 007. Keeping 006's
+--   narrow body intact preserves the record of what was originally proposed
+--   while 007 defines the behaviour that actually ships.
 --
 --   The key is deliberately built ONLY from constructs that behave identically
 --   in JavaScript and PostgreSQL:
@@ -772,79 +786,98 @@ create unique index if not exists subjects_user_name_key_uidx
 -- Migration: 202610250007_subject_name_key_correction.sql
 -- ============================================================
 
--- Additive migration 007: correct the subject canonical key.
+-- Additive migration 007: the canonical subject-key function (single source of truth).
 --
--- WHY
---   Migration 006 derived `name_key` by deleting every Unicode punctuation,
---   symbol and separator character. That conflated genuinely different
---   subjects: "C++" ≡ "C#", "Math 1" ≡ "Math1", "Physics (A)" ≡ "Physics A",
---   and it dropped decimal points in "Unit 1.1".
+-- CONTRACT (identical to subjectNameKey() in src/services/subjects.ts)
 --
---   Migration 006 is treated as possibly applied, so it is NOT edited here.
---   This migration replaces the key function and rebuilds the key column.
+--     1. NFKC        normalize(raw, NFKC) - folds full-width latin and
+--                    punctuation (Ｃ -> C, ＋ -> +), ligatures and Arabic
+--                    presentation forms (ﻣ -> م). Arabic-Indic digits are
+--                    PRESERVED (١٢٣ stays ١٢٣); NFKC does not map them to ASCII.
+--     2. Strip marks ONLY Arabic harakat/tanween/shadda/sukun
+--                    (U+0617-061A, U+064B-0652, U+0670, U+06D6-06ED) and
+--                    tatweel (U+0640). Marks from other scripts are kept.
+--     3. Lower-case  Unicode simple case folding (PostgreSQL lower()).
+--     4. Whitespace  collapse runs to one space, then trim.
 --
--- NEW CONTRACT (mirrors subjectNameKey() in src/services/subjects.ts)
---   1. btrim + collapse internal whitespace runs to a single space
---   2. remove ONLY Arabic harakat/tanween/shadda/sukun and tatweel
---   3. lower()
---   Punctuation, symbols and digits are preserved.
+--   Punctuation, symbols and digits are PRESERVED, so "C++" vs "C#",
+--   "Math 1" vs "Math1" and "Physics (A)" vs "Physics A" stay distinct.
 --
---   NOTE (reviewed): this function does NOT apply NFKC — it strips Arabic marks
---   and collapses whitespace only. The client DOES apply NFKC, so this function
---   alone cannot be the sole source of truth for the key. Migration 008 fixes
---   the divergence by having the client supply subjectNameKey() and having a
---   trigger verify it against this derivation.
+-- WHY THIS REPLACES 006's FUNCTION
+--   006's key deleted every Unicode punctuation, symbol, mark and separator
+--   character. That conflated genuinely different subjects ("C++" == "C#",
+--   "Math 1" == "Math1", "Unit 1.1" == "Unit 11").
+--
+-- WHY NFKC IS USED HERE
+--   PostgreSQL 13+ provides normalize(text, NFKC) natively for UTF-8 databases.
+--   This project runs PostgreSQL 17 with server_encoding = UTF8, so no
+--   extension is required. An earlier revision of this migration claimed NFKC
+--   was unavailable and deferred it to the client; that claim was wrong for this
+--   project and caused a real client/database divergence.
 --
 -- SAFETY
---   - Additive. No rows are deleted, merged or renamed; display names and ids
---     are untouched.
---   - Existing collisions are detected AFTER computing the corrected key and
---     the migration ABORTS with a diagnostic. Operators resolve them manually.
---   - Uniqueness stays scoped to (user_id), so different users may share names.
+--   - Additive. No row is deleted, merged or renamed; ids and display names are
+--     untouched. Only derived keys are recomputed.
+--   - The unique index is dropped before recomputation so the backfill cannot
+--     fail on an intermediate state, and is only recreated after proving there
+--     are no collisions.
+--   - Collisions are reported and ABORT the transaction. Nothing is merged or
+--     deleted automatically; an operator resolves them and re-runs.
+--   - Uniqueness is scoped to (user_id, name_key): different accounts may share
+--     a subject name.
+--
+-- ROLLBACK
+--   drop index if exists public.subjects_user_name_key_uidx;
+--   -- then restore 006's function definition if 006 was already applied.
 
--- 1. Replace the key function ----------------------------------------------
+-- 1. Canonical key function ---------------------------------------------------
 create or replace function public.subject_name_key(raw text)
 returns text
 language sql
 immutable
+strict
 set search_path = ''
 as $$
   select lower(
-           regexp_replace(
+           btrim(
              regexp_replace(
-               regexp_replace(btrim(coalesce(raw, '')), '[[:space:]]+', ' ', 'g'),
-               '[\u0617-\u061A\u064B-\u0652\u0670\u06D6-\u06ED\u0640]', '', 'g'
-             ),
-             '[[:space:]]+', ' ', 'g'
+               regexp_replace(
+                 normalize(coalesce(raw, ''), NFKC),
+                 '[\u0617-\u061A\u064B-\u0652\u0670\u06D6-\u06ED\u0640]', '', 'g'
+               ),
+               '[[:space:]]+', ' ', 'g'
+             )
            )
          );
 $$;
 
 comment on function public.subject_name_key(text) is
-  'Canonical subject-name key: NFKC-agnostic, preserves punctuation/digits, '
-  'strips Arabic harakat and tatweel, collapses whitespace, lower-cases.';
+  'Canonical subject-name key: NFKC, strip Arabic harakat + tatweel, '
+  'lower-case, collapse whitespace. Mirrors subjectNameKey() in src/services/subjects.ts.';
 
--- 2. Recompute existing keys -----------------------------------------------
+-- 2. Drop the unique index before recomputing keys ---------------------------
+--    Keys change under the new contract, so the old index would reject the
+--    UPDATE for rows that become equal. Recreated at step 5 after verification.
+drop index if exists public.subjects_user_name_key_uidx;
+
+-- 3. Recompute every stored key ----------------------------------------------
 update public.subjects
    set name_key = public.subject_name_key(name)
  where name_key is distinct from public.subject_name_key(name);
 
--- 3. Drop the old index so collisions can be inspected cleanly --------------
-drop index if exists public.subjects_user_name_key_uidx;
-
--- 4. Abort (do not merge/delete) if the corrected key reveals collisions ----
+-- 4. Refuse to continue if the corrected key reveals collisions --------------
 do $$
 declare
   conflict_groups integer;
   sample text;
 begin
-  select count(*), string_agg(format('user %s: %s', user_id, names), '; ')
+  select count(*), string_agg(user_id::text || ': ' || names, '; ')
     into conflict_groups, sample
     from (
       select user_id,
-             string_agg(format('"%s"(x%s)', name, n), ', ') as names
+             string_agg(format('"%s"(x%s)', display, n), ', ') as names
         from (
-          select user_id, name_key, count(*) as n, min(name) as name
+          select user_id, name_key, count(*) as n, min(name) as display
             from public.subjects
            group by user_id, name_key
           having count(*) > 1
@@ -854,96 +887,13 @@ begin
 
   if coalesce(conflict_groups, 0) > 0 then
     raise exception
-      'Subject uniqueness migration 007 aborted: % account(s) hold subjects that now share a canonical key. Resolve them manually, then re-run. Details: %',
+      'Subject uniqueness migration 007 aborted: % account(s) hold subjects that share a canonical key. Resolve them manually, then re-run. Details: %',
       conflict_groups, sample
       using errcode = 'unique_violation';
   end if;
 end;
 $$;
 
--- 5. Recreate the user-scoped unique index ----------------------------------
-create unique index subjects_user_name_key_uidx
+-- 5. Recreate the user-scoped unique index -----------------------------------
+create unique index if not exists subjects_user_name_key_uidx
   on public.subjects (user_id, name_key);
-
--- ============================================================
--- Migration: 202610250008_subject_key_verification.sql
--- ============================================================
-
--- Additive migration 008: make the canonical key authoritative on the client,
--- and make the database verify it instead of silently recomputing a different one.
---
--- PROBLEM FOUND IN REVIEW
---   Migration 007's comment claims NFKC support, but its function is:
---       lower(btrim -> collapse spaces -> strip marks -> collapse spaces)
---   There is NO NFKC step. The TypeScript implementation DOES apply NFKC:
---       'Ｃ＋' (two fullwidth pluses) -> 'c++' on the client
---   while SQL leaves it as 'ｃ＋'. Two devices could therefore create names the
---   client considers identical but the unique index does not — a real
---   cross-device duplicate.
---
---   PostgreSQL's normalize(text, 'NFKC') needs PG13+ *and* UTF8, and the exact
---   folding differs from the browser for a few characters. Re-implementing ICU
---   in SQL is not something that can be trusted blind.
---
--- SOLUTION (client-authoritative key, database-verified)
---   The application already computes `subjectNameKey(name)` in TypeScript, which
---   is the single place NFKC is applied. It now sends that value as
---   `subjects.name_key`, and a BEFORE trigger:
---     1. verifies the supplied key against the SQL-derived key, and
---     2. overwrites it with the SQL key when the client omitted it.
---   Uniqueness is still enforced by UNIQUE (user_id, name_key). The key is
---   never trusted blindly: a mismatched key is rejected so the two sides can
---   never diverge silently.
---
--- SAFETY
---   Additive: one function + one trigger. No rows are deleted, merged or renamed.
---   Existing rows keep their current keys; the trigger only applies to new writes.
---   Idempotent (drop trigger if exists ... create trigger).
---
--- ROLLBACK
---   drop trigger if exists subjects_verify_name_key_trg on public.subjects;
---   drop function if exists public.subjects_verify_name_key();
-
--- 1. Verification function ---------------------------------------------------
-create or replace function public.subjects_verify_name_key()
-returns trigger
-language plpgsql
-security invoker
-set search_path = ''
-as $$
-declare
-  derived text := public.subject_name_key(new.name);
-begin
-  -- Normalise the display name's surrounding whitespace, but never alter it.
-  if new.name is null or btrim(new.name) = '' then
-    raise exception 'Subject name must not be empty.' using errcode = 'check_violation';
-  end if;
-
-  if new.name_key is null or btrim(new.name_key) = '' then
-    -- Client did not supply a key (older client / direct SQL): derive it.
-    new.name_key := derived;
-  elsif lower(new.name_key) <> derived then
-    -- The client key did not match the SQL contract. Reject rather than store
-    -- a key the unique index would disagree with.
-    raise exception
-      'Subject key mismatch for "%": client sent "%" but the canonical SQL key is "%".',
-      new.name, new.name_key, derived
-      using errcode = 'check_violation';
-  else
-    new.name_key := derived;
-  end if;
-
-  return new;
-end;
-$$;
-
-comment on function public.subjects_verify_name_key() is
-  'Enforces a single canonical subject key. The client computes subjectNameKey() '
-  '(with NFKC); this trigger verifies it against the SQL derivation so client '
-  'and database can never disagree, and fills it in when absent.';
-
--- 2. Attach to the table -----------------------------------------------------
-drop trigger if exists subjects_verify_name_key_trg on public.subjects;
-create trigger subjects_verify_name_key_trg
-  before insert or update of name, name_key on public.subjects
-  for each row execute function public.subjects_verify_name_key();

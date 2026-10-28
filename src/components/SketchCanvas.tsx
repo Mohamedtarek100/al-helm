@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, IconButton } from './Button'
 import { Card } from './Card'
 import { ConfirmDialog } from './Modal'
-import { EraserIcon, PencilIcon, RedoIcon, TrashIcon, UndoIcon, DownloadIcon, SaveIcon } from './icons'
+import { EraserIcon, PencilIcon, RedoIcon, TrashIcon, UndoIcon, DownloadIcon, SaveIcon, SquareIcon, CircleIcon, LineIcon, TypeIcon, SelectIcon, HandIcon, ZoomInIcon, ZoomOutIcon, ResetIcon } from './icons'
 import { createArtwork, updateArtwork, useAppData } from '../services/store'
 import { todayKey } from '../services/date'
 import { useI18n } from '../i18n/useI18n'
@@ -10,8 +10,14 @@ import { compositeLayers, createLayers, renderInkLayer, type InkLayers } from '.
 import {
   CANVAS_H, CANVAS_W, PAPER_SWATCH, appendPoint, clearDraft, emptyDocument,
   loadDraft, parseDocument, pointFromClient, redoStroke, renderDocument, saveDraft, undoStroke,
-  type DrawingDocument, type PaperKind, type Point, type Stroke, type Tool,
+  type DrawingDocument, type PaperKind, type Point, type Shape, type ShapeKind, type Stroke, type TextElement, type Tool,
 } from '../services/drawing'
+import { makeId } from '../services/drawing'
+import { PALETTE as PALETTE_COLORS, PALETTE_GROUPS, pushRecentColor, parseRecentColors } from '../services/drawingPalette'
+import {
+  DEFAULT_VIEWPORT, deleteElement, elementBounds, hitTest, moveElement, panBy, zoomAt,
+  type Bounds, type ElementRef, type Viewport,
+} from '../services/drawingGeometry'
 
 /**
  * Sketch board.
@@ -25,7 +31,11 @@ import {
  * and CSS scaling never distort strokes.
  */
 
-const PALETTE = ['#34312f', '#b66b52', '#89977b', '#5c7f8c', '#c99a4e', '#8c6a82', '#b5523f', '#f7f0e5']
+// The palette is defined ONCE in services/drawingPalette.ts (grouped, 16
+// colours). The previous local 8-colour constant was a second source of truth
+// that silently shadowed it, so the expanded palette never reached the UI.
+// Every original swatch is present in the shared list, so no colour is lost.
+const PALETTE = PALETTE_COLORS
 const DRAFT_DEBOUNCE_MS = 900
 const AUTOSAVE_DEBOUNCE_MS = 2600
 
@@ -45,6 +55,28 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   const [tool, setTool] = useState<Tool>('pencil')
   const [color, setColor] = useState(PALETTE[0])
   const [size, setSize] = useState(3)
+  const [shapeKind, setShapeKind] = useState<ShapeKind>('rect')
+  /** Recently used custom colours, persisted per device (drawingPalette is pure). */
+  const [recentColors, setRecentColors] = useState<string[]>(() => {
+    try { return parseRecentColors(JSON.parse(localStorage.getItem('alhelm.v1.recentColors') || '[]')) } catch { return [] }
+  })
+  const rememberColor = useCallback((hex: string) => {
+    setRecentColors((prev) => {
+      const next = pushRecentColor(prev, hex)
+      try { localStorage.setItem('alhelm.v1.recentColors', JSON.stringify(next)) } catch { /* storage unavailable */ }
+      return next
+    })
+  }, [])
+  const [viewport, setViewport] = useState<Viewport>(DEFAULT_VIEWPORT)
+  const [selected, setSelected] = useState<ElementRef | null>(null)
+  /** In-flight selection drag and pan gesture (refs: never stale). */
+  const dragRef = useRef<{ ref: ElementRef; last: Point; bounds: Bounds | null } | null>(null)
+  const panStartRef = useRef<{ x: number; y: number } | null>(null)
+  /** Latest viewport, for pointer handlers (which must not capture stale state). */
+  const viewportRef = useRef<Viewport>(DEFAULT_VIEWPORT)
+  /** The shape being dragged (not yet committed). */
+  const pendingShapeRef = useRef<Shape | null>(null)
+  const [pendingShape, setPendingShape] = useState<Shape | null>(null)
   const [redo, setRedo] = useState<Stroke[]>([])
   const [drawing, setDrawing] = useState(false)
   const [title, setTitle] = useState(() => loadDraft(null)?.title ?? '')
@@ -85,12 +117,31 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     }
     const layers = layersRef.current
     if (!layers) return
-    renderInkLayer(layers.ink, document, { live: live ?? null, pixelRatio: dpr })
+    // The ink layer is ALWAYS rendered at 1:1 in document space. Pan/zoom is
+    // applied only when compositing to the visible canvas, so the saved drawing
+    // geometry is never affected by navigation.
+    renderInkLayer(layers.ink, document, { live: live ?? null, liveShape: pendingShapeRef.current, pixelRatio: dpr })
     compositeLayers(canvasRef.current, layers, document.paper, document.width, document.height)
   }, [dpr])
 
+  // Apply the viewport to the visible canvas element only (CSS transform), so
+  // export and hit-testing keep using document coordinates.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    canvas.style.transform = `translate(${viewport.offsetX}px, ${viewport.offsetY}px) scale(${viewport.scale})`
+    canvas.style.transformOrigin = '0 0'
+    canvas.style.cursor = tool === 'pan' ? 'grab' : tool === 'select' ? 'default' : 'crosshair'
+  }, [viewport, tool])
+
+  // Pointer coordinates must be un-projected through the viewport.
+  useEffect(() => { viewportRef.current = viewport }, [viewport])
+
   // Repaint whenever the document, DPR or paper changes. Never clears state.
   useEffect(() => { paint(null) }, [doc, paint])
+
+  // Repaint while a shape is being dragged so the preview follows the pointer.
+  useEffect(() => { paint(null) }, [pendingShape, paint])
 
   // Keep the backing store sharp when the window moves between displays.
   useEffect(() => {
@@ -128,6 +179,9 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
 
   const toPoint = (event: React.PointerEvent<HTMLCanvasElement>): Point => {
     const rect = event.currentTarget.getBoundingClientRect()
+    // getBoundingClientRect already includes the CSS scale, so normalising to the
+    // document size yields document coordinates directly — pan/zoom therefore
+    // never corrupts where a stroke lands.
     return pointFromClient(event.clientX, event.clientY, rect, docRef.current)
   }
 
@@ -135,6 +189,49 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     if (event.pointerType === 'mouse' && event.button !== 0) return
     event.preventDefault()
     try { event.currentTarget.setPointerCapture(event.pointerId) } catch { /* older webviews */ }
+
+    // Pan: drag the viewport. Never writes to the document.
+    if (tool === 'pan') {
+      panStartRef.current = { x: event.clientX, y: event.clientY }
+      setDrawing(true)
+      return
+    }
+
+    // Select: pick the topmost element and start dragging it.
+    if (tool === 'select') {
+      const at = toPoint(event)
+      const hit = hitTest(docRef.current, at)
+      setSelected(hit)
+      if (hit) {
+        const bounds = elementBounds(docRef.current, hit)
+        dragRef.current = { ref: hit, last: at, bounds }
+        setDrawing(true)
+      }
+      return
+    }
+
+    // Text: a tap places a text element; there is nothing to drag.
+    if (tool === 'text') {
+      const at = toPoint(event)
+      const text = window.prompt(t('sketchTextPrompt'), '')
+      if (text && text.trim()) {
+        const element: TextElement = { id: makeId('txt'), x: at.x, y: at.y, text: text.trim(), color, size: Math.max(12, size * 6) }
+        updateDoc({ ...docRef.current, texts: [...(docRef.current.texts ?? []), element] })
+        setRedo([])
+      }
+      return
+    }
+
+    // Shapes drag from the start point to the current point.
+    if (tool === 'shape') {
+      const from = toPoint(event)
+      pendingShapeRef.current = { id: makeId('shp'), kind: shapeKind, from, to: from, color, size }
+      setPendingShape(pendingShapeRef.current)
+      setDrawing(true)
+      setRedo([])
+      return
+    }
+
     currentRef.current = { points: [toPoint(event)], color, size, eraser: tool === 'eraser' }
     setDrawing(true)
     setRedo([])
@@ -142,6 +239,35 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   }
 
   const move = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    // Pan: translate the viewport only; document coordinates are untouched.
+    const pan = panStartRef.current
+    if (pan) {
+      const dx = event.clientX - pan.x
+      const dy = event.clientY - pan.y
+      panStartRef.current = { x: event.clientX, y: event.clientY }
+      setViewport((v) => panBy(v, dx, dy, docRef.current.width, docRef.current.height))
+      return
+    }
+
+    // Select: drag the selected element (committed on pointer up).
+    const drag = dragRef.current
+    if (drag) {
+      const at = toPoint(event)
+      const next = moveElement(docRef.current, drag.ref, at.x - drag.last.x, at.y - drag.last.y)
+      dragRef.current = { ...drag, last: at }
+      updateDoc(next)
+      return
+    }
+
+    // Shape drag: update the preview only (no document write per move).
+    const shape = pendingShapeRef.current
+    if (shape) {
+      event.preventDefault()
+      const next = { ...shape, to: toPoint(event) }
+      pendingShapeRef.current = next
+      setPendingShape(next)
+      return
+    }
     const live = currentRef.current
     if (!live) return
     event.preventDefault()
@@ -158,6 +284,30 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   }
 
   const end = (event?: React.PointerEvent<HTMLCanvasElement>) => {
+    if (panStartRef.current) {
+      panStartRef.current = null
+      setDrawing(false)
+      return
+    }
+    if (dragRef.current) {
+      dragRef.current = null
+      setDrawing(false)
+      setRedo([])
+      return
+    }
+    const shape = pendingShapeRef.current
+    if (shape) {
+      pendingShapeRef.current = null
+      setPendingShape(null)
+      setDrawing(false)
+      if (event) {
+        try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* not captured */ }
+      }
+      // Ignore a stray tap that never dragged (zero-size shape).
+      const dragged = Math.abs(shape.to.x - shape.from.x) + Math.abs(shape.to.y - shape.from.y) > 2
+      if (dragged) updateDoc({ ...docRef.current, shapes: [...(docRef.current.shapes ?? []), shape] })
+      return
+    }
     const live = currentRef.current
     if (!live) return
     currentRef.current = null
@@ -172,15 +322,45 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
 
   /* ---------------- history & tools ---------------- */
 
+  /**
+   * Undo removes the most recent element of ANY kind, in true drawing order:
+   * text, then shapes, then strokes. Keeps undo predictable after the v3 tools.
+   */
   const undo = () => {
-    if (docRef.current.strokes.length === 0) return
-    const history = undoStroke({ strokes: docRef.current.strokes, redo })
-    updateDoc({ ...docRef.current, strokes: history.strokes })
+    const current = docRef.current
+    if ((current.texts?.length ?? 0) > 0) {
+      const texts = [...(current.texts ?? [])]
+      const removed = texts.pop() as TextElement
+      updateDoc({ ...current, texts })
+      setRedo([{ kind: 'text', element: removed }] as never)
+      return
+    }
+    if ((current.shapes?.length ?? 0) > 0) {
+      const shapes = [...(current.shapes ?? [])]
+      const removed = shapes.pop() as Shape
+      updateDoc({ ...current, shapes })
+      setRedo([{ kind: 'shape', shape: removed }] as never)
+      return
+    }
+    if (current.strokes.length === 0) return
+    const history = undoStroke({ strokes: current.strokes, redo: [] })
+    updateDoc({ ...current, strokes: history.strokes })
     setRedo(history.redo)
   }
 
   const redoAction = () => {
     if (redo.length === 0) return
+    const first = redo[0] as unknown as { kind?: string; element?: TextElement; shape?: Shape }
+    if (first.kind === 'text' && first.element) {
+      updateDoc({ ...docRef.current, texts: [...(docRef.current.texts ?? []), first.element] })
+      setRedo([])
+      return
+    }
+    if (first.kind === 'shape' && first.shape) {
+      updateDoc({ ...docRef.current, shapes: [...(docRef.current.shapes ?? []), first.shape] })
+      setRedo([])
+      return
+    }
     const history = redoStroke({ strokes: docRef.current.strokes, redo })
     updateDoc({ ...docRef.current, strokes: history.strokes })
     setRedo(history.redo)
@@ -188,12 +368,30 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
 
   const changePaper = (paper: PaperKind) => updateDoc({ ...docRef.current, paper })
 
+  /** Screen-space centre of the visible canvas, used as the zoom anchor. */
+  const centerOfCanvas = (): Point => ({
+    x: (docRef.current.width * viewport.scale) / 2,
+    y: (docRef.current.height * viewport.scale) / 2,
+  })
+
+  /** Removes the selected element and clears the selection. */
+  const deleteSelected = () => {
+    if (!selected) return
+    updateDoc(deleteElement(docRef.current, selected))
+    setSelected(null)
+    setRedo([])
+  }
+
+  // Selection is positional: any structural change invalidates the index.
+  useEffect(() => { setSelected(null) }, [doc.strokes.length, doc.shapes?.length, doc.texts?.length])
+
   const clear = () => {
     setConfirmClear(false)
-    updateDoc({ ...docRef.current, strokes: [] })
+    const cleared = { ...docRef.current, strokes: [], shapes: [], texts: [] }
+    updateDoc(cleared)
     setRedo([])
     // Clearing is an explicit action; the saved artwork is only replaced on Save.
-    persistDraft({ ...docRef.current, strokes: [] }, savedIdRef.current, titleRef.current)
+    persistDraft(cleared, savedIdRef.current, titleRef.current)
   }
 
   const exportPng = () => {
@@ -412,7 +610,8 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
             <IconButton label={t('sketchEraser')} variant={tool === 'eraser' ? 'primary' : 'secondary'} onClick={() => setTool('eraser')}><EraserIcon size={17} /></IconButton>
           </div>
           <div className="sketch-toolbar__group sketch-palette" role="group" aria-label={t('sketchColor')}>
-            {PALETTE.map((swatch) => (
+            {/* Grouped palette, ordered lightest-last so ink stays reachable. */}
+            {PALETTE_GROUPS.flatMap((group) => group.colors).map((swatch) => (
               <button
                 key={swatch}
                 type="button"
@@ -423,6 +622,47 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
                 onClick={() => { setColor(swatch); setTool('pencil') }}
               />
             ))}
+            {/* Recent custom colours: newest first, capped by drawPalette. */}
+            {recentColors.map((swatch) => (
+              <button
+                key={'recent-' + swatch}
+                type="button"
+                className={`sketch-swatch sketch-swatch--recent ${color === swatch ? 'sketch-swatch--active' : ''}`}
+                style={{ background: swatch }}
+                aria-label={swatch}
+                aria-pressed={color === swatch}
+                onClick={() => { setColor(swatch); setTool('pencil') }}
+              />
+            ))}
+            {/* Custom colour: the native picker emits the same #rrggbb form. */}
+            <label className="sketch-swatch sketch-swatch--custom" title={t('sketchCustomColor')}>
+              <input
+                type="color"
+                value={color}
+                aria-label={t('sketchCustomColor')}
+                onChange={(event) => { setColor(event.target.value); rememberColor(event.target.value) }}
+              />
+              <span aria-hidden="true" style={{ background: color }} />
+            </label>
+          </div>
+
+          <div className="sketch-toolbar__group" role="group" aria-label={t('sketchShape')}>
+            <IconButton label={t('sketchShapeRect')} variant={shapeKind === 'rect' && tool === 'shape' ? 'primary' : 'secondary'} onClick={() => { setShapeKind('rect'); setTool('shape') }}><SquareIcon size={17} /></IconButton>
+            <IconButton label={t('sketchShapeEllipse')} variant={shapeKind === 'ellipse' && tool === 'shape' ? 'primary' : 'secondary'} onClick={() => { setShapeKind('ellipse'); setTool('shape') }}><CircleIcon size={17} /></IconButton>
+            <IconButton label={t('sketchShapeLine')} variant={shapeKind === 'line' && tool === 'shape' ? 'primary' : 'secondary'} onClick={() => { setShapeKind('line'); setTool('shape') }}><LineIcon size={17} /></IconButton>
+            <IconButton label={t('sketchTextTool')} variant={tool === 'text' ? 'primary' : 'secondary'} onClick={() => setTool('text')}><TypeIcon size={17} /></IconButton>
+            <IconButton label={t('sketchSelect')} variant={tool === 'select' ? 'primary' : 'secondary'} onClick={() => setTool('select')}><SelectIcon size={17} /></IconButton>
+            <IconButton label={t('sketchPan')} variant={tool === 'pan' ? 'primary' : 'secondary'} onClick={() => setTool('pan')}><HandIcon size={17} /></IconButton>
+            {tool === 'select' && selected && (
+              <IconButton label={t('sketchDeleteSelected')} variant="danger" onClick={deleteSelected}><TrashIcon size={17} /></IconButton>
+            )}
+          </div>
+
+          <div className="sketch-toolbar__group" role="group" aria-label={t('sketchZoom')}>
+            <IconButton label={t('sketchZoomOut')} size="sm" onClick={() => setViewport((v) => zoomAt(v, centerOfCanvas(), 1 / 1.25, docRef.current.width, docRef.current.height))} disabled={viewport.scale <= 0.5}><ZoomOutIcon size={16} /></IconButton>
+            <span className="t-xs t-muted" style={{ minWidth: 38, textAlign: 'center' }}>{Math.round(viewport.scale * 100)}%</span>
+            <IconButton label={t('sketchZoomIn')} size="sm" onClick={() => setViewport((v) => zoomAt(v, centerOfCanvas(), 1.25, docRef.current.width, docRef.current.height))} disabled={viewport.scale >= 4}><ZoomInIcon size={16} /></IconButton>
+            <IconButton label={t('sketchResetView')} size="sm" onClick={() => { setViewport(DEFAULT_VIEWPORT); setSelected(null) }}><ResetIcon size={16} /></IconButton>
           </div>
           <label className="sketch-size">
             <span className="t-xs t-muted">{t('sketchSize')}</span>

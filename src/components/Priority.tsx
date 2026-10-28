@@ -1,9 +1,11 @@
 import { useToast } from './toastContext'
 import { useI18n } from '../i18n/useI18n'
+import { TASK_PRIORITY_ORDER } from '../services/taskPriority'
+import type { TaskPriority } from '../types'
 
-/** Priority is sorted urgent → high → medium → low everywhere. */
-export const PRIORITY_ORDER = ['urgent', 'high', 'medium', 'low'] as const
-export type PriorityKind = (typeof PRIORITY_ORDER)[number]
+/** Priority is sorted urgent → high → medium → low everywhere (one source list). */
+export const PRIORITY_ORDER = TASK_PRIORITY_ORDER
+export type PriorityKind = TaskPriority
 
 const LABEL_KEY = {
   urgent: 'priorityLabelUrgent',

@@ -21,7 +21,8 @@
 
 import {
   CANVAS_H, CANVAS_W, PAPER_BACKGROUND,
-  drawStrokePath, type DrawingDocument, type PaperKind, type Stroke,
+  drawShape, drawStrokePath, drawText,
+  type DrawingDocument, type PaperKind, type Shape, type Stroke,
 } from './drawing'
 
 /**
@@ -96,7 +97,7 @@ export function createLayers(width: number, height: number): InkLayers | null {
 export function renderInkLayer(
   inkCanvas: HTMLCanvasElement | null,
   doc: DrawingDocument,
-  options: { live?: Stroke | null; pixelRatio?: number } = {},
+  options: { live?: Stroke | null; liveShape?: Shape | null; pixelRatio?: number } = {},
 ): void {
   if (!inkCanvas) return
   const ctx = inkCanvas.getContext('2d')
@@ -114,7 +115,17 @@ export function renderInkLayer(
   ctx.clearRect(0, 0, inkCanvas.width, inkCanvas.height)
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
   for (const stroke of doc.strokes) paintInkStroke(ctx, stroke)
+  // Shapes and text live on the INK layer too, so they behave exactly like ink:
+  // an eraser removes them, and they never touch the paper layer.
+  ctx.globalCompositeOperation = 'source-over'
+  for (const shape of doc.shapes ?? []) drawShape(ctx, shape)
+  for (const element of doc.texts ?? []) drawText(ctx, element)
   if (options.live) paintInkStroke(ctx, options.live)
+  // Preview of a shape currently being dragged.
+  if (options.liveShape) {
+    ctx.globalCompositeOperation = 'source-over'
+    drawShape(ctx, options.liveShape)
+  }
   ctx.setTransform(1, 0, 0, 1, 0, 0)
 }
 

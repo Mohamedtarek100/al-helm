@@ -6,9 +6,19 @@
 --   for "Math", " math " or "مُحَاسَبَة" / "محاسبة" within the same account.
 --
 -- DESIGN
---   `subjects.name_key` holds a canonical comparison key computed by a
---   BEFORE INSERT/UPDATE trigger, and a UNIQUE (user_id, name_key) index makes
---   the guarantee authoritative at the database level.
+--   `subjects.name_key` is a derived column owned by the DATABASE. A BEFORE
+--   INSERT/UPDATE trigger computes it from `name` with public.subject_name_key(),
+--   and UNIQUE (user_id, name_key) makes the guarantee authoritative. Clients
+--   never send this column; see subjectsRow() in persistence/supabase.ts.
+--
+--   NOTE ON THIS FILE'S FUNCTION BODY
+--   The function created below is the INITIAL implementation and is REPLACED
+--   wholesale by migration 007, which is the single source of truth for the
+--   key contract (NFKC + strip Arabic marks + lower + collapse whitespace).
+--   006 only needs to establish the column, the trigger and a first backfill;
+--   the index it creates here is dropped and rebuilt by 007. Keeping 006's
+--   narrow body intact preserves the record of what was originally proposed
+--   while 007 defines the behaviour that actually ships.
 --
 --   The key is deliberately built ONLY from constructs that behave identically
 --   in JavaScript and PostgreSQL:

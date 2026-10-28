@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, type ReactNode } from 'react'
 import { updateSettings, useSettings } from '../services/store'
+import { toValidDate } from '../services/date'
 import { I18nContext } from './useI18n'
 import { messages, type Language, type TranslationKey } from './translations'
 
@@ -23,8 +24,16 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     return result
   }, [language])
   const formatDate = useCallback((date: Date | string, options: Intl.DateTimeFormatOptions = { dateStyle: 'long' }) => {
-    const parsed = typeof date === 'string' ? (() => { const [year, month, day] = date.split('-').map(Number); return new Date(year, month - 1, day) })() : date
-    return new Intl.DateTimeFormat(locale, { ...options, calendar: 'gregory' }).format(parsed)
+    // Any unparsable date is rendered as an em dash. A raw `Intl.format()` on an
+    // invalid Date throws RangeError('Invalid time value'), which used to
+    // unmount the whole route — this keeps a bad record to one bad cell.
+    const parsed = toValidDate(date)
+    if (!parsed) return '—'
+    try {
+      return new Intl.DateTimeFormat(locale, { ...options, calendar: 'gregory' }).format(parsed)
+    } catch {
+      return '—'
+    }
   }, [locale])
   const formatNumber = useCallback((value: number, options?: Intl.NumberFormatOptions) => new Intl.NumberFormat(locale, options).format(value), [locale])
   const value = useMemo(() => ({ language, dir, locale, t, formatDate, formatNumber, setLanguage }), [language, dir, locale, t, formatDate, formatNumber, setLanguage])

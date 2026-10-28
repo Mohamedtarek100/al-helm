@@ -1,0 +1,146 @@
+/* Account identity: avatar + signed-in row, onboarding choice, app lock, update banner. */
+
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0 4px;
+}
+
+.account-row__text { min-width: 0; }
+.account-row__name { display: block; font-weight: 600; }
+.account-row__text p { margin: 2px 0 0; word-break: break-word; }
+
+/* Circular avatar with a stable fallback. */
+.account-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--sage, #89977b);
+  color: #fff;
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+}
+
+.account-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.account-avatar__initial { display: block; }
+
+/* ---- First-launch choice -------------------------------------------- */
+.onboarding {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.onboarding__card {
+  width: min(520px, 100%);
+  display: grid;
+  gap: 14px;
+}
+
+.onboarding__brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.onboarding__title { font-size: 1.5rem; margin: 0; }
+.onboarding__lead { margin: 0; color: var(--text-muted, #6b6b6b); }
+
+.onboarding__option {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--border, #ddd2c2);
+  border-radius: 14px;
+}
+
+.onboarding__option--primary { border-color: var(--clay, #b66b52); }
+.onboarding__option-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.onboarding__option p { margin: 0; font-size: 0.875rem; color: var(--text-muted, #6b6b6b); }
+.onboarding__note { font-size: 0.8rem; }
+.onboarding__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---- App lock ------------------------------------------------------- */
+.app-lock {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  background: var(--surface, #f7f0e5);
+  padding: 24px;
+}
+
+.app-lock__panel { width: min(360px, 100%); display: grid; gap: 12px; text-align: center; }
+.app-lock__dots { display: flex; justify-content: center; gap: 10px; margin: 8px 0; }
+.app-lock__dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid currentColor; }
+.app-lock__dot--on { background: currentColor; }
+.app-lock__keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.app-lock__key { padding: 14px 0; font-size: 1.15rem; }
+.app-lock__error { color: var(--danger, #b3261e); font-size: 0.85rem; min-height: 1.2em; }
+
+/* ---- Optional update banner ----------------------------------------- */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--amber, #c99a4e);
+  color: #1c1a17;
+  margin-bottom: 12px;
+}
+
+.update-banner__text { flex: 1; min-width: 0; }
+.update-banner__text b { display: block; font-size: 0.9rem; }
+.update-banner__text span { font-size: 0.8rem; opacity: 0.85; }
+
+/* ---- Dream Studio v3: custom colour swatch ------------------------- */
+.sketch-swatch--custom {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  /* Rainbow ring distinguishes "custom" from a fixed palette entry. */
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+.sketch-swatch--custom input[type='color'] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+  height: 100%;
+}
+
+.sketch-swatch--custom span {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* ---- Dream Studio v3: viewport + selection ------------------------- */
+/*
+ * The canvas is transformed with CSS for pan/zoom. `transform-origin: 0 0`
+ * makes the maths in drawingGeometry.ts match the rendered result exactly, and
+ * `will-change` keeps dragging smooth on mobile GPUs.
+ */
+.sketch-canvas {
+  transform-origin: 0 0;
+  will-change: transform;
+  /* Never let a pan gesture scroll the page underneath the drawing. */
+  touch-action: none;
+}

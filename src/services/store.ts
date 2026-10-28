@@ -35,10 +35,12 @@ import { dataAdapter } from './persistence/adapter'
 import { cloudAdapter, supabase } from './persistence/supabase'
 import { PersistenceCoordinator } from './persistence/coordinator'
 import { createId, nowIso } from './persistence/repository'
+import { toValidDate } from './date'
 import { createInitialData, hydrateData } from './domain'
 import { syncReminders } from './reminders'
 import { markSynced, markSyncFailed, markSyncing, reconcileWithStore } from './syncStatus'
 import { cleanSubjectName, findSubjectIncludingArchived, SubjectDuplicateError, subjectNameKey } from './subjects'
+import { isTaskPriority, normalizeTaskPriority } from './taskPriority'
 import { getAnnouncementFeed, markAnnouncementRead, type AnnouncementFeedRow } from './edge/admin'
 
 export type CollectionItem<K extends CollectionKey> = AppData[K][number]
@@ -69,31 +71,130 @@ function getSnapshot(): AppData {
 
 let persistenceError: string | null = null
 let cloudSaveError: string | null = null
+/**
+ * Non-null while the device copy is AHEAD of the account copy because the last
+ * cloud write failed. Cleared only by a cloud write the server confirmed.
+ */
+let pendingCloudError: string | null = null
+/**
+ * Incremented whenever the active account changes. A save captures the value
+ * when it starts and refuses to record a result if it moved underneath it, so
+ * a slow request from account A can never be reported against account B.
+ */
+let accountGeneration = 0
 const persistence = new PersistenceCoordinator(dataAdapter, cloudAdapter())
-async function persistCloudSnapshot(snapshot: AppData): Promise<void> {
-  const cloudActive = persistence.snapshot().mode === 'cloud'
-  if (cloudActive) markSyncing()
-  try {
-    await persistence.persist(snapshot)
-    persistenceError = null
-    cloudSaveError = null
-    if (cloudActive) { markSynced(); reconcileWithStore() }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Persistence failed.'
-    if (persistence.snapshot().mode === 'cloud') cloudSaveError = message
-    else persistenceError = message
-    if (cloudActive) markSyncFailed(message)
-    if (persistence.snapshot().mode === 'local') void persistence.refreshLocalSnapshot(state).catch(() => undefined)
-    emit()
-    throw error
-  }
+
+/** Where a confirmed change actually landed. */
+export type SaveOutcome = 'cloud' | 'local'
+
+/** Serialises full-snapshot writes so two saves can never interleave. */
+let writeChain: Promise<unknown> = Promise.resolve()
+function enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
+  const run = writeChain.then(task, task)
+  writeChain = run.catch(() => undefined)
+  return run
+}
+
+function localCopyOf(data: AppData): AppData {
+  return { ...data, settings: { ...data.settings, storage: 'local' } }
+}
+/**
+ * Persists one snapshot.
+ *
+ * In cloud mode the local copy is written FIRST, so a failed/expired cloud
+ * request can never discard the user's edit. After that the cloud write is
+ * attempted and any failure is surfaced — it is never swallowed into a
+ * reported success.
+ *
+ * Returns which store actually holds the change, so callers (forms) can tell
+ * the user the truth instead of a generic "saved".
+ */
+async function persistCloudSnapshot(snapshot: AppData): Promise<SaveOutcome> {
+  return enqueueWrite(async () => {
+    const generation = accountGeneration
+    const cloudActive = persistence.snapshot().mode === 'cloud'
+    if (cloudActive) markSyncing()
+    try {
+      if (cloudActive) {
+        // Keep the coordinator's snapshot aligned before persisting: persist()
+        // aborts (and logs the user out) when the two disagree, which would be
+        // a false "session expired" for a healthy session.
+        //
+        // The account is re-checked immediately before that refresh. If it
+        // changed while this write was queued, refreshing would write account
+        // A's data into account B's coordinator — cross-account leakage — so
+        // we abort instead and keep the edit on this device only.
+        if (generation !== accountGeneration) {
+          throw new Error('The signed-in account changed before this save started. The change was kept on this device.')
+        }
+        await persistence.refreshCloudSnapshot(snapshot)
+        await dataAdapter.save(localCopyOf(snapshot))
+      }
+      await persistence.persist(snapshot)
+      // The write completed, but if the account changed while it was in flight
+      // the result is not trustworthy for the store's current owner: the cloud
+      // copy it updated belongs to the previous account. Report a failure so
+      // nothing marks this as synced.
+      if (generation !== accountGeneration) {
+        throw new Error('The signed-in account changed while saving. The change was kept on this device.')
+      }
+      persistenceError = null
+      cloudSaveError = null
+      pendingCloudError = null
+      if (cloudActive) { markSynced(); reconcileWithStore() }
+      return cloudActive ? 'cloud' : 'local'
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Persistence failed.'
+      // Read the mode AFTER the attempt: the coordinator may have downgraded to
+      // local (expired session) while the write was in flight.
+      const mode = persistence.snapshot().mode
+      if (mode === 'cloud') {
+        cloudSaveError = message
+        pendingCloudError = message
+        markSyncFailed(message)
+      } else {
+        persistenceError = message
+      }
+      emit()
+      throw error
+    }
+  })
 }
 export function getPersistenceError(): string | null { return cloudSaveError ?? persistenceError }
-export async function retryPersistence(): Promise<void> {
-  await persistence.retry()
-  persistenceError = null
-  cloudSaveError = null
-  emit()
+/**
+ * The unresolved cloud-write error, or null when the account copy is current.
+ *
+ * Non-null means this device holds changes the account does not. The sync
+ * indicator must never claim "synced" while this is set.
+ */
+export function getPendingCloudError(): string | null { return pendingCloudError }
+
+/**
+ * Retries the failed cloud write, and reports success only once it is stored.
+ *
+ * Re-enters cloud mode first when the previous failure downgraded us to local
+ * (an expired session does that), so retrying after signing back in targets the
+ * account rather than silently saving locally. Never attaches to a different
+ * account than the one that failed.
+ */
+export async function retryPersistence(): Promise<SaveOutcome> {
+  const pendingUserId = persistence.snapshot().userId
+  if (persistence.snapshot().mode !== 'cloud') {
+    const current = await currentSessionUserId()
+    if (!current) throw new Error('Sign in again to send the unsynced changes to your account.')
+    if (pendingUserId && current !== pendingUserId) throw new Error('A different account is signed in; sign in as the original account to sync these changes.')
+    await authenticateCloudUser(current)
+  }
+  const outcome = await persistCloudSnapshot(state)
+  if (outcome === 'local') throw new Error('Cloud sync is not active, so the changes are saved on this device only.')
+  return outcome
+}
+
+async function currentSessionUserId(): Promise<string | null> {
+  if (!supabase) return null
+  const { data, error } = await supabase.auth.getSession()
+  if (error) return null
+  return data.session?.user.id ?? null
 }
 
 /** Debounced write-through so rapid edits do not thrash localStorage. */
@@ -106,20 +207,33 @@ function schedulePersist(): void {
   }, 220)
 }
 function commit(next:AppData):void{state=next;emit();schedulePersist()}
-async function commitAndPersist(next: AppData): Promise<void> {
+
+/**
+ * Applies an edit and writes it through.
+ *
+ * On a LOCAL failure the in-memory state is rolled back so the UI agrees with
+ * what is stored. On a CLOUD failure the edit is kept: it is already on this
+ * device, and discarding it would lose the user's work over a network problem.
+ * `pendingCloudError` records that the account copy is behind.
+ *
+ * No follow-up debounce is scheduled: this write is already complete, and a
+ * second full-snapshot write would only duplicate cloud traffic.
+ */
+async function commitAndPersist(next: AppData): Promise<SaveOutcome> {
   const previous=state
   if(saveTimer){clearTimeout(saveTimer);saveTimer=null}
   state=next
   emit()
   try {
-    if(persistence.snapshot().mode==='local') await persistCloudSnapshot(next)
-    else {
-      await persistence.refreshCloudSnapshot(next)
-      await dataAdapter.save({...next,settings:{...next.settings,storage:'local'}})
-      await persistCloudSnapshot(next)
+    return await persistCloudSnapshot(next)
+  } catch(error){
+    if(persistence.snapshot().mode==='local'){
+      state=previous
+      await persistence.refreshLocalSnapshot(previous).catch(()=>undefined)
+      emit()
     }
-    schedulePersist()
-  } catch(error){state=previous;if(persistence.snapshot().mode==='local')await persistence.refreshLocalSnapshot(previous).catch(()=>undefined);else await persistence.refreshCloudSnapshot(previous).catch(()=>undefined);emit();throw error}
+    throw error
+  }
 }
 
 export async function initStore(force = false): Promise<void> {
@@ -171,8 +285,12 @@ export async function initStore(force = false): Promise<void> {
 
 export async function authenticateCloudUser(userId: string): Promise<void> {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+  // Any in-flight save belongs to the previous account and must not record its
+  // result against this one. Bumping the generation invalidates it.
+  accountGeneration += 1
   const next = await persistence.authenticate(userId)
   if(next.error) cloudSaveError=next.error
+  else if (next.mode === 'cloud') cloudSaveError = null
   if (next.mode === 'cloud') {
     state = hydrateData(next.data)
     state.settings.storage = 'cloud'
@@ -181,6 +299,9 @@ export async function authenticateCloudUser(userId: string): Promise<void> {
     state.settings.storage = 'local'
     if (next.migrationRequired) persistenceError = 'Local data is still only on this device. Review and explicitly migrate it before syncing.'
   }
+  // Entering or switching to a cloud account starts from a clean cloud state:
+  // a pending error from a *different* account must never be shown here.
+  if (next.mode === 'cloud') pendingCloudError = null
   applyTheme(state.settings.theme)
   emit()
 }
@@ -192,11 +313,14 @@ export async function logoutCloudUser(): Promise<void> {
     try { await persistence.persist(state) }
     catch(error) { persistenceError=error instanceof Error?error.message:'Cloud save failed before logout.' }
   }
+  accountGeneration += 1
   const next = persistence.logout()
   state = hydrateData(next.data)
   state.settings.storage = 'local'
   cloudSaveError = null
   persistenceError = null
+  // Nothing is pending against an account we are no longer signed in to.
+  pendingCloudError = null
   applyTheme(state.settings.theme)
   emit()
 }
@@ -212,18 +336,12 @@ export function getState(): AppData {
 export function getActivePersistenceCoordinator(): PersistenceCoordinator { return persistence }
 
 /** Used by "استعادة النسخة" in settings and by tests. */
-export async function replaceState(next: AppData): Promise<void> {
+export async function replaceState(next: AppData): Promise<SaveOutcome> {
   const previous = state
   state = next
   emit()
   try {
-    if(persistence.snapshot().mode==='local') await persistCloudSnapshot(next)
-    else {
-      await persistence.refreshCloudSnapshot(next)
-      await dataAdapter.save({...next,settings:{...next.settings,storage:'local'}})
-      await persistCloudSnapshot(next)
-    }
-    schedulePersist()
+    return await persistCloudSnapshot(next)
   } catch (error) {
     state = previous
     if(persistence.snapshot().mode==='local') await persistence.refreshLocalSnapshot(previous).catch(()=>undefined)
@@ -244,11 +362,11 @@ export async function resetAllData(): Promise<void> {
 /* Generic collection actions                                          */
 /* ------------------------------------------------------------------ */
 
-async function withCollectionPersist<K extends CollectionKey>(key:K,updater:(items:AppData[K][number][])=>AppData[K][number][]):Promise<void>{
-  await commitAndPersist({...state,[key]:updater([...(state[key] as AppData[K][number][])])} as AppData)
+async function withCollectionPersist<K extends CollectionKey>(key:K,updater:(items:AppData[K][number][])=>AppData[K][number][]):Promise<SaveOutcome>{
+  return commitAndPersist({...state,[key]:updater([...(state[key] as AppData[K][number][])])} as AppData)
 }
 
-export async function persistCurrent(): Promise<void> { await commitAndPersist(structuredClone(state)) }
+export async function persistCurrent(): Promise<SaveOutcome> { return commitAndPersist(structuredClone(state)) }
 export function activePersistenceMode(): 'local'|'cloud' { return persistence.snapshot().mode }
 
 
@@ -365,19 +483,63 @@ export async function deleteSession(id: string): Promise<void> { await withColle
 
 export type NewTask = Omit<Task, keyof Timestamped | 'id' | 'completedAt' | 'completed'>
 
+/**
+ * Whether the deployed database accepts `urgent` in `tasks.priority`.
+ *
+ * Origin: migration 001 created the CHECK with only low/medium/high, so this
+ * flag let the client fail loudly instead of downgrading urgent to high (which
+ * would silently destroy the student's choice).
+ *
+ * STATE AS OF THIS RELEASE: migration 005 is APPLIED on production and the
+ * live constraint is `priority = ANY (ARRAY['urgent','high','medium','low'])`,
+ * verified read-only against warepmhybetvjzgvpuqf. The flag is therefore true.
+ *
+ * The guard below is intentionally retained: it still catches an unsupported
+ * value (rather than letting a whole snapshot upsert fail with an opaque 400),
+ * and it remains the single switch to flip back if this code is ever pointed at
+ * a database that has not had 005 applied.
+ */
+export const URGENT_PRIORITY_SUPPORTED = true
+/**
+ * Rejects a task write whose priority the server cannot store.
+ *
+ * The database CHECK allows urgent/high/medium/low once 005 is applied. This
+ * validation runs on every write path (not only the form) so no code path can
+ * enqueue a value the server will refuse, and it names the exact problem
+ * instead of failing the whole snapshot with an opaque 400.
+ */
+function assertWritableTask(task: { priority?: unknown; title?: unknown }): void {
+  if (!isTaskPriority(task.priority)) {
+    throw new Error(`Unsupported task priority: ${String(task.priority)}. Use urgent, high, medium or low.`)
+  }
+  if (task.priority === 'urgent' && !URGENT_PRIORITY_SUPPORTED) {
+    throw new Error('Urgent priority is not enabled on the server yet. Choose High for now, or ask the owner to apply migration 005.')
+  }
+  if (typeof task.title !== 'string' || !task.title.trim()) throw new Error('A task needs a title.')
+}
+
+/** Every task write normalises its payload to the values the database accepts. */
+function withWritableTasks(tasks: Task[]): Task[] {
+  return tasks.map((task) => ({ ...task, priority: normalizeTaskPriority(task.priority) }))
+}
+
 export async function createTask(input: NewTask): Promise<Task> {
+  assertWritableTask(input)
+  if (!input.dueDate) throw new Error('A task needs a due date.')
   const stamp=nowIso(),item={...(input as object),completed:false,completedAt:null,id:createId('tsk'),createdAt:stamp,updatedAt:stamp} as Task
-  await withCollectionPersist('tasks',items=>[...items,item])
+  // Copy the caller's object so the form's draft is never mutated by a save.
+  await withCollectionPersist('tasks',items=>withWritableTasks([...items,item]))
   return item
 }
 
 export async function updateTask(id: string, patch: Partial<Task>): Promise<void> {
-  await withCollectionPersist('tasks',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item))
+  if ('priority' in patch) assertWritableTask({ priority: patch.priority, title: patch.title ?? 'unchanged' })
+  await withCollectionPersist('tasks',items=>withWritableTasks(items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item)))
 }
 
 export async function setTaskCompleted(id: string, completed: boolean): Promise<void> {
   const completedAt=completed?nowIso():null
-  await withCollectionPersist('tasks',items=>items.map(item=>item.id===id?{...item,completed,completedAt,updatedAt:nowIso()}:item))
+  await withCollectionPersist('tasks',items=>withWritableTasks(items.map(item=>item.id===id?{...item,completed,completedAt,updatedAt:nowIso()}:item)))
 }
 
 export async function deleteTask(id: string): Promise<void> { await withCollectionPersist('tasks',items=>items.filter(item=>item.id!==id)) }
@@ -464,8 +626,28 @@ export async function updateLetter(id: string, patch: Partial<FutureLetter>): Pr
 export async function deleteLetter(id: string): Promise<void> { await withCollectionPersist('letters',items=>items.filter(item=>item.id!==id)) }
 
 export type NewExamDate = Omit<ExamDate, keyof Timestamped | 'id'>
-export async function createExam(input: NewExamDate): Promise<ExamDate> { const stamp=nowIso(),item={...(input as object),id:createId('exam'),createdAt:stamp,updatedAt:stamp} as ExamDate; await withCollectionPersist('exams',items=>[...items,item]); return item }
-export async function updateExam(id: string, patch: Partial<ExamDate>): Promise<void> { await withCollectionPersist('exams',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item)) }
+
+/**
+ * Rejects an exam whose timestamp the database would not store as a moment.
+ *
+ * `exam_dates.exam_at` is `timestamptz not null`; an empty or unparsable
+ * string is rejected server-side with a constraint error that is useless to a
+ * student. Validating here turns it into a precise message, and guarantees no
+ * invalid Date ever reaches the UI through persisted state.
+ */
+function assertWritableExam(exam: { title?: unknown; examAt?: unknown }): void {
+  if (typeof exam.title !== 'string' || !exam.title.trim()) throw new Error('An exam needs a title.')
+  const when = typeof exam.examAt === 'string' ? toValidDate(exam.examAt) : null
+  if (!when) throw new Error('An exam needs a valid date and time.')
+}
+
+export async function createExam(input: NewExamDate): Promise<ExamDate> { assertWritableExam(input); const stamp=nowIso(),item={...(input as object),timezone:'Africa/Cairo',id:createId('exam'),createdAt:stamp,updatedAt:stamp} as ExamDate; await withCollectionPersist('exams',items=>[...items,item]); return item }
+export async function updateExam(id: string, patch: Partial<ExamDate>): Promise<void> {
+  const current = state.exams.find((exam) => exam.id === id)
+  const merged = { title: patch.title ?? current?.title, examAt: patch.examAt ?? current?.examAt }
+  assertWritableExam(merged)
+  await withCollectionPersist('exams',items=>items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item))
+}
 export async function deleteExam(id: string): Promise<void> { await withCollectionPersist('exams',items=>items.filter(item=>item.id!==id)) }
 
 /* ------------------------------------------------------------------ */

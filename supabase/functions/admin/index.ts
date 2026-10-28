@@ -69,7 +69,11 @@ Deno.serve(async (req) => {
   const { data: userData, error: userErr } = await userClient(authHeader).auth.getUser()
   if (userErr || !userData?.user) return deny('Unauthenticated.')
   const user = userData.user
-  const email = (user.email ?? '').toLowerCase()
+  // Trim AND lower-case both sides. A Google account can carry mixed case, and
+  // a pasted allow-list entry can carry a trailing space that is invisible in
+  // the dashboard; without trimming, an authorised owner is silently denied.
+  // `allowlist()` applies the same normalisation to ADMIN_EMAILS.
+  const email = (user.email ?? '').trim().toLowerCase()
 
   const body = await req.json().catch(() => ({}))
   const action = (body as { action?: string }).action

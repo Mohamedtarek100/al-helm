@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { paintInkStroke, paintPaper } from './inkLayers'
+import { drawShape, drawText } from './drawing'
 import type { Stroke } from './drawing'
 
 /**
@@ -37,13 +38,20 @@ function recorder() {
     setTransform() {},
     clearRect() { ops.push({ kind: 'clearRect', composite }) },
     fillRect() { ops.push({ kind: 'fillRect', composite, style }) },
+    font: '',
+    textBaseline: 'alphabetic',
     beginPath() {},
     moveTo() {},
     lineTo() {},
     quadraticCurveTo() {},
     arc() {},
+    ellipse() {},
+    rect() {},
     fill() { ops.push({ kind: 'fill', composite, style }) },
     stroke() { ops.push({ kind: 'stroke', composite, style }) },
+    // Shapes/text are drawn with the same composite contract as ink, so they are
+    // recorded through stroke()/fill() and inherit every existing assertion.
+    fillText(text: string) { ops.push({ kind: 'text', composite, style: `${style}:${text}` }) },
   }
   return { ctx: ctx as unknown as CanvasRenderingContext2D, ops }
 }
@@ -55,6 +63,39 @@ const pen = (color = '#34312f'): Stroke => ({
   eraser: false,
 })
 const eraser = (): Stroke => ({ points: [{ x: 10, y: 10 }, { x: 200, y: 10 }], color: '#000', size: 20, eraser: true })
+
+describe('v3 shapes and text live on the ink layer', () => {
+  const shape = (kind: 'rect' | 'ellipse' | 'line') => ({
+    id: `s_${kind}`, kind, from: { x: 10, y: 10 }, to: { x: 90, y: 60 }, color: '#b66b52', size: 4,
+  }) as const
+
+  it('draws a shape with source-over onto the ink layer', () => {
+    const { ctx, ops } = recorder()
+    // drawShape is exercised through the exported renderer used by the canvas.
+    drawShape(ctx, shape('rect') as never)
+    expect(ops.at(-1)).toMatchObject({ kind: 'stroke', composite: 'source-over' })
+  })
+
+  it('draws text with source-over', () => {
+    const { ctx, ops } = recorder()
+    drawText(ctx, { id: 't', x: 5, y: 5, text: 'Hello', color: '#34312f', size: 28 })
+    expect(ops.at(-1)).toMatchObject({ kind: 'text', composite: 'source-over' })
+  })
+
+  it('never paints the paper while drawing shapes or text', () => {
+    const { ctx, ops } = recorder()
+    drawShape(ctx, shape('ellipse') as never)
+    drawText(ctx, { id: 't', x: 0, y: 0, text: 'x', color: '#000', size: 20 })
+    expect(ops.some((o) => o.kind === 'fillRect')).toBe(false)
+  })
+
+  it('a later eraser can still remove a shape (single ink layer)', () => {
+    const { ctx, ops } = recorder()
+    drawShape(ctx, shape('line') as never)
+    paintInkStroke(ctx, eraser())
+    expect(ops.at(-1)).toMatchObject({ kind: 'stroke', composite: 'destination-out' })
+  })
+})
 
 describe('ink layer contract', () => {
   it('pen strokes composite with source-over onto the ink layer', () => {

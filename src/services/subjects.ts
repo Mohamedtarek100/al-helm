@@ -29,29 +29,40 @@ export function normalizeSubjectName(name: string): string {
  *
  * The rule: conflate PRESENTATION differences only, never SEMANTIC ones.
  *
- *   1. NFKC  - folds compatibility forms (full-width letters, Arabic-Indic
- *              digits, ligatures) so visually identical input compares equal.
+ *   1. NFKC  - folds compatibility forms: full-width latin (Ｃ -> C), full-width
+ *              punctuation (＋ -> +), ligatures and presentation forms
+ *              (ﻣ -> م). Arabic-Indic digits are PRESERVED (١٢٣ stays ١٢٣);
+ *              NFKC does NOT map them to ASCII digits.
  *   2. Remove ONLY supported Arabic combining marks (harakat / tanween /
  *              shadda / sukun) and tatweel. Other scripts keep their marks.
- *   3. Lower-case - locale independent.
+ *   3. Lower-case - Unicode simple case folding, locale independent.
  *   4. Collapse runs of whitespace to one space, then trim.
  *
  * Punctuation, symbols and digits are PRESERVED: "C++" and "C#" are two
- * different subjects, and so are "Math 1" and "Math1". An earlier version
- * deleted whole Unicode categories, which silently merged those pairs.
+ * different subjects, and so are "Math 1" and "Math1", and "Physics (A)"
+ * vs "Physics A". An earlier version deleted whole Unicode categories, which
+ * silently merged those pairs. Because NFKC runs first, "Ｃ＋" agrees with
+ * "C++" — and both stay distinct from "C#".
  *
- * Mirrored in SQL by public.subject_name_key(). The display name is never
- * altered by this function.
+ * Mirrored in SQL by public.subject_name_key() (migration 007), which uses
+ * PostgreSQL's native normalize(..., NFKC) — available on PG13+ with a UTF-8
+ * database. The display name is never altered by this function.
  */
 export function subjectNameKey(name: string): string {
-  return cleanSubjectName(name)
-    .normalize('NFKC')
+  // A lone surrogate or non-string must never break a render or a save.
+  if (typeof name !== 'string') return ''
+  try {
+    return cleanSubjectName(name)
+      .normalize('NFKC')
     // Arabic harakat/tanween/shadda/sukun (U+0617-061A, U+064B-0652, U+0670,
     // U+06D6-06ED) and tatweel (U+0640, technically a letter).
     .replace(/[\u0617-\u061A\u064B-\u0652\u0670\u06D6-\u06ED\u0640]/g, '')
     .toLowerCase()
     .replace(/\s+/g, ' ')
-    .trim()
+      .trim()
+  } catch {
+    return ''
+  }
 }
 
 /** The canonical display form stored in the record. */
