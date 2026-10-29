@@ -9,19 +9,52 @@ import { refreshAdminGate } from './services/edge/adminGate'
 import { initAdminGate } from './services/edge/adminGate'
 import { LaunchGate } from './app/LaunchGate'
 import { registerServiceWorker } from './services/pwa/registerServiceWorker'
+import { I18nProvider } from './i18n/I18nProvider'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
-// Hydrate from the persistence adapter first so no empty state flashes.
-void initStore().finally(() => {
-  createRoot(document.getElementById('root')!).render(
+// Hydrate from the persistence adapter before mounting, so I18nProvider reads
+// real settings on its first render and no empty/RTL-flashing state is shown.
+// `.finally` guarantees a mount even when hydration fails (initStore has its own
+// internal recovery), so a storage problem can never leave a permanently blank
+// page.
+let mounted = false
+function mount() {
+  // Guard against a double mount (HMR or a duplicated init) creating two roots.
+  if (mounted) return
+  mounted = true
+  const container = document.getElementById('root')
+  if (!container) return
+  createRoot(container).render(
     <StrictMode>
       <HashRouter>
-        <LaunchGate>
-          <App />
-        </LaunchGate>
+        {/*
+         * I18nProvider sits ABOVE LaunchGate on purpose.
+         *
+         * The first-launch welcome screen is rendered by LaunchGate, OUTSIDE
+         * App, and it calls useI18n(). When the provider lived inside App, a
+         * first-time visitor threw "useI18n must be used within I18nProvider"
+         * during the very first render and saw a blank page. One provider here
+         * covers both the welcome path and every route.
+         *
+         * initStore() has already resolved before this render (see below), so
+         * the provider's useSettings() reads hydrated settings rather than
+         * defaults — that is what keeps language/RTL stable on first paint.
+         */}
+        {/* A boundary around the LAUNCH path too: a failure inside the welcome
+            screen or the gate must show a recovery panel, never a blank page. */}
+        <ErrorBoundary>
+          <I18nProvider>
+            <LaunchGate>
+              <App />
+            </LaunchGate>
+          </I18nProvider>
+        </ErrorBoundary>
       </HashRouter>
     </StrictMode>,
   )
-})
+}
+
+void initStore().then(mount, mount)
 
 // Minimal, non-push service worker so the app is installable and
 // offline-tolerant.

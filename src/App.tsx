@@ -12,14 +12,20 @@ import { SettingsPage } from './pages/SettingsPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { ExamPage } from './pages/ExamPage'
 import { ToastProvider } from './components/Toast'
-import { I18nProvider } from './i18n/I18nProvider'
 import { AdminPage } from './pages/AdminPage'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { LockGate } from './app/LockGate'
 
+/**
+ * Application routes.
+ *
+ * NOTE: I18nProvider is intentionally NOT here. It is mounted in main.tsx,
+ * above LaunchGate, so the first-launch WelcomePage (rendered outside App) is
+ * inside the same i18n context. Adding a second provider here would nest two
+ * independent subscription trees for the same settings.
+ */
 function App() {
   return (
-    <I18nProvider>
       <ToastProvider>
       <ErrorBoundary>
       <Routes>
@@ -43,7 +49,6 @@ function App() {
       </Routes>
       </ErrorBoundary>
       </ToastProvider>
-    </I18nProvider>
   )
 }
 

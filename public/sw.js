@@ -5,7 +5,7 @@
  * cache-versioning strategy. No UI feature depends on this worker.
  */
 
-const CACHE = 'alhelm-shell-v4'
+const CACHE = 'alhelm-shell-v5'
 const SHELL = [
   './',
   './index.html',
