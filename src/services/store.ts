@@ -36,6 +36,7 @@ import { cloudAdapter, supabase } from './persistence/supabase'
 import { PersistenceCoordinator } from './persistence/coordinator'
 import { createId, nowIso } from './persistence/repository'
 import { toValidDate } from './date'
+import { endGuestSession, isGuestSession } from './guestMode'
 import { createInitialData, hydrateData } from './domain'
 import { syncReminders } from './reminders'
 import { markSynced, markSyncFailed, markSyncing, reconcileWithStore } from './syncStatus'
@@ -110,6 +111,10 @@ function localCopyOf(data: AppData): AppData {
  * the user the truth instead of a generic "saved".
  */
 async function persistCloudSnapshot(snapshot: AppData): Promise<SaveOutcome> {
+  // GUEST SESSION: no durable write of any kind. The change is already in the
+  // in-memory snapshot; returning 'local' reports "kept in this session" and the
+  // UI never claims it was saved. Nothing reaches localStorage or Supabase.
+  if (isGuestSession()) return 'local'
   return enqueueWrite(async () => {
     const generation = accountGeneration
     const cloudActive = persistence.snapshot().mode === 'cloud'
@@ -285,6 +290,9 @@ export async function initStore(force = false): Promise<void> {
 
 export async function authenticateCloudUser(userId: string): Promise<void> {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+  // A real account session ends any guest session, so guest state can never be
+  // carried into (or mistaken for) account data.
+  endGuestSession()
   // Any in-flight save belongs to the previous account and must not record its
   // result against this one. Bumping the generation invalidates it.
   accountGeneration += 1

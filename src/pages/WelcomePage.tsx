@@ -3,6 +3,7 @@ import { Button } from '../components/Button'
 import { useI18n } from '../i18n/useI18n'
 import { authConfigured, describeAuthError, signInWithGoogle } from '../services/auth'
 import { setLaunchMode } from '../services/onboarding'
+import { startGuestSession } from '../services/guestMode'
 
 /**
  * First-launch choice: Continue with Google, or Continue as guest.
@@ -25,6 +26,9 @@ export function WelcomePage({ onDone }: { onDone: () => void }) {
   const chooseGuest = () => {
     setBusy('guest')
     setError(null)
+    // Flag this page-load as a guest session BEFORE anything can persist, so no
+    // edit, autosave, retry or background sync writes to storage or the cloud.
+    startGuestSession()
     const persisted = setLaunchMode('guest')
     if (!persisted) {
       setNotice(en ? 'You can continue, but this device cannot remember the choice.' : 'تقدري تكبّدي، بس الجهاز مش هيفتكر الاختيار.')
@@ -108,8 +112,8 @@ export function WelcomePage({ onDone }: { onDone: () => void }) {
           </p>
           <p className="onboarding__note">
             {en
-              ? 'Uninstalling the app, clearing its data, or losing the device can permanently remove guest data — there is no backup or password recovery for a guest account yet.'
-              : 'مسح التطبيق أو مسح بياناته أو فقدان الجهاز ممكن يضيّع بيانات الضيف نهائيًا — مفيش نسخة احتياطية ولا استرجاع كلمة مرور لحساب الضيف لحد الآن.'}
+              ? 'Guest data is temporary: it is never saved to this device or to any account. Reloading the page, closing the app, or losing the device ends the session and everything in it.'
+              : 'بيانات الضيف مؤقتة: مش بتتحفظ على الجهاز ولا في أي حساب. عمل تحديث للصفحة أو قفل التطبيق أو فقدان الجهاز بينهي الجلسة وكل حاجة فيها.'}
           </p>
           <div className="onboarding__actions">
             <Button variant="secondary" loading={busy === 'guest'} onClick={chooseGuest}>
