@@ -69,10 +69,16 @@ describe('Android package is self-consistent', () => {
     expect(html).not.toContain('/al-helm-app/assets/')
   })
 
-  it.skipIf(!hasDist)('the web dist still targets the Pages base (targets stay separate)', () => {
-    // Guards against build-android-assets accidentally overwriting dist with a
-    // relative build, which would break the published website.
-    const distHtml = readFileSync(join(DIST, 'index.html'), 'utf8')
-    expect(distHtml).toContain('/al-helm-app/')
+  it('the web build script still pins the Pages base (targets stay separate)', () => {
+    // Assert on the SOURCE, not on dist/: dist/ legitimately holds whichever
+    // target was built last, so checking it would fail after any Android build.
+    // What must not change is that build:web pins /al-helm-app/.
+    const webScript = readFileSync(join(process.cwd(), 'scripts', 'build-web-assets.mjs'), 'utf8')
+    expect(webScript).toContain('/al-helm-app/')
+
+    const androidScript = readFileSync(join(process.cwd(), 'scripts', 'build-android-assets.mjs'), 'utf8')
+    // The Android target must force a relative base and refuse the Pages prefix.
+    expect(androidScript).toContain("VITE_BASE_PATH: './'")
+    expect(androidScript).toContain('/al-helm-app/')
   })
 })

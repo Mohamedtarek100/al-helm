@@ -38,8 +38,38 @@ interface AdminRow {
   pushOptIn: boolean
 }
 
+/**
+ * CORS headers for the admin function.
+ *
+ * The browser sends an OPTIONS preflight for every call to this function (it is
+ * cross-origin, and the client attaches `authorization` + `apikey`). Browsers do
+ * NOT include the Authorization header on a preflight, so a handler that checked
+ * the bearer token first answered 403 to every preflight and the real POST was
+ * never sent — which is why the admin tools never appeared after sign-in.
+ *
+ * `*` is safe here: authorization is enforced per request by verifying the JWT
+ * and the server-side ADMIN_EMAILS allowlist, and `Vary` prevents any cache from
+ * serving one account's response to another.
+ */
+const corsHeaders: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  // Explicit list: `*` is not honoured for these headers on a credentialed call.
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Max-Age': '86400',
+  Vary: 'authorization, apikey',
+}
+
+/**
+ * Every response — success, 4xx and 5xx — carries CORS headers, so the browser
+ * can read the body (including error text) instead of reporting an opaque
+ * network failure.
+ */
 const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
 
 const deny = (msg: string) => json({ error: msg }, 403)
 
@@ -64,6 +94,12 @@ function userClient(authHeader: string) {
 }
 
 Deno.serve(async (req) => {
+  // CORS preflight MUST be answered before any authentication. A preflight
+  // carries no Authorization header, so authenticating first rejects it.
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { status: 200, headers: corsHeaders })
+  }
+
   const authHeader = req.headers.get('Authorization') ?? ''
   if (!authHeader.startsWith('Bearer ')) return deny('Missing bearer token.')
   const { data: userData, error: userErr } = await userClient(authHeader).auth.getUser()
