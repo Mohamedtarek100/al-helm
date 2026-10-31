@@ -23,6 +23,8 @@ const read = (name: string) => readFileSync(join(MIGRATIONS, name), 'utf8')
 
 describe('pending migration set', () => {
   it('contains the expected ordered sequence', () => {
+    // 009 adds the service_role grants the admin Edge Function needs; it is an
+    // additive follow-up and must sort AFTER 007.
     expect(files.map((f) => f.slice(0, 12))).toEqual([
       '202610190001',
       '202610190002',
@@ -31,6 +33,7 @@ describe('pending migration set', () => {
       '202610240005',
       '202610250006',
       '202610250007',
+      '202610311200',
     ])
   })
 

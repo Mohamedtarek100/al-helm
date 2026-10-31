@@ -17,3 +17,4 @@
    legacy sheets, and it redefines no existing selector. */
 @import './components-addendum.css';
 @import './account.css';
+@import './admin.css';

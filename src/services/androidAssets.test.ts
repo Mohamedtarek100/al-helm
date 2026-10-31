@@ -19,11 +19,8 @@ import { join } from 'node:path'
  */
 
 const ANDROID_PUBLIC = join(process.cwd(), 'android', 'app', 'src', 'main', 'assets', 'public')
-const DIST = join(process.cwd(), 'dist')
-
 const htmlPath = join(ANDROID_PUBLIC, 'index.html')
 const hasAndroidAssets = existsSync(htmlPath)
-const hasDist = existsSync(join(DIST, 'index.html'))
 
 function assetRefs(html: string): string[] {
   return [...html.matchAll(/(?:src|href)="([^"]*assets\/[^"]+)"/g)].map((m) => m[1])
