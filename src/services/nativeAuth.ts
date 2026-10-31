@@ -113,7 +113,23 @@ export async function handleAuthCallback(url: string): Promise<string | null> {
  * `onSignedIn` runs after a session is established so the caller can refresh
  * persistence, admin state and navigation exactly once.
  */
-export function installNativeAuthListener(onSignedIn: (userId: string) => void): () => void {
+/**
+ * Maps a callback failure to text that is safe to show and to log.
+ * Never includes the authorization code, tokens, or the callback URL.
+ */
+export function describeNativeAuthError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? '')
+  if (/access_denied|cancell?ed|user cancelled/i.test(raw)) return 'Sign-in was cancelled. You can try again.'
+  if (/invalid_grant|code.*(expired|used)|verifier/i.test(raw)) return 'This sign-in link has expired. Please try again.'
+  if (/network|fetch|timeout/i.test(raw)) return 'Could not reach the sign-in service. Check your connection and try again.'
+  if (/unauthorized|unauthenticated/i.test(raw)) return 'Sign-in could not be completed. Please try again.'
+  return 'Sign-in could not be completed. Please try again.'
+}
+
+export function installNativeAuthListener(
+  onSignedIn: (userId: string) => void,
+  onFailed: (message: string) => void = () => undefined,
+): () => void {
   if (!Capacitor.isNativePlatform()) return () => undefined
   let disposed = false
   let handle: { remove: () => Promise<void> } | null = null
@@ -123,12 +139,18 @@ export function installNativeAuthListener(onSignedIn: (userId: string) => void):
       const { App } = await import('@capacitor/app')
       handle = await App.addListener('appUrlOpen', ({ url }) => {
         if (disposed) return
+        // Ignore anything that is not our own callback (other deep links).
+        if (!isAuthCallbackUrl(url)) return
         void handleAuthCallback(url)
-          .then((userId) => { if (userId && !disposed) onSignedIn(userId) })
+          .then((userId) => {
+            // `null` means duplicate/cancelled: keep whatever state we are in.
+            if (!disposed && userId) onSignedIn(userId)
+          })
           .catch((error: unknown) => {
-            // A failed exchange leaves the user signed out; the UI reads the
-            // session itself, so nothing is left in a half-authenticated state.
-            if (import.meta.env.DEV) console.warn('Native auth callback failed:', error instanceof Error ? error.message : error)
+            // Report EVERY failure to the UI, in production too. The message is
+            // sanitised by describeNativeAuthError() so no code/token leaks.
+            if (disposed) return
+            onFailed(describeNativeAuthError(error))
           })
       })
     } catch {

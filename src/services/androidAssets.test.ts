@@ -51,13 +51,28 @@ describe('Android WebView index.html', () => {
   })
 })
 
-describe('Android package is not stale relative to dist', () => {
-  it.skipIf(!hasAndroidAssets || !hasDist)('packages the same entry bundle the current dist built', () => {
-    const androidHtml = readFileSync(htmlPath, 'utf8')
+describe('Android package is self-consistent', () => {
+  /**
+   * NOTE: this deliberately does NOT compare against dist/index.html.
+   *
+   * The two targets are built separately and legitimately differ:
+   *   dist/ (web)     → base /al-helm-app/, bundle index-D5ZdWCa1.js
+   *   android assets  → base ./,            bundle index-Dwhkl6oL.js
+   *
+   * Comparing them would fail whenever the web build is newer than the native
+   * one, which is normal. The staleness that shipped a white-screen APK is
+   * caught by the tests above instead: the packaged HTML must use relative
+   * paths and every referenced asset must exist in the package.
+   */
+  it.skipIf(!hasAndroidAssets)('does not reference the web build base path', () => {
+    const html = readFileSync(htmlPath, 'utf8')
+    expect(html).not.toContain('/al-helm-app/assets/')
+  })
+
+  it.skipIf(!hasDist)('the web dist still targets the Pages base (targets stay separate)', () => {
+    // Guards against build-android-assets accidentally overwriting dist with a
+    // relative build, which would break the published website.
     const distHtml = readFileSync(join(DIST, 'index.html'), 'utf8')
-    const entry = (html: string) => (html.match(/assets\/(index-[\w-]+\.js)/) ?? [])[1]
-    // A mismatch means `cap sync` was run against an older dist — the exact
-    // defect that shipped a white-screen APK.
-    expect(entry(androidHtml)).toBe(entry(distHtml))
+    expect(distHtml).toContain('/al-helm-app/')
   })
 })

@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button } from '../components/Button'
 import { useI18n } from '../i18n/useI18n'
 import { authConfigured, describeAuthError, signInWithGoogle } from '../services/auth'
 import { setLaunchMode } from '../services/onboarding'
 import { startGuestSession } from '../services/guestMode'
+import { markAuthenticating, markAuthFailed, useAuthSignal } from '../services/authState'
+import { supabase } from '../services/persistence/supabase'
 
 /**
  * First-launch choice: Continue with Google, or Continue as guest.
@@ -16,10 +18,11 @@ import { startGuestSession } from '../services/guestMode'
  *  - "Continue as guest" only records the choice. It never touches, deletes or
  *    replaces existing data.
  */
-export function WelcomePage({ onDone }: { onDone: () => void }) {
+export function WelcomePage({ onDone, onGuest }: { onDone: () => void; onGuest?: () => void }) {
   const { language } = useI18n()
   const en = language === 'en'
   const [busy, setBusy] = useState<'google' | 'guest' | null>(null)
+  const auth = useAuthSignal()
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -33,30 +36,74 @@ export function WelcomePage({ onDone }: { onDone: () => void }) {
     if (!persisted) {
       setNotice(en ? 'You can continue, but this device cannot remember the choice.' : 'تقدري تكبّدي، بس الجهاز مش هيفتكر الاختيار.')
     }
-    onDone()
+    // `onGuest` lets LaunchGate remember the guest choice itself; `onDone` is the
+    // legacy path (kept so the welcome screen still works when rendered alone).
+    if (onGuest) onGuest()
+    else onDone()
     setBusy(null)
   }
 
+  /**
+   * Starts the Google flow.
+   *
+   * The spinner is DELIBERATELY left on while the external flow runs — on
+   * Android the user is in Chrome and returns to this same live WebView, so the
+   * attempt is genuinely still in progress. It is cleared, never stranded, by:
+   *   - success: LaunchGate unmounts this screen once the session is confirmed;
+   *   - failure: the auth signal carries a safe message (see the effect below);
+   *   - resume without a session: the app-resume / visibility check below.
+   */
   const continueWithGoogle = async () => {
     setBusy('google')
     setError(null)
+    markAuthenticating()
     try {
       const { error: authError } = await signInWithGoogle()
-      // A provider failure is shown here; a successful call redirects away.
       if (authError) {
-        setError(describeAuthError(authError) ?? (en ? 'Google sign-in could not start.' : 'تعذر بدء الدخول عبر Google.'))
+        const message = describeAuthError(authError) ?? (en ? 'Google sign-in could not start.' : 'تعذر بدء الدخول عبر Google.')
+        setError(message)
+        markAuthFailed(message)
         setBusy(null)
-        return
       }
-      // The redirect leaves the page; record the intent for returning users.
-      const persisted = setLaunchMode('google')
-      if (!persisted) setBusy(null)
+      // On success the redirect/return leaves this screen; no `setBusy(null)`.
     } catch (e) {
-      // Cancelling the popup/provider or losing the network lands here.
-      setError(describeAuthError(e instanceof Error ? { message: e.message } : null) ?? (en ? 'Google sign-in was cancelled.' : 'تم إلغاء الدخول عبر Google.'))
+      const message = describeAuthError(e instanceof Error ? { message: e.message } : null) ?? (en ? 'Google sign-in was cancelled.' : 'تم إلغاء الدخول عبر Google.')
+      setError(message)
+      markAuthFailed(message)
       setBusy(null)
     }
   }
+
+  // 1. A failure reported by the native callback (never includes codes/tokens).
+  useEffect(() => {
+    if (auth.error) {
+      setError(auth.error)
+      setBusy(null)
+    }
+  }, [auth.error])
+
+  // 2. Returning from Chrome WITHOUT a session (cancelled, denied, closed tab).
+  //    The WebView resumes, the flow is no longer running, so release the
+  //    spinner and let the user retry.
+  useEffect(() => {
+    if (busy !== 'google') return
+    const release = () => {
+      if (document.visibilityState !== 'visible') return
+      void supabase?.auth.getSession().then(({ data }) => {
+        if (!data.session) {
+          setBusy(null)
+          setError((prev) => prev ?? (en ? 'Sign-in was not completed. You can try again.' : 'الدخول مكتملش. تقدري تجربي تاني.'))
+          markAuthFailed('Sign-in was not completed.')
+        }
+      }).catch(() => setBusy(null))
+    }
+    document.addEventListener('visibilitychange', release)
+    window.addEventListener('focus', release)
+    return () => {
+      document.removeEventListener('visibilitychange', release)
+      window.removeEventListener('focus', release)
+    }
+  }, [busy, en])
 
   return (
     <div className="onboarding">

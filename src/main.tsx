@@ -5,6 +5,7 @@ import './styles/index.css'
 import App from './App.tsx'
 import { authenticateCloudUser, initStore } from './services/store'
 import { installNativeAuthListener } from './services/nativeAuth'
+import { getAuthSignal, markAuthenticated, markAuthFailed, markSignedOut } from './services/authState'
 import { refreshAdminGate } from './services/edge/adminGate'
 import { initAdminGate } from './services/edge/adminGate'
 import { LaunchGate } from './app/LaunchGate'
@@ -75,9 +76,22 @@ initAdminGate()
 // Android: complete the Google OAuth return leg. Chrome hands the callback URL
 // back to the app via the custom scheme; this exchanges it for a session and
 // refreshes persistence + admin state exactly once. No-op on web.
-installNativeAuthListener((userId) => {
-  void authenticateCloudUser(userId).then(() => refreshAdminGate()).catch(() => undefined)
-})
+installNativeAuthListener(
+  async (userId) => {
+    // The code was exchanged successfully; now hydrate the cloud layer BEFORE
+    // telling the UI to enter the app, so no screen ever renders against a
+    // half-initialised store.
+    await authenticateCloudUser(userId)
+    markAuthenticated(userId)
+    void refreshAdminGate()
+  },
+  (message) => markAuthFailed(message),
+)
+
+// Entry-page fallbacks. The Android callback can arrive at a cold-started
+// WebView, so any location that is not OAuth-related must not look like a
+// pending authentication.
+if (getAuthSignal().phase === 'unknown') markSignedOut()
 
 
 // OTA update check: manual-mode Capacitor updater. Runs once at launch on
