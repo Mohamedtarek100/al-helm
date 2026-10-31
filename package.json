@@ -15,7 +15,10 @@
     "gen:migrations": "node scripts/gen-migrations.mjs",
     "check": "npm run check:types && npm run check:edge && npm run test:i18n && npm run test && npm run lint && npm run build",
     "preview": "vite preview",
-    "android:sync": "npm run build && cap sync android",
+    "build:android": "node scripts/build-android-assets.mjs",
+    "build:web": "node scripts/build-web-assets.mjs",
+    "android:sync": "node scripts/build-android-assets.mjs && cap sync android",
+    "android:apk": "npm run android:sync && cd android && gradlew.bat assembleDebug",
     "android:debug": "npm run android:sync && android\\gradlew.bat -p android assembleDebug"
   },
   "dependencies": {
