@@ -107,11 +107,17 @@ export function ReminderSettings() {
         const granted = await requestReminderPermission()
         if (!granted) {
           setLastResult({ scheduled: 0, permissionGranted: false, webUnsupported: false, error: 'permission_denied' })
-          return // keep the previous (off) state — never show a false "on"
+          notify(t('testNotificationPermission'), 'warning')
+          return
         }
       }
       await updateSettings({ reminders: next, notificationsOptIn: next.some((reminder) => reminder.enabled) })
-      await resync(next)
+      const result = await resync(next)
+      if (supported && result?.error) {
+        notify(result.error === 'permission_denied' ? t('testNotificationPermission') : result.error, 'danger')
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('retry'), 'danger')
     } finally {
       setPendingId(null)
     }
@@ -119,11 +125,25 @@ export function ReminderSettings() {
 
   const changeTime = async (id: string, time: string) => {
     if (!/^\d{2}:\d{2}$/.test(time)) return
+    const current = reminders.find((reminder) => reminder.id === id)
+    if (!current) return
+    if (current.date) {
+      const requestedAt = new Date(`${current.date}T${time}:00`)
+      if (Number.isNaN(requestedAt.getTime()) || requestedAt.getTime() <= Date.now()) {
+        notify(en ? 'This one-time alarm date has passed.' : 'موعد المنبه لمرة واحدة انتهى بالفعل.', 'warning')
+        return
+      }
+    }
     const next = reminders.map((reminder) => (reminder.id === id ? { ...reminder, time } : reminder))
     setPendingId(id)
     try {
       await updateSettings({ reminders: next })
-      if (next.find((reminder) => reminder.id === id)?.enabled) await resync(next)
+      if (next.find((reminder) => reminder.id === id)?.enabled && supported) {
+        const result = await resync(next)
+        if (result?.error) notify(result.error, 'danger')
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('retry'), 'danger')
     } finally {
       setPendingId(null)
     }
@@ -154,7 +174,13 @@ export function ReminderSettings() {
       await updateSettings({ reminders: next })
       // A scheduled notification carries the title captured when it was
       // scheduled, so an enabled reminder must be rescheduled with the new name.
-      if (current.enabled && supported) await resync(next)
+      if (current.enabled && supported) {
+        const result = await resync(next)
+        if (result?.error) {
+          notify(en ? `Name saved, but rescheduling failed: ${result.error}` : `تم حفظ الاسم، لكن إعادة الجدولة فشلت: ${result.error}`, 'danger')
+          return
+        }
+      }
       notify(t('alarmSaved'), 'success')
     } catch (error) {
       notify(error instanceof Error ? error.message : t('retry'), 'danger')
@@ -170,7 +196,13 @@ export function ReminderSettings() {
     setPendingId(id)
     try {
       await updateSettings({ reminders: next })
-      if (next.find((reminder) => reminder.id === id)?.enabled && supported) await resync(next)
+      if (next.find((reminder) => reminder.id === id)?.enabled && supported) {
+        const result = await resync(next)
+        if (result?.error) {
+          notify(en ? `Tone saved, but rescheduling failed: ${result.error}` : `تم حفظ النغمة، لكن إعادة الجدولة فشلت: ${result.error}`, 'danger')
+          return
+        }
+      }
       notify(t('alarmSaved'), 'success')
     } catch (error) {
       notify(error instanceof Error ? error.message : t('retry'), 'danger')
