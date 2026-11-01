@@ -104,6 +104,7 @@ export function NotificationsPage() {
     try {
       await deleteNotification(id)
       notify(t('notifDeleted'), 'info')
+      reportCloudGate()
     } catch {
       // The store restores the item; reporting a deletion here would be a lie.
       notify(t('notifDeleteFailed'), 'danger')
@@ -126,6 +127,7 @@ export function NotificationsPage() {
     try {
       await clearNotifications()
       notify(t('notificationsCleared'), 'info')
+      reportCloudGate()
     } catch (error) {
       notify(error instanceof Error ? error.message : t('retry'), 'danger')
     } finally {
