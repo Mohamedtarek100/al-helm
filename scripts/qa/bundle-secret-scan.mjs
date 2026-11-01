@@ -13,12 +13,23 @@ const walk = (dir) => {
 }
 walk(root)
 
+//
+// EXACT-A-MATCH RULES, NOT SUBSTRINGS
+//   These previously matched the bare WORD `service_role`, which the bundled
+//   Supabase SDK legitimately contains in its own error strings, and the bare
+//   env-var NAME, which appears in UI copy that documents the security model.
+//   A scanner that flags documentation is a scanner people learn to ignore —
+//   so each rule now targets actual key material: a decoded `role` claim inside
+//   a JWT, a real secret token, or a credential being assigned a literal.
 const patterns = [
-  ['service_role JWT', /service_role/],
-  ['sb_secret key', /sb_secret_[A-Za-z0-9]+/],
+  // A real service-role JWT carries `"role":"service_role"` in its payload.
+  ['service_role JWT claim', /"role"\s*:\s*"service_role"/],
+  ['service_role key decoded', /c2VydmljZV9yb2xl/],
+  ['sb_secret key', /sb_secret_[A-Za-z0-9_-]{10,}/],
+  ['sbp_ token', /sbp_[A-Za-z0-9]{20,}/],
   ['private key block', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
   ['admin allowlist email', /mm642898t@gmail\.com/i],
-  ['service role env name', /SUPABASE_SERVICE_ROLE_KEY/],
+  ['service role key literal', /SUPABASE_SERVICE_ROLE_KEY\s*[:=]\s*['"`][^'"`]+['"`]/],
   ['hardcoded password', /password\s*[:=]\s*['"][^'"]{8,}['"]/i],
 ]
 
@@ -32,6 +43,15 @@ for (const file of files) {
       console.log(`FINDING ${label} in ${file}`)
     }
   }
+}
+
+// Positive control: the scanner must be able to FIND a planted secret, or a
+// clean result proves nothing. The value is synthesised here and never written
+// to disk.
+const canary = '{"role":"service_role"}'
+if (!patterns.some(([, re]) => re.test(canary))) {
+  findings += 1
+  console.log('FINDING scanner self-check failed: a planted service_role claim was not detected')
 }
 
 // The public anon key is expected in the bundle; confirm the URL is the intended project.

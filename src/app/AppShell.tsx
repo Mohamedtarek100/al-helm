@@ -1,5 +1,5 @@
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { useState, useEffect } from 'react'
+import { NavLink, Outlet } from 'react-router-dom'
+import { useState } from 'react'
 import { BellIcon, CogIcon, HomeIcon, CalendarIcon, CheckSquareIcon, MenuIcon, CloseIcon, PaletteIcon, TimerIcon, TrendIcon, SunIcon, MoonIcon, MonitorIcon } from '../components/icons'
 import { useCollection, updateSettings, useSettings } from '../services/store'
 import { useAdminGate } from '../services/edge/adminGate'
@@ -72,12 +72,15 @@ export function AppShell() {
   const unread = notifications.filter((item) => !item.read).length
   const openTasks = tasks.filter((item) => !item.completed).length
   const [menuOpen, setMenuOpen] = useState(false)
-  const location = useLocation()
   const adminGate = useAdminGate()
   // Only a server-confirmed answer adds the entry; loading/error/denied show
   // nothing rather than flashing a link that may not be usable.
   const items = adminGate.state === 'authorized' ? [...nav, adminNavItem] : nav
-  useEffect(() => { setMenuOpen(false) }, [location.pathname])
+  // The drawer is closed by the user (backdrop, close button, link tap) rather
+  // than by an effect watching the route. Closing on tap is what actually
+  // happens, it leaves no half-closed drawer if a navigation is cancelled, and
+  // it removes a cascading render on every navigation.
+  const closeMenu = () => setMenuOpen(false)
   return (
     <div className="app-frame">
       <header className="app-topbar">
@@ -102,11 +105,11 @@ export function AppShell() {
       </header>
       {menuOpen && (
         <div className="mobile-drawer" id="mobile-drawer" role="dialog" aria-modal="true" aria-label={t('primaryNavigation')}>
-          <div className="mobile-drawer__backdrop" onClick={() => setMenuOpen(false)} />
+          <div className="mobile-drawer__backdrop" onClick={closeMenu} />
           <aside className="mobile-drawer__panel" aria-label={t('primaryNavigation')}>
             <div className="mobile-drawer__head">
               <Brand />
-              <button className="mobile-drawer__close" type="button" aria-label={t('close')} onClick={() => setMenuOpen(false)}>
+              <button className="mobile-drawer__close" type="button" aria-label={t('close')} onClick={closeMenu}>
                 <CloseIcon size={20} />
               </button>
             </div>
@@ -119,6 +122,7 @@ export function AppShell() {
                     key={to}
                     to={to}
                     end={end}
+                    onClick={closeMenu}
                     className={({ isActive }) => cn('mobile-drawer__link', isActive && 'mobile-drawer__link--active')}
                   >
                     <span className="mobile-drawer__icon"><Icon size={20} /></span>

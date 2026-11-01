@@ -3,7 +3,8 @@ import {
   LocalNotifications,
   type Channel,
 } from '@capacitor/local-notifications'
-import type { ReminderPreference } from '../types'
+import type { ReminderPreference, ReminderTone } from '../types'
+import { toneById } from './alarmTones'
 
 /**
  * Android local scheduled notifications for study reminders.
@@ -14,7 +15,6 @@ import type { ReminderPreference } from '../types'
  * first, then reschedules exactly the enabled ones. No duplicates.
  */
 
-const REMINDER_CHANNEL_ID = '4ulife-reminders'
 const REMINDER_CHANNEL_NAME = 'Study reminders'
 const TEST_NOTIFICATION_ID = 1_999_999_999
 
@@ -66,7 +66,7 @@ function parseTime(time: string): { hours: number; minutes: number } | null {
   return { hours, minutes }
 }
 
-/** Next occurrence of HH:mm today or tomorrow. */
+/** Next occurrence of HH:mm today or tomorrow (a daily alarm). */
 function nextOccurrence(time: string, from = new Date()): Date | null {
   const parts = parseTime(time)
   if (!parts) return null
@@ -78,15 +78,37 @@ function nextOccurrence(time: string, from = new Date()): Date | null {
   return candidate
 }
 
-function ensureChannel(): Promise<void> {
+/**
+ * The moment an alarm should fire.
+ *
+ * A dated alarm fires ONCE at that date and time; if the date already passed it
+ * returns null (there is nothing left to schedule) rather than silently rolling
+ * to tomorrow — that would ring on a day the user never asked for.
+ * An undated alarm keeps the existing daily behaviour.
+ */
+function occurrenceFor(reminder: { time: string; date?: string | null }, from = new Date()): Date | null {
+  const parts = parseTime(reminder.time)
+  if (!parts) return null
+  if (!reminder.date) return nextOccurrence(reminder.time, from)
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(reminder.date)
+  if (!day) return null
+  const when = new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3]), parts.hours, parts.minutes, 0, 0)
+  if (Number.isNaN(when.getTime())) return null
+  return when.getTime() > from.getTime() ? when : null
+}
+
+function ensureChannel(tone: ReminderTone | null | undefined): Promise<void> {
+  const definition = toneById(tone)
+  // One channel per tone: Android fixes a channel's sound at creation and
+  // ignores later changes, so the channel id IS the tone selection.
   const channel: Channel = {
-    id: REMINDER_CHANNEL_ID,
+    id: definition.channelId,
     name: REMINDER_CHANNEL_NAME,
     description: 'Study and studio reminders from 4uLife',
     importance: 5,
     visibility: 1,
     vibration: true,
-    sound: 'default',
+    sound: definition.soundUri ?? 'default',
   }
   // createChannel is idempotent on Android; a failure here is not fatal because
   // the schedule call reports the real outcome to the UI.
@@ -143,7 +165,6 @@ export async function syncReminders(
   if (!granted) {
     return { scheduled: 0, permissionGranted: false, webUnsupported: false, error: 'permission_denied' }
   }
-  await ensureChannel()
 
   const stored = readStored()
   const next: StoredSchedule = {}
@@ -151,9 +172,11 @@ export async function syncReminders(
   let failure: string | null = null
 
   for (const reminder of enabled) {
-    const when = nextOccurrence(reminder.time)
+    const when = occurrenceFor(reminder)
     if (!when) {
-      failure = failure ?? `invalid time: ${reminder.time}`
+      // A dated alarm whose moment has passed is not a scheduling failure — it
+      // is simply done. Only a malformed TIME is reported as an error.
+      if (!parseTime(reminder.time)) failure = failure ?? `invalid time: ${reminder.time}`
       continue
     }
 
@@ -169,14 +192,16 @@ export async function syncReminders(
     if (stored[reminder.id]) await cancelNativeIds([hashId(reminder.id)])
 
     try {
+      await ensureChannel(reminder.tone)
       await LocalNotifications.schedule({
         notifications: [
           {
             id: hashId(reminder.id),
             schedule: { at: when, allowWhileIdle: true },
+            // The reminder's custom title is what the user sees in the shade.
             title: reminder.label,
             body: reminder.label,
-            channelId: REMINDER_CHANNEL_ID,
+            channelId: toneById(reminder.tone).channelId,
           },
         ],
       })
@@ -200,11 +225,13 @@ export async function syncReminders(
  * vibration without waiting for the next scheduled reminder. Reports the
  * real outcome instead of assuming success.
  */
-export async function sendTestNotification(): Promise<{ ok: boolean; error: string | null }> {
+export async function sendTestNotification(tone?: ReminderTone | null): Promise<{ ok: boolean; error: string | null }> {
   if (!isNative()) return { ok: false, error: 'web_unsupported' }
   const granted = await requestReminderPermission()
   if (!granted) return { ok: false, error: 'permission_denied' }
-  await ensureChannel()
+  // The test rings on the tone the user is auditioning, which is the only
+  // reliable way to confirm what an alarm will actually sound like.
+  await ensureChannel(tone)
   try {
     await LocalNotifications.schedule({
       notifications: [
@@ -212,7 +239,7 @@ export async function sendTestNotification(): Promise<{ ok: boolean; error: stri
           id: TEST_NOTIFICATION_ID,
           title: '4uLife',
           body: 'Test notification — reminders are working.',
-          channelId: REMINDER_CHANNEL_ID,
+          channelId: toneById(tone).channelId,
         },
       ],
     })
@@ -259,5 +286,6 @@ function hashId(id: string): number {
 export const __internals = {
   parseTime,
   nextOccurrence,
+  occurrenceFor,
   hashId,
 }

@@ -25,6 +25,9 @@ export function WelcomePage({ onDone, onGuest }: { onDone: () => void; onGuest?:
   const auth = useAuthSignal()
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  // The spinner is only meaningful while a flow is pending: once the auth
+  // signal reports a failure, nothing is in flight any more.
+  const shownBusy = auth.error ? null : busy
 
   const chooseGuest = () => {
     setBusy('guest')
@@ -75,12 +78,13 @@ export function WelcomePage({ onDone, onGuest }: { onDone: () => void; onGuest?:
   }
 
   // 1. A failure reported by the native callback (never includes codes/tokens).
-  useEffect(() => {
-    if (auth.error) {
-      setError(auth.error)
-      setBusy(null)
-    }
-  }, [auth.error])
+  //
+  // The signal's message is DERIVED rather than copied into state here. Copying
+  // it needed a state-resetting effect (an extra render for something the
+  // render already knows) and could overwrite a more specific message produced
+  // by the click handler below. Local `error` therefore only holds messages
+  // produced by this screen; anything the auth flow reports wins.
+  const shownError = auth.error ?? error
 
   // 2. Returning from Chrome WITHOUT a session (cancelled, denied, closed tab).
   //    The WebView resumes, the flow is no longer running, so release the
@@ -138,7 +142,7 @@ export function WelcomePage({ onDone, onGuest }: { onDone: () => void; onGuest?:
           <div className="onboarding__actions">
             <Button
               variant="primary"
-              loading={busy === 'google'}
+              loading={shownBusy === 'google'}
               disabled={!authConfigured}
               onClick={() => void continueWithGoogle()}
             >
@@ -163,13 +167,13 @@ export function WelcomePage({ onDone, onGuest }: { onDone: () => void; onGuest?:
               : 'بيانات الضيف مؤقتة: مش بتتحفظ على الجهاز ولا في أي حساب. عمل تحديث للصفحة أو قفل التطبيق أو فقدان الجهاز بينهي الجلسة وكل حاجة فيها.'}
           </p>
           <div className="onboarding__actions">
-            <Button variant="secondary" loading={busy === 'guest'} onClick={chooseGuest}>
+            <Button variant="secondary" loading={shownBusy === 'guest'} onClick={chooseGuest}>
               {en ? 'Continue as guest' : 'المتابعة كضيف'}
             </Button>
           </div>
         </div>
 
-        {error && <p className="alert alert--danger" role="alert">{error}</p>}
+        {shownError && <p className="alert alert--danger" role="alert">{shownError}</p>}
         {notice && <p className="alert alert--warning">{notice}</p>}
       </div>
     </div>

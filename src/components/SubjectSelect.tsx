@@ -59,12 +59,29 @@ export function SubjectSelect({
   for (const option of result.matches) rows.push({ kind: 'subject', option })
   if (result.createName) rows.push({ kind: 'create', name: result.createName })
 
-  useEffect(() => { setHighlight(0) }, [query, open])
+  // Highlight and query transitions go through these two helpers.
+  //
+  // REGRESSION THIS PREVENTS: resetting the highlight from an effect keyed on
+  // `[query, open]` runs AFTER the render that used the stale index. Pressing
+  // ArrowDown to open the list and immediately Enter could therefore commit the
+  // row highlighted for the PREVIOUS query. Resetting as part of the change
+  // keeps the highlight and the rows in the same render.
+  const closeList = () => {
+    setOpen(false)
+    setQuery('')
+    setHighlight(0)
+  }
+
+  const editQuery = (next: string) => {
+    setQuery(next)
+    setOpen(true)
+    setHighlight(0)
+  }
 
   useEffect(() => {
     if (!open) return
     const onPointer = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) { setOpen(false); setQuery('') }
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) { setOpen(false); setQuery(''); setHighlight(0) }
     }
     document.addEventListener('mousedown', onPointer)
     return () => document.removeEventListener('mousedown', onPointer)
@@ -78,11 +95,11 @@ export function SubjectSelect({
 
   const commit = async (row: Row) => {
     if (creating) return
-    if (row.kind === 'none') { onChange(null); setOpen(false); setQuery(''); return }
-    if (row.kind === 'subject') { onChange(row.option.id); setOpen(false); setQuery(''); return }
+    if (row.kind === 'none') { onChange(null); closeList(); return }
+    if (row.kind === 'subject') { onChange(row.option.id); closeList(); return }
     // Create: reuse an existing normalised match instead of duplicating.
     const existing = findSubjectByName(subjects, row.name)
-    if (existing) { onChange(existing.id); setOpen(false); setQuery(''); return }
+    if (existing) { onChange(existing.id); closeList(); return }
     const name = cleanSubjectName(row.name)
     if (!name) return
     setCreating(true)
@@ -90,8 +107,7 @@ export function SubjectSelect({
       const created = await createSubject({ name, color: nextSubjectColor(subjects), notes: '', weeklyTargetMinutes: 0, archived: false })
       onChange(created.id)
       onCreated?.({ id: created.id, name: created.name, color: created.color, archived: created.archived })
-      setOpen(false)
-      setQuery('')
+      closeList()
     } catch (error) {
       onError?.(error instanceof Error ? error.message : t('subjectCreateFailed'))
     } finally {
@@ -111,14 +127,14 @@ export function SubjectSelect({
       return
     }
     if (event.key === 'Enter') {
-      if (!open) { setOpen(true); return }
+      if (!open) { setHighlight(0); setOpen(true); return }
       event.preventDefault()
       const row = rows[highlight]
       if (row) void commit(row)
       return
     }
     if (event.key === 'Escape') {
-      if (open) { event.stopPropagation(); setOpen(false); setQuery('') }
+      if (open) { event.stopPropagation(); closeList() }
       return
     }
     if (event.key === 'Tab') setOpen(false)
@@ -145,7 +161,7 @@ export function SubjectSelect({
           disabled={disabled || creating}
           value={displayValue}
           placeholder={placeholder ?? t('subjectSearch')}
-          onChange={(event) => { setQuery(event.target.value); setOpen(true) }}
+          onChange={(event) => editQuery(event.target.value)}
           onFocus={() => setOpen(true)}
           onClick={() => setOpen(true)}
           onKeyDown={onKeyDown}
@@ -156,7 +172,7 @@ export function SubjectSelect({
             className="combobox__clear"
             aria-label={t('subjectNone')}
             tabIndex={-1}
-            onClick={(event) => { event.stopPropagation(); onChange(null); setQuery(''); setOpen(false) }}
+            onClick={(event) => { event.stopPropagation(); onChange(null); closeList() }}
           >
             ×
           </button>

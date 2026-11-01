@@ -42,7 +42,28 @@ export interface ReminderPreference {
   /** HH:mm in 24h format, Egypt local time. */
   time: string
   enabled: boolean
+  /**
+   * Chosen alarm tone. `null`/absent means the device default, which is what
+   * every existing reminder has — so old data keeps working unchanged.
+   */
+  tone?: ReminderTone | null
+  /**
+   * Optional one-off date (`YYYY-MM-DD`). Absent means "every day", which is
+   * how all pre-existing reminders behave, so this field is purely additive.
+   * A dated alarm disables itself after it fires rather than ringing daily.
+   */
+  date?: string | null
 }
+
+/**
+ * Built-in alarm tones.
+ *
+ * These map to Android notification-channel sounds. Only tones shipped WITH the
+ * OS are used (`content://settings/system/...`), which means no copyrighted
+ * audio is bundled or redistributed — the licensing question does not arise.
+ * `default` uses whatever tone the user selected in Android settings.
+ */
+export type ReminderTone = 'default' | 'chime' | 'bell' | 'alarm' | 'notification'
 
 export interface Settings {
   theme: ThemePreference

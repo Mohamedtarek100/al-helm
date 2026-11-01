@@ -1,0 +1,51 @@
+-- Migration 011: restrict EXECUTE on trigger functions.
+--
+-- STATUS: PROPOSED — NOT APPLIED. Requires owner approval.
+--
+-- ── FINDING ──────────────────────────────────────────────────────────────
+-- Supabase Security Advisor reports:
+--
+--   "public.handle_new_user() is SECURITY DEFINER and is executable by
+--    anon / authenticated"
+--
+-- ROOT CAUSE (verified from the migration history, not inferred):
+--
+--   Migration 001 defines the function:
+--     create or replace function public.handle_new_user()
+--       returns trigger language plpgsql security definer
+--       set search_path = '' as $$ ... $$;
+--
+--   Neither migration 001 nor any later migration issues a `grant execute` or
+--   `revoke execute` on it (verified: zero matches for either keyword across
+--   every file in supabase/migrations). PostgreSQL therefore applies its
+--   default: EXECUTE is granted to PUBLIC on every new function. Because the
+--   function is SECURITY DEFINER, ANY role — including `anon` — may invoke it
+--   directly over PostgREST's RPC endpoint and run its body with the owner's
+--   privileges.
+--
+--   The body is small (two INSERT ... ON CONFLICT DO NOTHING into profiles and
+--   user_preferences, keyed on `new.id`), which limits the blast radius. But a
+--   trigger function is only ever meant to be invoked BY THE TRIGGER, so this
+--   reachable path is unnecessary surface: an anonymous caller can currently
+--   call an RPC named handle_new_user and make the owner's role perform writes.
+--
+-- ── FIX ──────────────────────────────────────────────────────────────────
+--   Revoke EXECUTE from every client role. The trigger keeps working: a trigger
+--   runs the function as part of the INSERT into auth.users, and PostgreSQL does
+--   NOT check the invoking user's EXECUTE privilege for a trigger invocation.
+--   (It checks the privilege of the role that CREATED the trigger, i.e. the
+--   migration role.) So this is safe for signup and closes the direct-call path.
+--
+-- ── WHAT THIS DOES NOT CHANGE ────────────────────────────────────────────
+--   - The function body, its SECURITY DEFINER, or its `search_path = ''`.
+--   - The on_auth_user_created trigger.
+--   - Any table, row, policy or other grant.
+--
+-- ── ROLLBACK ────────────────────────────────────────────────────────────
+--   grant execute on function public.handle_new_user() to public;
+--   (Restores the previous default; signup is unaffected either way.)
+
+revoke execute on function public.handle_new_user() from public;
+revoke execute on function public.handle_new_user() from anon, authenticated;
+
+-- Deliberately NOT granted to service_role either: nothing calls it directly.

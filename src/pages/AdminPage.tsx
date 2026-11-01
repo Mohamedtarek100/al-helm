@@ -1,14 +1,22 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PageFrame, PageHeading } from './PageFrame'
 import { useI18n } from '../i18n/useI18n'
 import { refreshAdminGate, useAdminGate } from '../services/edge/adminGate'
+import { logAdminAction } from '../services/edge/admin'
+import { useAdminPreferences } from '../services/edge/adminSettings'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { EmptyState } from '../components/Display'
 import { UserIcon } from '../components/icons'
 import { AdminLayout, type AdminNavItem } from '../components/admin/AdminLayout'
-import { AdminOverview, AdminUsers, AdminSend, AdminHistory } from '../components/admin/sections/LegacySections'
+import { OverviewSection } from '../components/admin/sections/OverviewSection'
+import { UsersSection } from '../components/admin/sections/UsersSection'
+import { AnalyticsSection } from '../components/admin/sections/AnalyticsSection'
+import { AnnouncementsSection } from '../components/admin/sections/AnnouncementsSection'
+import { SecuritySection } from '../components/admin/sections/SecuritySection'
+import { SettingsSection } from '../components/admin/sections/SettingsSection'
+import type { TranslationKey } from '../i18n/translations'
 
 /**
  * Owner Control Center.
@@ -25,14 +33,20 @@ import { AdminOverview, AdminUsers, AdminSend, AdminHistory } from '../component
  *      render a neutral screen with no data components mounted.
  *   4. The gate re-resolves on sign-out and account change (see adminGate.ts),
  *      so a previous account's authorization cannot survive a switch.
+ *   5. If the gate becomes unauthorized AFTER the console is mounted (token
+ *      expiry, account switch, explicit denial), the console unmounts on the
+ *      same render — the same check governs both entry and continued access.
  */
 
-type Tab = 'overview' | 'users' | 'send' | 'history'
-const TABS: { id: Tab; key: 'adminTab_metrics' | 'adminTab_users' | 'adminTab_send' | 'adminTab_history' }[] = [
-  { id: 'overview', key: 'adminTab_metrics' },
-  { id: 'users', key: 'adminTab_users' },
-  { id: 'send', key: 'adminTab_send' },
-  { id: 'history', key: 'adminTab_history' },
+type Tab = 'overview' | 'users' | 'analytics' | 'announcements' | 'security' | 'settings'
+
+const TABS: { id: Tab; key: TranslationKey; icon: string }[] = [
+  { id: 'overview', key: 'adminTab_metrics', icon: '◈' },
+  { id: 'users', key: 'adminTab_users', icon: '◉' },
+  { id: 'analytics', key: 'acAnalyticsTitle', icon: '▤' },
+  { id: 'announcements', key: 'adminAnnouncements', icon: '✦' },
+  { id: 'security', key: 'acSecurityTitle', icon: '⛨' },
+  { id: 'settings', key: 'acSettingsTitle', icon: '⚙' },
 ]
 
 export function AdminPage() {
@@ -41,6 +55,7 @@ export function AdminPage() {
   // The gate lives in one shared module so the dashboard and the navigation
   // always agree, and so account switches re-resolve it exactly once.
   const gateState = useAdminGate()
+  const { preferences } = useAdminPreferences()
   const [tab, setTab] = useState<Tab>('overview')
   const [nonce, setNonce] = useState(0)
 
@@ -50,12 +65,25 @@ export function AdminPage() {
         : gateState.state === 'signed-out' ? 'signed-out'
           : gateState.state === 'error' ? 'error'
             : 'loading'
-  const gate = gateState.gate
   const error = gateState.error
-  const refresh = async () => {
+
+  const refresh = useCallback(async () => {
     setNonce((value) => value + 1)
     await refreshAdminGate()
-  }
+  }, [])
+
+  // One audit entry per console visit (not per tab switch): the log answers
+  // "who opened the console and when", and per-tab noise would bury it.
+  const authorizedEmail = gateState.state === 'authorized' ? gateState.email : null
+  useEffect(() => {
+    if (!authorizedEmail) return
+    void logAdminAction('app_open', null, { viewport: typeof window === 'undefined' ? 0 : window.innerWidth }).catch(() => undefined)
+  }, [authorizedEmail])
+
+  const navItems: AdminNavItem[] = useMemo(
+    () => TABS.map((item) => ({ id: item.id, label: t(item.key), icon: <span aria-hidden="true">{item.icon}</span> })),
+    [t],
+  )
 
   if (status === 'loading') {
     return (
@@ -81,7 +109,7 @@ export function AdminPage() {
             message={error && status === 'error' ? error : copy}
             action={
               <div className="row">
-                <Button size="sm" variant="secondary" onClick={refresh}>{t('adminRefresh')}</Button>
+                <Button size="sm" variant="secondary" onClick={() => { void refresh() }}>{t('adminRefresh')}</Button>
                 {status === 'signed-out' && <Link to="/settings" className="link-button">{t('settings')}</Link>}
               </div>
             }
@@ -91,12 +119,9 @@ export function AdminPage() {
     )
   }
 
-  // Only reached when the SERVER confirmed ownership.
-  const navItems: AdminNavItem[] = TABS.map((item) => ({
-    id: item.id,
-    label: t(item.key),
-    icon: <span aria-hidden="true">•</span>,
-  }))
+  // Only reached when the SERVER confirmed ownership, and only kept while it
+  // continues to do so.
+  const activeTab = TABS.find((item) => item.id === tab) ?? TABS[0]
 
   return (
     <AdminLayout
@@ -104,15 +129,38 @@ export function AdminPage() {
       active={tab}
       onNavigate={(id) => setTab(id as Tab)}
       eyebrow={t('adminConsoleSection')}
-      title={t(TABS.find((item) => item.id === tab)?.key ?? 'adminTitle')}
-      ownerEmail={gate?.email ?? null}
-      status={{ tone: 'ok', label: en ? 'Authorized' : 'مصرّح' }}
+      title={t(activeTab.key)}
+      ownerEmail={gateState.email}
+      authorization="authorized"
+      status={{ tone: 'ok', label: en ? 'Live' : 'مباشر' }}
       onRefresh={() => { void refresh() }}
+      labels={{
+        openNav: t('acOpenNav'),
+        closeNav: t('acCloseNav'),
+        refresh: t('acRefreshData'),
+        refreshing: t('acRefreshing'),
+        workspace: t('adminConsoleSection'),
+        sections: t('adminConsoleSection'),
+        soon: t('acComingSoon'),
+        authorized: t('acVerified'),
+        verifying: t('acVerifying'),
+        denied: t('acNotAuthorized'),
+        unknown: t('acUnknownState'),
+      }}
+      brand={{ title: t('adminConsoleTitle'), subtitle: t('acBrandSubtitle') }}
     >
-      {tab === 'overview' && <AdminOverview userId={gateState.email} />}
-      {tab === 'users' && <AdminUsers userId={gateState.email} />}
-      {tab === 'send' && <AdminSend onSent={() => setTab('history')} />}
-      {tab === 'history' && <AdminHistory userId={gateState.email} refreshKey={nonce} />}
+      <div className={preferences.reducedMotion ? 'ac-reduce-motion' : undefined}>
+        {tab === 'overview' && (
+          <OverviewSection userId={gateState.email} refreshKey={nonce} onOpenUsers={() => setTab('users')} />
+        )}
+        {tab === 'users' && <UsersSection userId={gateState.email} pageSize={preferences.pageSize} />}
+        {tab === 'analytics' && <AnalyticsSection userId={gateState.email} refreshKey={nonce} />}
+        {tab === 'announcements' && (
+          <AnnouncementsSection userId={gateState.email} refreshKey={nonce} onSent={() => setNonce((value) => value + 1)} />
+        )}
+        {tab === 'security' && <SecuritySection userId={gateState.email} refreshKey={nonce} />}
+        {tab === 'settings' && <SettingsSection userId={gateState.email} ownerEmail={gateState.email} />}
+      </div>
     </AdminLayout>
   )
 }

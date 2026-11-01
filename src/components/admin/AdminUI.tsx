@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { cn } from '../../utils/cn'
+import { fadeRise } from './motion'
 
 /**
  * Shared primitives for the Owner Control Center.
@@ -8,29 +9,10 @@ import { cn } from '../../utils/cn'
  * Deliberately a small, coherent set — every component here is used by at least
  * one real module. Styling lives in styles/admin.css under `.ac-*`, scoped to
  * `.ac-root`, so nothing leaks into the normal 4uLife interface.
+ *
+ * Motion helpers live in ./motion so this module exports components only (Fast
+ * Refresh requires a component-only module).
  */
-
-/* ------------------------------------------------------------------ */
-/* Motion                                                              */
-/* ------------------------------------------------------------------ */
-
-/** True when the user asked the OS to reduce motion. */
-export function prefersReducedMotion(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
-
-/** Standard entrance: fade + small rise. Collapses to a plain fade when reduced. */
-export function fadeRise(index = 0) {
-  if (prefersReducedMotion()) {
-    return { initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { duration: 0 } }
-  }
-  return {
-    initial: { opacity: 0, y: 10 },
-    animate: { opacity: 1, y: 0 },
-    transition: { duration: 0.32, delay: Math.min(index * 0.04, 0.24), ease: [0.22, 1, 0.36, 1] as const },
-  }
-}
 
 /* ------------------------------------------------------------------ */
 /* Surfaces                                                            */
@@ -54,10 +36,7 @@ export function AdminCard({
   padded?: boolean
 }) {
   return (
-    <section
-      className={cn('ac-card', interactive && 'ac-card--interactive', className)}
-      style={padded ? undefined : { padding: 0 }}
-    >
+    <section className={cn('ac-card', interactive && 'ac-card--interactive', className)} style={padded ? undefined : { padding: 0 }}>
       {(title || action) && (
         <header className="ac-card__head" style={padded ? undefined : { padding: '16px 16px 0' }}>
           <div>
@@ -128,31 +107,42 @@ export function AdminButton({
   children,
   onClick,
   variant = 'default',
+  size = 'md',
   disabled,
   loading,
   type = 'button',
   ariaLabel,
   icon,
+  className,
 }: {
-  children: ReactNode
+  children?: ReactNode
   onClick?: () => void
-  variant?: 'default' | 'primary' | 'ghost'
+  variant?: 'default' | 'primary' | 'ghost' | 'danger'
+  size?: 'sm' | 'md'
   disabled?: boolean
   loading?: boolean
   type?: 'button' | 'submit'
   ariaLabel?: string
   icon?: ReactNode
+  className?: string
 }) {
   return (
     <button
       type={type}
-      className={cn('ac-btn', variant === 'primary' && 'ac-btn--primary', variant === 'ghost' && 'ac-btn--ghost')}
+      className={cn(
+        'ac-btn',
+        variant === 'primary' && 'ac-btn--primary',
+        variant === 'ghost' && 'ac-btn--ghost',
+        variant === 'danger' && 'ac-btn--danger',
+        size === 'sm' && 'ac-btn--sm',
+        className,
+      )}
       onClick={onClick}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       aria-label={ariaLabel}
     >
-      {loading ? <span className="ac-badge__dot" aria-hidden="true" /> : icon}
+      {loading ? <i className="ac-spinner" aria-hidden="true" /> : icon}
       {children}
     </button>
   )
@@ -228,6 +218,9 @@ export interface AdminColumn<T> {
  *
  * Below 720px it switches to stacked "card" rows so nothing is clipped and no
  * horizontal scrolling is needed inside the Android WebView.
+ *
+ * `onRowClick` makes rows keyboard-activatable (Enter/Space) — a div with a
+ * click handler alone is not reachable without a pointer.
  */
 export function AdminDataTable<T>({
   columns,
@@ -235,12 +228,16 @@ export function AdminDataTable<T>({
   rowKey,
   empty,
   caption,
+  onRowClick,
+  selectedKey,
 }: {
   columns: AdminColumn<T>[]
   rows: T[]
   rowKey: (row: T) => string
   empty?: ReactNode
   caption?: string
+  onRowClick?: (row: T) => void
+  selectedKey?: string | null
 }) {
   if (rows.length === 0) return <>{empty ?? null}</>
 
@@ -257,21 +254,37 @@ export function AdminDataTable<T>({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={rowKey(row)}>
-              {columns.map((column) => (
-                <td
-                  key={column.key}
-                  data-align={column.align ?? 'start'}
-                  data-mobile={column.hideOnMobile ? 'hide' : 'show'}
-                  // Shown as the field name when rows stack on narrow screens.
-                  data-label={typeof column.header === 'string' ? column.header : undefined}
-                >
-                  {column.render(row)}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {rows.map((row) => {
+            const key = rowKey(row)
+            const selected = selectedKey === key
+            return (
+              <tr
+                key={key}
+                className={cn(selected && 'ac-table__row--selected', onRowClick && 'ac-table__row--clickable')}
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+                tabIndex={onRowClick ? 0 : undefined}
+                onKeyDown={onRowClick ? (event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onRowClick(row)
+                  }
+                } : undefined}
+                aria-selected={onRowClick ? selected : undefined}
+              >
+                {columns.map((column) => (
+                  <td
+                    key={column.key}
+                    data-align={column.align ?? 'start'}
+                    data-mobile={column.hideOnMobile ? 'hide' : 'show'}
+                    // Shown as the field name when rows stack on narrow screens.
+                    data-label={typeof column.header === 'string' ? column.header : undefined}
+                  >
+                    {column.render(row)}
+                  </td>
+                ))}
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -296,6 +309,8 @@ export function AdminStatCard({
   source,
   index = 0,
   tone = 'info',
+  unavailableLabel = 'Unavailable',
+  footnote,
 }: {
   label: ReactNode
   value: number | string | null
@@ -304,24 +319,110 @@ export function AdminStatCard({
   source?: ReactNode
   index?: number
   tone?: AdminTone
+  unavailableLabel?: string
+  footnote?: ReactNode
 }) {
   const unavailable = value === null || value === undefined
   return (
-    <motion.div {...fadeRise(index)} className="ac-card ac-card--interactive">
+    <motion.div {...fadeRise(index)} className="ac-card ac-card--interactive ac-stat">
       <div className="ac-card__head">
         <span className="ac-card__hint">{label}</span>
         {period && <AdminStatusBadge tone={tone}>{period}</AdminStatusBadge>}
       </div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-        <strong style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
-          {unavailable ? '—' : typeof value === 'number' ? value.toLocaleString() : value}
-        </strong>
+      <div className="ac-stat__value">
+        <strong>{unavailable ? '—' : typeof value === 'number' ? value.toLocaleString() : value}</strong>
         {unit && <span className="ac-card__hint">{unit}</span>}
       </div>
-      {unavailable && (
-        <p className="ac-card__hint" style={{ margin: '6px 0 0' }}>Unavailable</p>
-      )}
+      {unavailable && <p className="ac-card__hint" style={{ margin: '6px 0 0' }}>{unavailableLabel}</p>}
+      {footnote && <p className="ac-card__hint" style={{ margin: '6px 0 0' }}>{footnote}</p>}
       {source && <p className="ac-card__hint" style={{ margin: '8px 0 0' }}>{source}</p>}
     </motion.div>
   )
+}
+
+/* ------------------------------------------------------------------ */
+/* Charts (dependency-free, real data only)                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A compact bar chart.
+ *
+ * Deliberately hand-rolled: the project has no charting dependency, and adding
+ * one for four screens would be a large bundle cost. Every bar is labelled with
+ * its value in an accessible description, and the chart is a table for screen
+ * readers (the SVG is decorative), so the data is never colour-only.
+ */
+export function AdminBarChart({
+  data,
+  height = 140,
+  formatValue = (value: number) => String(value),
+  emptyLabel,
+  ariaLabel,
+}: {
+  data: { label: string; value: number }[]
+  height?: number
+  formatValue?: (value: number) => string
+  emptyLabel: ReactNode
+  ariaLabel: string
+}) {
+  if (data.length === 0) return <AdminEmptyState title={emptyLabel} />
+  const max = Math.max(1, ...data.map((item) => item.value))
+  return (
+    <div className="ac-chart">
+      <div className="ac-chart__bars" style={{ height }} role="img" aria-label={ariaLabel}>
+        {data.map((item) => {
+          const ratio = item.value / max
+          return (
+            <div key={item.label} className="ac-chart__col" title={`${item.label}: ${formatValue(item.value)}`}>
+              <span className="ac-chart__value">{formatValue(item.value)}</span>
+              <span
+                className="ac-chart__bar"
+                style={{ '--ac-bar-ratio': String(Math.max(ratio, item.value > 0 ? 0.04 : 0)) } as CSSProperties}
+              />
+              <span className="ac-chart__label">{item.label}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/** Horizontal progress rows — used for funnels and rate breakdowns. */
+export function AdminProgressList({
+  rows,
+  emptyLabel,
+  formatValue = (value: number) => String(value),
+}: {
+  rows: { label: string; value: number; max?: number; tone?: AdminTone }[]
+  emptyLabel?: ReactNode
+  formatValue?: (value: number) => string
+}) {
+  if (rows.length === 0) return emptyLabel ? <AdminEmptyState title={emptyLabel} /> : null
+  const max = Math.max(1, ...rows.map((row) => row.max ?? row.value))
+  return (
+    <ul className="ac-progress">
+      {rows.map((row) => (
+        <li key={row.label} className="ac-progress__row">
+          <span className="ac-progress__label">{row.label}</span>
+          <span className={`ac-progress__track ac-progress__track--${row.tone ?? 'info'}`}>
+            <i style={{ width: `${Math.min(100, (row.value / max) * 100)}%` }} />
+          </span>
+          <span className="ac-progress__value">{formatValue(row.value)}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Footnote                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Small explanatory line under a panel — used for provenance notes
+ * ("computed by the server at …", "not measured", …).
+ */
+export function AdminFootNote({ children, style }: { children: ReactNode; style?: CSSProperties }) {
+  return <p className="ac-footnote" style={style}>{children}</p>
 }

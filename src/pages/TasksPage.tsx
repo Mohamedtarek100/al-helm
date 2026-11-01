@@ -11,7 +11,7 @@ import { SubjectSelect } from '../components/SubjectSelect'
 import { CheckIcon, CheckSquareIcon, EditIcon, PlusIcon, TrashIcon } from '../components/icons'
 import { describeDueDate, formatMinutes, formatTime, todayKey } from '../services/date'
 import { emptyTaskFilter, filterTasks, sortTasks, type TaskFilter, type TaskSortKey, type TaskStatusFilter, isTaskOverdue } from '../services/taskSelectors'
-import { createTask, deleteTask, getPendingCloudError, getPersistenceError, setTaskCompleted, updateTask, useAppData, type NewTask } from '../services/store'
+import { createTask, deleteTask, getLastWriteResult, setTaskCompleted, updateTask, useAppData, type NewTask } from '../services/store'
 import { PageFrame, PageHeading } from './PageFrame'
 import { useToast } from '../components/toastContext'
 import { useI18n } from '../i18n/useI18n'
@@ -66,21 +66,24 @@ export function TasksPage() {
       if (editing) await updateTask(editing.id, form)
       else await createTask(form)
       setOpen(false)
-      notify(editing ? t('taskSaved') : t('taskAdded'), 'success')
-    } catch (error) {
-      // Keep the sheet open with the draft intact — nothing typed is lost.
-      // Distinguish "saved here but not in your account" from a real failure.
-      if (getPendingCloudError() && !getPersistenceError()) {
+      // The write result is decided by the store, not guessed here: when the
+      // task is on this device but the account copy is behind, the user gets a
+      // warning (and no reason to retry, which would duplicate the task).
+      if (getLastWriteResult() === 'local-only') {
         notify(
           en
-            ? 'Saved on this device, but not yet in your account. Use Retry in the sync indicator.'
-            : 'اتحفظت على الجهاز، لكن لسه مش في حسابك. استخدمي «أعيدي المحاولة» من شريط المزامنة.',
+            ? 'Saved on this device. It will sync when the connection returns.'
+            : 'اتحفظت على الجهاز. هتتزامن أول ما النت يرجع.',
           'warning',
         )
       } else {
-        const message = error instanceof Error ? error.message : ''
-        notify(message || (en ? 'Could not save the task. Your entry is still here — try again.' : 'تعذر حفظ المهمة. الكتابة لسه موجودة — جرّبي تاني.'), 'danger')
+        notify(editing ? t('taskSaved') : t('taskAdded'), 'success')
       }
+    } catch (error) {
+      // Keep the sheet open with the draft intact — nothing typed is lost.
+      // Reaching here means NOTHING was stored, so an error is accurate.
+      const message = error instanceof Error ? error.message : ''
+      notify(message || (en ? 'Could not save the task. Your entry is still here — try again.' : 'تعذر حفظ المهمة. الكتابة لسه موجودة — جرّبي تاني.'), 'danger')
     } finally {
       setSaving(false)
     }
@@ -154,7 +157,7 @@ export function TasksPage() {
                   <button
                     type="button"
                     className={`task-check ${task.completed ? 'task-check--done' : ''}`}
-                    aria-label={task.completed ? (en ? 'Reopen task' : 'إعادة فتح المهمة') : `${t('taskComplete')} ${task.title}`}
+                    aria-label={task.completed ? (en ? 'Mark as not done' : t('taskUndoComplete')) : `${t('taskComplete')} ${task.title}`}
                     aria-pressed={task.completed}
                     onClick={async () => {
                       try {
@@ -177,6 +180,11 @@ export function TasksPage() {
                       {describeDueDate(task.dueDate, en ? 'en-US' : 'ar-EG')}{task.dueTime ? ` · ${formatTime(task.dueTime, en ? 'en-US' : 'ar-EG')}` : ''}
                     </span>
                     <span className="task-estimate">{en ? `${formatNumber(task.estimatedMinutes)} min` : formatMinutes(task.estimatedMinutes)}</span>
+                    {task.completed && task.completedAt && (
+                      <span className="task-completed-at" title={new Date(task.completedAt).toLocaleString(en ? 'en-US' : 'ar-EG')}>
+                        {t('taskCompletedOn')}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="task-card__actions">

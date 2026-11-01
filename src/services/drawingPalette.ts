@@ -1,33 +1,18 @@
 /**
- * Dream Studio colour palette and recent-colour history.
+ * Recent-colour history and hex validation for the Dream Studio.
+ *
+ * SCOPE NOTE (deduplication): this module used to also define `PALETTE_GROUPS`
+ * and `PALETTE`, an older 16-colour palette. That was a SECOND source of truth
+ * once the colour-wheel picker arrived: a swatch could exist in the picker but
+ * not in the toolbar list, and vice-versa. The palette now lives only in
+ * `services/colorWheel.ts` (`STUDIO_PALETTE`), which every drawing surface
+ * reads. What remains here is the recent-colour list and the hex helpers that
+ * `SketchCanvas` and its tests import.
  *
  * Pure functions only: no React, no canvas, no storage side effects beyond the
  * injected list. That keeps the behaviour testable and lets the canvas stay a
  * thin renderer.
  */
-
-/** The curated palette, grouped so the toolbar can show rows. */
-export const PALETTE_GROUPS: { label: string; colors: string[] }[] = [
-  {
-    label: 'Ink',
-    colors: ['#34312f', '#5c5550', '#8a817a', '#b8ada2'],
-  },
-  {
-    label: 'Warm',
-    colors: ['#b66b52', '#d98c6a', '#e7c9c0', '#c99a4e', '#f2d9a0'],
-  },
-  {
-    label: 'Cool',
-    colors: ['#89977b', '#aabcc8', '#6d8ea3', '#8c6a82', '#c3d6c0'],
-  },
-  {
-    label: 'Paper',
-    colors: ['#fdf8ef', '#ffffff', '#d8c8aa'],
-  },
-]
-
-/** Flat list, in display order, for lookups and tests. */
-export const PALETTE: string[] = PALETTE_GROUPS.flatMap((group) => group.colors)
 
 export const MAX_RECENT_COLORS = 6
 

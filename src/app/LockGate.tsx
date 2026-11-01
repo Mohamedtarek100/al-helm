@@ -20,51 +20,70 @@ import { logoutCloudUser } from '../services/store'
  * can be re-authenticated; it never clears application data.
  */
 export function LockGate({ children }: { children: ReactNode }) {
-  // Re-read on every render: enabling or removing the lock in Settings must
-  // take effect immediately, not only at the next launch.
-  const settings = getLockSettings()
-  const [locked, setLocked] = useState(settings.enabled)
-  const lastActive = useRef(Date.now())
+  // The lock record is read INSIDE an effect, never during render: reading
+  // storage while rendering is an impure side read, and a profile edit or a
+  // theme change would re-read it incidentally. Re-reading on mount and on
+  // visibility/focus transitions covers every way the record can change (set
+  // or removed in Settings, then the user returns to the app).
+  const [lockEnabled, setLockEnabled] = useState(() => getLockSettings().enabled)
+  // `sessionLocked` only tracks "this session is locked"; the gate itself is
+  // derived below, so removing the record opens the app immediately.
+  const [sessionLocked, setSessionLocked] = useState(lockEnabled)
+  const locked = lockEnabled && sessionLocked
+  // Activity timestamp. Initialised inside the effect below; reading the clock
+  // during render would make the component impure.
+  const lastActive = useRef<number | null>(null)
   const navigate = useNavigate()
 
-  // Enabling the lock while the app is open locks it immediately. Removing the
-  // record (forgot-PIN path) opens the app without needing a restart.
+  // Track activity so the idle policy has a real timestamp. A fresh session
+  // starts its idle clock when this effect mounts, not during render.
   useEffect(() => {
-    if (!settings.enabled) setLocked(false)
-  }, [settings.enabled])
-
-  // Track activity so the idle policy has a real timestamp.
-  useEffect(() => {
-    if (!settings.enabled) return
+    if (!lockEnabled) return
+    lastActive.current = Date.now()
     const touch = () => { lastActive.current = Date.now() }
     const events: Array<keyof DocumentEventMap> = ['pointerdown', 'keydown', 'touchstart']
     events.forEach((event) => document.addEventListener(event, touch, { passive: true }))
-    return () => events.forEach((event) => document.removeEventListener(event, touch))
-  }, [settings.enabled])
+    // Removal must match how the listener was added. `removeEventListener` only
+    // accepts a capture flag (EventListenerOptions, not AddEventListenerOptions),
+    // and these were added with the default capture of `false`, so the third
+    // argument here is `false` — passing an options object would be both a type
+    // error and a mismatch that could leak handlers.
+    return () => events.forEach((event) => document.removeEventListener(event, touch, false))
+  }, [lockEnabled])
 
   useEffect(() => {
-    if (!settings.enabled) return
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') {
-        setLocked(true)
+      if (document.visibilityState === 'visible') {
+        // The user may have enabled or removed the lock in another tab or in
+        // Settings while the app was backgrounded, so the record is re-read on
+        // return rather than trusted from mount time.
+        const current = getLockSettings()
+        setLockEnabled(current.enabled)
+        if (!current.enabled) return
+        if (shouldRelock(lastActive.current ?? Date.now(), current.idleMinutes)) setSessionLocked(true)
         return
       }
-      if (shouldRelock(lastActive.current, settings.idleMinutes)) setLocked(true)
+      if (!lockEnabled) return
+      setSessionLocked(true)
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [settings.enabled, settings.idleMinutes])
+  }, [lockEnabled])
 
   const unlock = useCallback(() => {
     lastActive.current = Date.now()
-    setLocked(false)
+    setSessionLocked(false)
   }, [])
 
   const forgotPin = useCallback(() => {
     // Sign out of this device, then send the user to the account panel to
     // re-authenticate. Data is preserved; only the lock record was removed.
     void logoutCloudUser().catch(() => undefined)
-    setLocked(false)
+    // The record is already gone (AppLockScreen removes it before calling
+    // back), but re-reading makes the gate state match storage explicitly
+    // rather than relying on a later visibility event.
+    setLockEnabled(getLockSettings().enabled)
+    setSessionLocked(false)
     navigate('/settings')
   }, [navigate])
 

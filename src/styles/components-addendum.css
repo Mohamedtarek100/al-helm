@@ -1344,3 +1344,430 @@
     z-index: 2;
   }
 }
+
+/* =====================================================================
+   Dream Studio — expanded workspace + colour wheel
+   ===================================================================== */
+
+/*
+   The canvas previously rendered inside a narrow card with a wrapping toolbar,
+   so the drawing area was a minority of the screen. The studio now uses the
+   available width/height: the surface fills the viewport height minus the app
+   chrome, and the toolbar wraps BELOW the canvas on narrow screens instead of
+   above it.
+
+   The canvas keeps `touch-action: none` (set in pages.css) so a drag draws
+   instead of scrolling the page — this is what prevents accidental scroll on
+   Android and iOS touch input while drawing.
+*/
+
+.sketch-surface {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  background: var(--paper-sunk);
+  padding: clamp(4px, 1vw, 12px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.sketch-surface .sketch-canvas {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  /* Comfortable, generous drawing height without forcing page scroll. */
+  max-height: calc(100dvh - 320px);
+  min-height: 240px;
+  object-fit: contain;
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-sm);
+  background: #fff;
+}
+
+@media (max-width: 820px) {
+  .sketch-surface .sketch-canvas {
+    max-height: calc(100dvh - 260px);
+  }
+}
+
+/* Landscape phones: give the canvas the full height available. */
+@media (orientation: landscape) and (max-height: 520px) {
+  .sketch-surface .sketch-canvas { max-height: calc(100dvh - 180px); }
+  .sketch-toolbar { padding-block: 6px; gap: 9px; }
+}
+
+/* ---- Colour wheel trigger + panel ---------------------------------- */
+
+.sketch-swatch--wheel {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.sketch-swatch__current {
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  border: 2px solid var(--paper-3);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.sketch-wheel-panel {
+  padding: 12px 16px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  animation: sketch-wheel-in 160ms var(--ease, ease-out);
+}
+
+@keyframes sketch-wheel-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---- ColorPicker --------------------------------------------------- */
+
+.color-picker {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.color-picker__wheel-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+.color-picker__wheel {
+  position: relative;
+  border-radius: 50%;
+  touch-action: none;
+  cursor: crosshair;
+  flex: 0 0 auto;
+}
+
+/* Hue ring drawn as a conic gradient, then a radial white→transparent overlay
+   produces the saturation falloff. Together they match `pointToHsv` exactly. */
+.color-picker__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  filter: saturate(1.15);
+}
+
+.color-picker__disc {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, #fff 0%, rgba(255,255,255,0) 70%);
+  pointer-events: none;
+}
+
+.color-picker__wheel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  pointer-events: none;
+}
+
+.color-picker__handle {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  transition: left 60ms linear, top 60ms linear;
+}
+
+/* Invisible full-size button: the keyboard/AT entry point for the wheel. */
+.color-picker__surface {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: crosshair;
+}
+
+.color-picker__surface:focus-visible {
+  outline: 3px solid var(--clay);
+  outline-offset: 3px;
+}
+
+.color-picker__current { display: flex; align-items: center; gap: 7px; }
+
+.color-picker__chip {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+}
+
+.color-picker__hex {
+  font-size: var(--t-xs);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--ink-3);
+  letter-spacing: 0.03em;
+}
+
+.color-picker__value {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 132px;
+}
+
+.color-picker__value input[type='range'] { accent-color: var(--clay); }
+
+.color-picker__label {
+  font-size: var(--t-xs);
+  font-weight: 700;
+  color: var(--ink-4);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.color-picker__palette {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 190px;
+  flex: 1 1 200px;
+}
+
+.color-picker__group { display: flex; flex-direction: column; gap: 4px; }
+
+.color-picker__swatches { display: flex; gap: 5px; flex-wrap: wrap; }
+
+.color-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  cursor: pointer;
+  transition: transform var(--dur-fast, 120ms) ease, box-shadow var(--dur-fast, 120ms) ease;
+}
+
+.color-swatch:hover { transform: scale(1.15); }
+
+.color-swatch:focus-visible {
+  outline: 2px solid var(--clay);
+  outline-offset: 2px;
+}
+
+.color-swatch--active {
+  box-shadow: 0 0 0 2px var(--paper-3), 0 0 0 4px var(--ink);
+}
+
+.color-picker__custom input[type='color'] {
+  width: 100%;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--paper-3);
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .color-picker { gap: 12px; }
+  .color-picker__wheel-wrap { margin-inline: auto; }
+  .color-picker__palette { flex-basis: 100%; }
+  .sketch-wheel-panel { padding: 10px 12px 12px; }
+}
+
+/* =====================================================================
+   Completed tasks — deliberately still in the list
+   =====================================================================
+   A completed task keeps its place; it is never removed or hidden. The style
+   below makes "done" unmistakable (green check, struck title, calm surface)
+   while keeping every original detail readable, so the user can still see what
+   they finished and copy/reopen it.
+*/
+
+.task-card--done {
+  /* Not a dead grey: a quiet, successful surface. */
+  background: linear-gradient(180deg, rgba(137, 151, 123, 0.10), rgba(137, 151, 123, 0.04));
+  border-color: rgba(137, 151, 123, 0.42);
+  opacity: 1;
+}
+
+.task-card--done .task-card__check .task-check {
+  background: var(--sage, #89977b);
+  border-color: var(--sage, #89977b);
+  color: #fff;
+  box-shadow: 0 0 0 3px rgba(137, 151, 123, 0.18);
+}
+
+.task-card--done .task-card__title {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: var(--sage, #89977b);
+  color: var(--ink-3);
+}
+
+.task-card--done .task-card__description,
+.task-card--done .task-card__meta {
+  opacity: 0.78;
+}
+
+/* The completion stamp: proves when it was finished without hiding the rest. */
+.task-completed-at {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--t-xs);
+  font-weight: 700;
+  color: var(--success, #2f7d4f);
+  white-space: nowrap;
+}
+
+.task-completed-at::before {
+  content: '✓';
+  font-size: 0.72em;
+}
+
+/* Undo affordance is always reachable, never hidden behind a hover. */
+.task-card--done .task-card__actions .icon-btn {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-card--done { transition: none; }
+}
+
+/* =====================================================================
+   Notification center
+   ===================================================================== */
+
+.notif-unread-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: var(--t-xs);
+  font-weight: 800;
+  color: var(--accent-ink, #fff);
+  background: var(--clay);
+}
+
+.notif-list { list-style: none; margin: 0; padding: 0; display: grid; }
+
+.notif-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 13px 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.notif-item:last-child { border-bottom: 0; }
+
+/* Unread is visibly different BEFORE opening: tint + left rail + bold title.
+   Read is deliberately quiet. */
+.notif-item--unread {
+  background: linear-gradient(90deg, rgba(182, 107, 82, 0.08), transparent 45%);
+  box-shadow: inset 3px 0 0 var(--clay);
+  border-radius: var(--r-sm);
+}
+
+.notif-item--read { opacity: 0.82; }
+
+.notif-item__icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--paper-sunk);
+  color: var(--ink-3);
+}
+
+.notif-item--unread .notif-item__icon { background: rgba(182, 107, 82, 0.16); color: var(--clay); }
+
+.notif-item__body { min-width: 0; }
+
+.notif-item__top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+
+.notif-item__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--clay);
+  flex: 0 0 auto;
+}
+
+.notif-item__title { font-size: var(--t-sm); color: var(--ink); }
+.notif-item--unread .notif-item__title { font-weight: 800; }
+
+.notif-item__kind {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+
+.notif-item__text {
+  margin: 3px 0 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.notif-item__time { display: block; margin-top: 4px; font-size: 0.68rem; color: var(--ink-4); }
+
+.notif-item__actions { display: flex; gap: 4px; }
+
+@media (max-width: 560px) {
+  .notif-item { grid-template-columns: auto 1fr; }
+  .notif-item__actions { grid-column: 2; justify-content: flex-end; }
+}
+
+/* =====================================================================
+   Alarms — editable name, tone selection
+   ===================================================================== */
+
+.reminder-row {
+  /* Name + time + toggle on line one, title/tone tools on line two. */
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.reminder-row__tools {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-bottom: 4px;
+}
+
+.reminder-row__name {
+  flex: 1 1 160px;
+  min-width: 120px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.reminder-row__tone { flex: 0 0 auto; min-width: 118px; }
+
+.reminder-row__label { font-weight: 800; color: var(--ink); }
+
+@media (max-width: 560px) {
+  .reminder-row { grid-template-columns: 1fr auto; }
+  .reminder-row__name { flex-basis: 100%; }
+  .reminder-row__tone { flex: 1 1 110px; }
+}

@@ -133,7 +133,7 @@ describe('migration 006 (static): user-scoped uniqueness', () => {
     expect(code).toContain('\\p{p}\\p{s}\\p{m}\\p{z}\\u0640')
     expect(code).toContain('lower(')
     expect(code).toContain('btrim(')
-  }),
+  })
 
   it('backfills existing rows', () => {
     expect(code).toContain('update public.subjects')

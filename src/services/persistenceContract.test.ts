@@ -163,11 +163,17 @@ describe('cloud mode', () => {
     expect(store.getPendingCloudError()).toBeNull()
   })
 
-  it('a failed cloud write keeps the work locally and records a pending error', async () => {
+  it('a failed cloud write keeps the work locally and reports local-only', async () => {
     cloudState.saveMode = 'fail'
     // High is the realistic server-rejection case in production today: it is
     // valid client-side but the whole snapshot upsert is refused by the DB.
-    await expect(store.createTask(newTask('high'))).rejects.toThrow(/tasks_priority_check/)
+    //
+    // CHANGED: this used to reject. Rejecting is what made the UI show
+    // "could not save the task" for a task that was on screen, which then led
+    // users to retry and create duplicates. The write is reported as local-only
+    // instead; the pending error still records that the account is behind.
+    const created = await store.createTask(newTask('high'))
+    expect(created.writeResult).toBe('local-only')
 
     // The change is still in memory (not rolled back) …
     expect(store.getState().tasks.some((task) => task.title === 'Task high')).toBe(true)
@@ -193,7 +199,7 @@ describe('cloud mode', () => {
 
   it('a successful write after a failure clears the pending error', async () => {
     cloudState.saveMode = 'fail'
-    await expect(store.createTask(newTask('high'))).rejects.toThrow()
+    await store.createTask(newTask('high'))
     expect(store.getPendingCloudError()).not.toBeNull()
 
     cloudState.saveMode = 'ok'
@@ -211,7 +217,7 @@ describe('retry', () => {
 
   it('actually re-attempts the cloud write and clears the error on success', async () => {
     cloudState.saveMode = 'fail'
-    await expect(store.createTask(newTask('high'))).rejects.toThrow()
+    await store.createTask(newTask('high'))
     expect(store.getPendingCloudError()).not.toBeNull()
 
     cloudState.saveMode = 'ok'
@@ -224,14 +230,14 @@ describe('retry', () => {
 
   it('throws and keeps the pending error when the retry also fails', async () => {
     cloudState.saveMode = 'fail'
-    await expect(store.createTask(newTask('high'))).rejects.toThrow()
+    await store.createTask(newTask('high'))
     await expect(store.retryPersistence()).rejects.toThrow()
     expect(store.getPendingCloudError()).not.toBeNull()
   })
 
   it('refuses to retry into a different signed-in account', async () => {
     cloudState.saveMode = 'fail'
-    await expect(store.createTask(newTask('high'))).rejects.toThrow()
+    await store.createTask(newTask('high'))
     // A different account signs in on this device.
     cloudState.userId = 'user-b'
     await expect(store.retryPersistence()).rejects.toThrow(/different account|sign in/i)
@@ -250,7 +256,9 @@ describe('account changes', () => {
     // Switch accounts while the write is in flight.
     cloudState.remote = null
     await store.authenticateCloudUser('user-b')
-    await expect(pending).rejects.toThrow()
+    // This is NOT the "saved here" case: the write belongs to account A, so it
+    // must never be reported as a successful change for account B. It rejects.
+    await expect(pending).rejects.toThrow(/account changed/i)
 
     // Account B must not inherit A's pending cloud failure.
     expect(store.getPendingCloudError()).toBeNull()
@@ -260,7 +268,7 @@ describe('account changes', () => {
     cloudState.remote = remoteAccount([seedTask])
     await store.authenticateCloudUser('user-a')
     cloudState.saveMode = 'fail'
-    await expect(store.createTask(newTask('high'))).rejects.toThrow()
+    await store.createTask(newTask('high'))
     expect(store.getPendingCloudError()).not.toBeNull()
 
     await store.logoutCloudUser()

@@ -25,6 +25,9 @@ describe('pending migration set', () => {
   it('contains the expected ordered sequence', () => {
     // 009 adds the service_role grants the admin Edge Function needs; it is an
     // additive follow-up and must sort AFTER 007.
+    // 010 adds the append-only owner audit log used by Phases 2–4.
+    // 011 revokes EXECUTE on the SECURITY DEFINER trigger function (Security
+    //     Advisor finding); it is additive and does not touch signup.
     expect(files.map((f) => f.slice(0, 12))).toEqual([
       '202610190001',
       '202610190002',
@@ -34,7 +37,88 @@ describe('pending migration set', () => {
       '202610250006',
       '202610250007',
       '202610311200',
+      '202610311300',
+      '202611011200',
     ])
+  })
+
+  it('011 revokes EXECUTE from every client role and leaves the trigger intact', () => {
+    const raw = read(files.find((f) => f.startsWith('202611011200')) as string)
+    // Assert on EXECUTABLE SQL only. The file's explanatory comments quote the
+    // function definition they describe, so including comments would match the
+    // prose rather than the statements.
+    const sql = raw.split('\n').filter((line) => !line.trimStart().startsWith('--')).join('\n')
+    // The finding: a SECURITY DEFINER trigger function callable by anon.
+    expect(sql).toMatch(/revoke execute on function public\.handle_new_user\(\) from public/i)
+    expect(sql).toMatch(/revoke execute on function public\.handle_new_user\(\) from anon, authenticated/i)
+    // It must not alter the function, its definer or its trigger — those are
+    // what keep signup working.
+    expect(sql).not.toMatch(/create or replace function/i)
+    expect(sql).not.toMatch(/drop trigger/i)
+    expect(sql).not.toMatch(/security invoker/i)
+  })
+
+  it('010 makes the audit log append-only for every client role', () => {
+    const sql = read(files.find((f) => f.startsWith('202610311300')) as string)
+    // Clients must not be able to write, rewrite or erase audit history.
+    expect(sql).toMatch(/revoke all on table public\.admin_audit_log from anon, authenticated/i)
+    // The service role may only append and read.
+    expect(sql).toMatch(/grant insert, select on public\.admin_audit_log to service_role/i)
+    expect(sql).not.toMatch(/grant[^;]*update[^;]*on public\.admin_audit_log/i)
+    expect(sql).not.toMatch(/grant[^;]*delete[^;]*on public\.admin_audit_log/i)
+    expect(sql).not.toMatch(/grant[^;]*truncate[^;]*on public\.admin_audit_log/i)
+    // ...and the table refuses mutation even from a privileged connection.
+    expect(sql).toMatch(/before update on public\.admin_audit_log/i)
+    expect(sql).toMatch(/before delete on public\.admin_audit_log/i)
+    // RLS on, and deliberately no policy that would expose rows to clients.
+    expect(sql).toMatch(/alter table public\.admin_audit_log enable row level security/i)
+    expect(sql).not.toMatch(/create policy[^;]*on public\.admin_audit_log/i)
+  })
+
+  it('010 revokes PUBLIC before granting anything', () => {
+    // A fresh table can inherit default privileges granted to PUBLIC, so the
+    // revoke-from-PUBLIC must exist and must not come after the grants.
+    const sql = read(files.find((f) => f.startsWith('202610311300')) as string)
+    const revokePublic = sql.search(/revoke all on table public\.admin_audit_log from public/i)
+    const firstGrant = sql.search(/grant (insert|select|all)/i)
+    expect(revokePublic).toBeGreaterThan(-1)
+    expect(firstGrant).toBeGreaterThan(-1)
+    expect(revokePublic).toBeLessThan(firstGrant)
+  })
+
+  it('010 closes the TRUNCATE hole specifically', () => {
+    const sql = read(files.find((f) => f.startsWith('202610311300')) as string)
+    // TRUNCATE is table-level, fires no row triggers and is not subject to RLS,
+    // so it needs its own revoke from every role and its own trigger.
+    for (const role of ['public', 'anon', 'authenticated', 'service_role']) {
+      expect(sql, `truncate not revoked from ${role}`)
+        .toMatch(new RegExp(`revoke truncate on table public\\.admin_audit_log from[^;]*\\b${role}\\b`, 'i'))
+    }
+    expect(sql).toMatch(/before truncate on public\.admin_audit_log/i)
+    // A TRUNCATE trigger must be statement-level: row triggers never fire.
+    expect(sql).toMatch(/before truncate on public\.admin_audit_log[\s\S]{0,80}for each statement/i)
+  })
+
+  it('010 keeps the trigger function unprivileged and search_path-pinned', () => {
+    const sql = read(files.find((f) => f.startsWith('202610311300')) as string)
+    expect(sql).toMatch(/set search_path = pg_catalog, public/i)
+    // Elevation is not needed to raise an exception, so it must not be granted.
+    expect(sql).not.toMatch(/security definer/i)
+  })
+
+  it('010 documents an archive-first recovery, never a bare drop', () => {
+    const sql = read(files.find((f) => f.startsWith('202610311300')) as string)
+    // The only permitted destructive step is archive-then-verify-then-drop.
+    expect(sql).toMatch(/create table public\.admin_audit_log_archive as/i)
+    expect(sql).toMatch(/as live[\s\S]{0,120}as archived/i)
+    const dropAt = sql.search(/drop table if exists public\.admin_audit_log;/i)
+    const archiveAt = sql.search(/create table public\.admin_audit_log_archive as/i)
+    const verifyAt = sql.search(/both counts must be equal/i)
+    expect(archiveAt).toBeGreaterThan(-1)
+    expect(verifyAt).toBeGreaterThan(archiveAt)
+    expect(dropAt).toBeGreaterThan(verifyAt)
+    // And it must be quoted as a comment block, not executed by this migration.
+    expect(sql.slice(dropAt - 400, dropAt)).toMatch(/--/)
   })
 
   it('does not contain the superseded 008 verifier', () => {

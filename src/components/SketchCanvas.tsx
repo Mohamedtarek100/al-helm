@@ -13,7 +13,9 @@ import {
   type DrawingDocument, type PaperKind, type Point, type Shape, type ShapeKind, type Stroke, type TextElement, type Tool,
 } from '../services/drawing'
 import { makeId } from '../services/drawing'
-import { PALETTE as PALETTE_COLORS, PALETTE_GROUPS, pushRecentColor, parseRecentColors } from '../services/drawingPalette'
+import { pushRecentColor, parseRecentColors } from '../services/drawingPalette'
+import { STUDIO_PALETTE_FLAT } from '../services/colorWheel'
+import { ColorPicker } from './ColorPicker'
 import {
   DEFAULT_VIEWPORT, deleteElement, elementBounds, hitTest, moveElement, panBy, zoomAt,
   type Bounds, type ElementRef, type Viewport,
@@ -31,11 +33,12 @@ import {
  * and CSS scaling never distort strokes.
  */
 
-// The palette is defined ONCE in services/drawingPalette.ts (grouped, 16
-// colours). The previous local 8-colour constant was a second source of truth
-// that silently shadowed it, so the expanded palette never reached the UI.
-// Every original swatch is present in the shared list, so no colour is lost.
-const PALETTE = PALETTE_COLORS
+// The palette lives in ONE place: services/colorWheel.ts (STUDIO_PALETTE). The
+// previous drawingPalette.ts carried a SECOND, older palette that the canvas no
+// longer used, so a colour could exist in the picker but not in the toolbar or
+// vice-versa. The shared hex helpers moved there too, and only the recent-
+// colour history still lives in drawingPalette.ts.
+const PALETTE = STUDIO_PALETTE_FLAT
 const DRAFT_DEBOUNCE_MS = 900
 const AUTOSAVE_DEBOUNCE_MS = 2600
 
@@ -55,6 +58,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   const [tool, setTool] = useState<Tool>('pencil')
   const [color, setColor] = useState(PALETTE[0])
   const [size, setSize] = useState(3)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const [shapeKind, setShapeKind] = useState<ShapeKind>('rect')
   /** Recently used custom colours, persisted per device (drawingPalette is pure). */
   const [recentColors, setRecentColors] = useState<string[]>(() => {
@@ -172,6 +176,11 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   const updateDoc = useCallback((next: DrawingDocument) => {
     docRef.current = next
     setDoc(next)
+    // Selection is POSITIONAL, so every path that structurally changes the
+    // document drops it in the same update. Previously an effect watched the
+    // element counts and cleared the selection afterwards; that left one
+    // render in which the delete button pointed at a shifted element.
+    setSelected(null)
     markDirty()
   }, [markDirty])
 
@@ -382,8 +391,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     setRedo([])
   }
 
-  // Selection is positional: any structural change invalidates the index.
-  useEffect(() => { setSelected(null) }, [doc.strokes.length, doc.shapes?.length, doc.texts?.length])
+
 
   const clear = () => {
     setConfirmClear(false)
@@ -421,6 +429,13 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       }, 'image/png')
     })
 
+  // `capture` is a plain function re-created on every render (it closes over
+  // the current language for its error messages). Holding it in a ref means
+  // `save` — which must stay stable enough for the autosave timers — always
+  // calls the CURRENT version instead of one captured at first render.
+  const captureRef = useRef(capture)
+  captureRef.current = capture
+
   const save = useCallback(async (silent = false) => {
     if (autosaveTimer.current) { clearTimeout(autosaveTimer.current); autosaveTimer.current = null }
     setSaveError(null)
@@ -429,7 +444,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     const name = titleRef.current.trim() || (language === 'en' ? 'Untitled sketch' : 'اسكتش بدون عنوان')
     try {
       // 1. Capture the PNG BEFORE touching any metadata.
-      const blob = await capture()
+      const blob = await captureRef.current()
       // 2. Create/refresh the metadata row, including the vector model so the
       //    drawing can be reopened and edited (not only viewed).
       let artworkId = savedIdRef.current
@@ -470,6 +485,8 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       // Keep a recovery copy so a failed save can never lose strokes.
       persistDraft(snapshot, savedIdRef.current, titleRef.current)
     }
+    // `clearDraft` is a module-level import, so its identity is stable and it
+    // must not be listed as a dependency.
   }, [language, persistDraft])
 
   saveRef.current = () => save(false)
@@ -610,8 +627,9 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
             <IconButton label={t('sketchEraser')} variant={tool === 'eraser' ? 'primary' : 'secondary'} onClick={() => setTool('eraser')}><EraserIcon size={17} /></IconButton>
           </div>
           <div className="sketch-toolbar__group sketch-palette" role="group" aria-label={t('sketchColor')}>
-            {/* Grouped palette, ordered lightest-last so ink stays reachable. */}
-            {PALETTE_GROUPS.flatMap((group) => group.colors).map((swatch) => (
+            {/* A small always-visible row of the most-used colours, so common
+                picks take one tap without opening the full picker. */}
+            {STUDIO_PALETTE_FLAT.slice(0, 6).map((swatch) => (
               <button
                 key={swatch}
                 type="button"
@@ -634,16 +652,17 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
                 onClick={() => { setColor(swatch); setTool('pencil') }}
               />
             ))}
-            {/* Custom colour: the native picker emits the same #rrggbb form. */}
-            <label className="sketch-swatch sketch-swatch--custom" title={t('sketchCustomColor')}>
-              <input
-                type="color"
-                value={color}
-                aria-label={t('sketchCustomColor')}
-                onChange={(event) => { setColor(event.target.value); rememberColor(event.target.value) }}
-              />
-              <span aria-hidden="true" style={{ background: color }} />
-            </label>
+            {/* The full wheel: opened on demand so it never shrinks the canvas. */}
+            <button
+              type="button"
+              className="sketch-swatch sketch-swatch--wheel"
+              style={{ background: `conic-gradient(#ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)` }}
+              aria-label={t('sketchColorWheel')}
+              aria-expanded={paletteOpen}
+              onClick={() => setPaletteOpen((open) => !open)}
+            >
+              <span className="sketch-swatch__current" style={{ background: color }} aria-hidden="true" />
+            </button>
           </div>
 
           <div className="sketch-toolbar__group" role="group" aria-label={t('sketchShape')}>
@@ -690,6 +709,20 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
             ))}
           </div>
         </div>
+
+        {/* The colour wheel lives in its own panel so opening it never shrinks
+            the canvas: on wide screens it sits beside the toolbar, on narrow
+            screens it overlays. */}
+        {paletteOpen && (
+          <div className="sketch-wheel-panel">
+            <ColorPicker
+              value={color}
+              compact
+              onChange={(hex) => { setColor(hex); setTool('pencil') }}
+              onCommit={rememberColor}
+            />
+          </div>
+        )}
 
         <div className="sketch-surface">
           <canvas

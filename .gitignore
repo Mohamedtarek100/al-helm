@@ -48,3 +48,10 @@ al-helm-app-deploy/
 qa-artifacts/
 *.log
 scripts/qa/probe-*.mjs
+
+# Development preview harness — static fixture data that must never be tracked
+# or shipped. The harness itself has been removed; these entries also stop a
+# future one from being committed by accident. `vite.config.ts` independently
+# fails any build that pulls preview markers into the bundle.
+.preview/
+.preview-dist/

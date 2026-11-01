@@ -1,15 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseDocument, serializeDocument, emptyDocument, isEmptyDocument, elementCount, DRAWING_MODEL_VERSION } from './drawing'
-import {
-  PALETTE,
-  PALETTE_GROUPS,
-  MAX_RECENT_COLORS,
-  isHexColor,
-  normalizeHex,
-  pushRecentColor,
-  parseRecentColors,
-  contrastTextFor,
-} from './drawingPalette'
+import { MAX_RECENT_COLORS, isHexColor, normalizeHex, pushRecentColor, parseRecentColors, contrastTextFor } from './drawingPalette'
+import { STUDIO_PALETTE, STUDIO_PALETTE_FLAT } from './colorWheel'
 
 /**
  * Dream Studio v3: palette + shapes/text model, with backward compatibility.
@@ -28,8 +20,10 @@ const v2Doc = {
 
 describe('palette', () => {
   it('exposes a flat list derived from the groups', () => {
-    expect(PALETTE.length).toBe(PALETTE_GROUPS.flatMap((g) => g.colors).length)
-    expect(PALETTE.every(isHexColor)).toBe(true)
+    // The palette has ONE home (colorWheel.ts); this asserts the flat list the
+    // toolbar renders is genuinely derived from the grouped source.
+    expect(STUDIO_PALETTE_FLAT.length).toBe(STUDIO_PALETTE.flatMap((group) => group.colors).length)
+    expect(STUDIO_PALETTE_FLAT.every(isHexColor)).toBe(true)
   })
 
   it('accepts only 6-digit hex', () => {

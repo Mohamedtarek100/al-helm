@@ -65,11 +65,20 @@ describe('admin edge client contract', () => {
   })
 
   it('getAdminUsers forwards page and search', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse({ users: [], page: 2, hasMore: false }))
-    const res = await getAdminUsers(2, 'ali')
+    fetchMock.mockResolvedValueOnce(okResponse({ users: [], page: 2, perPage: 20, total: 0, hasMore: false, truncated: false }))
+    const res = await getAdminUsers({ page: 2, search: 'ali' })
     expect(res.hasMore).toBe(false)
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body).toEqual({ action: 'users', page: 2, search: 'ali' })
+  })
+
+  it('getAdminUsers forwards the server-side filters and sort', async () => {
+    fetchMock.mockResolvedValueOnce(okResponse({ users: [], page: 1, perPage: 10, total: 0, hasMore: false, truncated: false }))
+    await getAdminUsers({ page: 1, perPage: 10, activity: 'active7', push: 'opted_in', sort: 'last_seen', search: '' })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    // Filtering must be expressed in the request: the browser must never be
+    // asked to filter a page it already holds.
+    expect(body).toEqual({ action: 'users', page: 1, perPage: 10, activity: 'active7', push: 'opted_in', sort: 'last_seen', search: '' })
   })
 
   it('user rows use the pushOptIn field (not optedIn) — contract regression', async () => {
@@ -81,7 +90,7 @@ describe('admin edge client contract', () => {
       page: 1,
       hasMore: false,
     }))
-    const res = await getAdminUsers(1)
+    const res = await getAdminUsers({ page: 1 })
     expect(res.users[0].pushOptIn).toBe(true)
     expect('optedIn' in res.users[0]).toBe(false)
   })

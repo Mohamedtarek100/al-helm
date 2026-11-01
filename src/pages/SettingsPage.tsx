@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Field, TextInput, Toggle } from '../components/Field'
@@ -22,11 +22,21 @@ export function SettingsPage() {
   const input = useRef<HTMLInputElement>(null)
   const [confirm, setConfirm] = useState(false)
   const [importing, setImporting] = useState(false)
-  const [name, setName] = useState(profile.displayName)
-  const [motto, setMotto] = useState(profile.motto)
+  /**
+   * Edits are tracked as an OVERRIDE, not as a copy of the profile.
+   *
+   * `null` means "no local edit yet — show the stored profile". This replaces a
+   * state-resetting effect: the previous version copied the profile into state
+   * and then re-synced it in an effect, which rendered the stale value first and
+   * would discard an in-progress edit as soon as a background cloud sync
+   * rewrote `profile`.
+   */
+  const [draft, setDraft] = useState<{ name: string; motto: string } | null>(null)
   const [savingProfile, setSavingProfile] = useState(false)
-
-  useEffect(() => { setName(profile.displayName); setMotto(profile.motto) }, [profile.displayName, profile.motto])
+  const name = draft?.name ?? profile.displayName
+  const motto = draft?.motto ?? profile.motto
+  const setName = (value: string) => setDraft((current) => ({ name: value, motto: current?.motto ?? profile.motto }))
+  const setMotto = (value: string) => setDraft((current) => ({ name: current?.name ?? profile.displayName, motto: value }))
 
   const backup = () => {
     try {
@@ -55,6 +65,9 @@ export function SettingsPage() {
     setSavingProfile(true)
     try {
       await updateProfile({ displayName: name.trim() || (en ? 'Artist' : 'فنانة'), motto })
+      // Hand the fields back to the stored profile: the write is confirmed, so
+      // the override is no longer needed and later syncs can show through.
+      setDraft(null)
       notify(t('save'), 'success')
     } catch (error) {
       notify(error instanceof Error ? error.message : t('retry'), 'danger')
@@ -75,7 +88,7 @@ export function SettingsPage() {
               <Field label={t('profileName')} className="form-grid__full">
                 <TextInput value={name} onChange={(event) => setName(event.target.value)} maxLength={60} />
               </Field>
-              <Field label={t('dailyGoal')} className="form-grid__full" hint={t('intentionHint')}>
+              <Field label={t('intentionHint')} className="form-grid__full">
                 <TextInput value={motto} onChange={(event) => setMotto(event.target.value)} maxLength={140} />
               </Field>
             </div>

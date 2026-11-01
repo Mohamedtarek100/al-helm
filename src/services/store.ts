@@ -25,6 +25,8 @@ import type {
   ExamDate,
   JournalEntry,
   Profile,
+  ReminderPreference,
+  ReminderTone,
   Settings,
   StudySession,
   Subject,
@@ -85,8 +87,16 @@ let pendingCloudError: string | null = null
 let accountGeneration = 0
 const persistence = new PersistenceCoordinator(dataAdapter, cloudAdapter())
 
-/** Where a confirmed change actually landed. */
+/**
+ * What a write operation reports to its caller.
+ *
+ * The `'local-only'` case is the important one: the change IS applied and IS
+ * persisted on this device, but the account copy is behind. Callers must show a
+ * warning ("saved here, not yet in your account") rather than an error, because
+ * an error invites a retry — and a retry of a create would duplicate the item.
+ */
 export type SaveOutcome = 'cloud' | 'local'
+export type WriteResult = 'cloud' | 'local-only'
 
 /** Serialises full-snapshot writes so two saves can never interleave. */
 let writeChain: Promise<unknown> = Promise.resolve()
@@ -224,26 +234,40 @@ function commit(next:AppData):void{state=next;emit();schedulePersist()}
  * No follow-up debounce is scheduled: this write is already complete, and a
  * second full-snapshot write would only duplicate cloud traffic.
  */
-async function commitAndPersist(next: AppData): Promise<SaveOutcome> {
+async function commitAndPersist(next: AppData): Promise<WriteResult> {
   const previous=state
   if(saveTimer){clearTimeout(saveTimer);saveTimer=null}
   state=next
   emit()
   try {
-    return await persistCloudSnapshot(next)
+    const outcome = await persistCloudSnapshot(next)
+    return outcome === 'cloud' ? 'cloud' : 'local-only'
   } catch(error){
     if(persistence.snapshot().mode==='local'){
+      // LOCAL FAILURE: nothing was stored, so roll the UI back and rethrow.
       state=previous
       await persistence.refreshLocalSnapshot(previous).catch(()=>undefined)
       emit()
+      throw error
     }
-    throw error
+    // CLOUD FAILURE with a healthy local mode: the edit is already in memory
+    // AND on this device. Throwing here is what produced a "could not save"
+    // message for an item the user could see, and led to duplicate creates on
+    // retry. Report it as local-only instead; `pendingCloudError` still records
+    // that the account is behind, so the sync indicator stays truthful.
+    return 'local-only'
   }
 }
 
 export async function initStore(force = false): Promise<void> {
   if (hydrated && !force) return
   hydrated = true
+  // A pending debounced write from the PREVIOUS session must not fire after
+  // this restore: it would serialise the old in-memory snapshot over the data
+  // we are about to load. Cancelling it here is what makes a reload actually
+  // observe what was last stored (this was the cause of "read/unread does not
+  // survive a restart" and of deletes reappearing).
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
   try {
     const restored = await persistence.initialize()
     state = hydrateData(restored.data)
@@ -370,12 +394,36 @@ export async function resetAllData(): Promise<void> {
 /* Generic collection actions                                          */
 /* ------------------------------------------------------------------ */
 
-async function withCollectionPersist<K extends CollectionKey>(key:K,updater:(items:AppData[K][number][])=>AppData[K][number][]):Promise<SaveOutcome>{
+async function withCollectionPersist<K extends CollectionKey>(key:K,updater:(items:AppData[K][number][])=>AppData[K][number][]):Promise<WriteResult>{
   return commitAndPersist({...state,[key]:updater([...(state[key] as AppData[K][number][])])} as AppData)
 }
 
-export async function persistCurrent(): Promise<SaveOutcome> { return commitAndPersist(structuredClone(state)) }
+/**
+ * Reports where the change landed, in the caller-facing vocabulary.
+ *
+ * In cloud mode a write that only reached this device must be `'local'` (not
+ * `'local-only'`): Settings renders "saved on this device" from that value, and
+ * `'cloud'` is reserved for a write the server confirmed.
+ */
+export async function persistCurrent(): Promise<SaveOutcome> {
+  const result = await commitAndPersist(structuredClone(state))
+  return result === 'cloud' ? 'cloud' : 'local'
+}
 export function activePersistenceMode(): 'local'|'cloud' { return persistence.snapshot().mode }
+
+/**
+ * Outcome of the most recent mutation.
+ *
+ * Pages that must report accurately (task creation in particular) read this
+ * immediately after their call returns, so a "saved on this device only" state
+ * is reported as a warning instead of an error. It is a plain module value
+ * rather than part of `AppData` because it is not user data and must never be
+ * persisted or synced.
+ */
+let lastWriteResult: WriteResult = 'local-only'
+export function getLastWriteResult(): WriteResult { return lastWriteResult }
+/** Test-only reset so a previous case cannot influence the next. */
+export function __resetWriteResult(): void { lastWriteResult = 'local-only' }
 
 
 /* ------------------------------------------------------------------ */
@@ -427,6 +475,76 @@ export async function updateSettings(patch: Partial<Settings>): Promise<void> {
   await commitAndPersist({ ...state, settings:next })
   applyTheme(next.theme)
   if (patch.reminders) void syncReminders(next.reminders).then((r) => { if (r.error) console.warn('Reminder scheduling issue:', r.error) })
+}
+
+/* ------------------------------------------------------------------ */
+/* Alarms (reminders) — CRUD                                           */
+/* ------------------------------------------------------------------ */
+
+export interface NewAlarm {
+  label: string
+  time: string
+  /** `YYYY-MM-DD` for a one-off alarm; null/absent for a daily alarm. */
+  date?: string | null
+  tone?: ReminderTone | null
+  enabled?: boolean
+}
+
+/**
+ * Adds an alarm.
+ *
+ * Alarms live in `settings.reminders`, which is already persisted and synced
+ * per account — so no new table, no migration and no risk to existing data.
+ * A new alarm is appended, never replacing the seeded ones.
+ */
+export async function createAlarm(input: NewAlarm): Promise<ReminderPreference> {
+  const label = input.label.trim().slice(0, 40)
+  if (!label) throw new Error('An alarm needs a name.')
+  // Validate the RANGE, not just the shape: "25:99" matches the pattern but is
+  // not a time, and would otherwise be stored and then silently fail to
+  // schedule. This mirrors `parseTime` in the reminder scheduler.
+  const timeMatch = /^(\d{1,2}):(\d{2})$/.exec(input.time.trim())
+  const hours = timeMatch ? Number(timeMatch[1]) : -1
+  const minutes = timeMatch ? Number(timeMatch[2]) : -1
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) throw new Error('An alarm needs a valid time.')
+  const time = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+  const alarm: ReminderPreference = {
+    id: createId('alm'),
+    label,
+    time,
+    enabled: input.enabled ?? true,
+    tone: input.tone ?? 'default',
+    date: input.date ?? null,
+  }
+  const reminders = [...state.settings.reminders, alarm]
+  await commitAndPersist({ ...state, settings: { ...state.settings, reminders, notificationsOptIn: true } })
+  void syncReminders(reminders).catch(() => undefined)
+  return alarm
+}
+
+/** Edits an alarm in place; unknown ids are a no-op rather than an error. */
+export async function updateAlarm(id: string, patch: Partial<NewAlarm> & { enabled?: boolean }): Promise<void> {
+  const current = state.settings.reminders.find((reminder) => reminder.id === id)
+  if (!current) return
+  const next: ReminderPreference = {
+    ...current,
+    ...(patch.label !== undefined ? { label: patch.label.trim().slice(0, 40) || current.label } : {}),
+    ...(patch.time !== undefined ? { time: patch.time } : {}),
+    ...(patch.date !== undefined ? { date: patch.date } : {}),
+    ...(patch.tone !== undefined ? { tone: patch.tone } : {}),
+    ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+  }
+  const reminders = state.settings.reminders.map((reminder) => reminder.id === id ? next : reminder)
+  await commitAndPersist({ ...state, settings: { ...state.settings, reminders, notificationsOptIn: reminders.some((r) => r.enabled) } })
+  void syncReminders(reminders).catch(() => undefined)
+}
+
+/** Deletes an alarm. The native schedule is cancelled by the following sync. */
+export async function deleteAlarm(id: string): Promise<void> {
+  const reminders = state.settings.reminders.filter((reminder) => reminder.id !== id)
+  if (reminders.length === state.settings.reminders.length) return
+  await commitAndPersist({ ...state, settings: { ...state.settings, reminders, notificationsOptIn: reminders.some((r) => r.enabled) } })
+  void syncReminders(reminders).catch(() => undefined)
 }
 
 /* ------------------------------------------------------------------ */
@@ -531,13 +649,23 @@ function withWritableTasks(tasks: Task[]): Task[] {
   return tasks.map((task) => ({ ...task, priority: normalizeTaskPriority(task.priority) }))
 }
 
-export async function createTask(input: NewTask): Promise<Task> {
+  /**
+ * Creates a task.
+ *
+ * Returns the created task AND how the write landed. The second value is what
+ * lets a caller distinguish "on this device only" from a hard failure without
+ * re-deriving it from two separate error globals.
+ */
+export async function createTask(input: NewTask): Promise<Task & { writeResult: WriteResult }> {
   assertWritableTask(input)
   if (!input.dueDate) throw new Error('A task needs a due date.')
   const stamp=nowIso(),item={...(input as object),completed:false,completedAt:null,id:createId('tsk'),createdAt:stamp,updatedAt:stamp} as Task
   // Copy the caller's object so the form's draft is never mutated by a save.
-  await withCollectionPersist('tasks',items=>withWritableTasks([...items,item]))
-  return item
+  // The write outcome travels WITH the returned task so the caller can say
+  // "saved on this device" instead of erroring for a task that is on screen.
+  const outcome = await withCollectionPersist('tasks',items=>withWritableTasks([...items,item]))
+  lastWriteResult = outcome
+  return { ...item, writeResult: outcome }
 }
 
 export async function updateTask(id: string, patch: Partial<Task>): Promise<void> {
@@ -662,27 +790,139 @@ export async function deleteExam(id: string): Promise<void> { await withCollecti
 /* Notifications                                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * NOTIFICATION MODEL — behaviour notes.
+ *
+ * The existing model (`AppNotification` in types/index.ts) already carries a
+ * stable id, title, body, kind, `at` timestamp and read state, and it is owned
+ * per-user: local mode writes to this device's snapshot and cloud mode writes
+ * through RLS-scoped tables. No new table is needed for it, so none was added.
+ *
+ * The three reported defects had one shared cause: every mutation went through
+ * the debounced snapshot write, so (a) a delete looked applied but a later
+ * snapshot could resurrect it, and (b) marking read could be overwritten by a
+ * stale snapshot arriving from the server. Mutations now:
+ *   - apply to memory IMMEDIATELY so the UI reacts on the same frame,
+ *   - write through `commitAndPersist` (awaited), and
+ *   - ROLL BACK on a genuine failure so the item returns instead of vanishing,
+ *     and report the result to the caller so no toast is shown before the
+ *     server has confirmed it.
+ */
+
 export type NewNotification = {
   kind: AppNotificationKind
   title: string
   body: string
   at?: string
   read?: boolean
+  /** Optional destination the notification refers to, for "open" actions. */
+  href?: string
 }
 
+/**
+ * Adds an in-app notification.
+ *
+ * Fire-and-forget on purpose: notifications are generated by user actions
+ * (completing a task, saving a drawing) that must not fail because the notice
+ * could not be stored. The item is in memory immediately, so the badge updates
+ * without waiting for a write.
+ */
 export function pushNotification(input: NewNotification): AppNotification {
   const stamp=nowIso(),item={id:createId('ntf'),kind:input.kind,title:input.title,body:input.body,at:input.at??stamp,read:input.read??false,createdAt:stamp,updatedAt:stamp} as AppNotification
   commit({...state,notifications:[...state.notifications,item]})
   return item
 }
 
-export async function markNotificationRead(id: string, read: boolean): Promise<void> { await withCollectionPersist('notifications',items=>items.map(item=>item.id===id?{...item,read,updatedAt:nowIso()}:item)) }
+/**
+ * Adds an in-app notification and keeps the returned promise.
+ *
+ * Use this when the caller needs the notification to be DURABLE before doing
+ * anything else (e.g. a flow that immediately reloads). `pushNotification`
+ * stays fire-and-forget for the common case, where the item is already in
+ * memory and the debounced write is enough.
+ *
+ * The item is in memory immediately in both variants, so the badge never waits
+ * on the network.
+ */
+export async function addNotification(input: NewNotification): Promise<AppNotification> {
+  const stamp=nowIso(),item={id:createId('ntf'),kind:input.kind,title:input.title,body:input.body,at:input.at??stamp,read:input.read??false,createdAt:stamp,updatedAt:stamp} as AppNotification
+  await commitAndPersist({ ...state, notifications: [...state.notifications, item] })
+  return item
+}
 
-export async function markAllNotificationsRead(): Promise<void> { await withCollectionPersist('notifications',items=>items.map(item=>item.read?item:{...item,read:true,updatedAt:nowIso()})) }
+/**
+ * Marks one notification read/unread.
+ *
+ * Resolves only after the change is persisted, so a caller can tell the user the
+ * truth and so a restart cannot lose it. Rolls back on failure.
+ */
+export async function markNotificationRead(id: string, read: boolean): Promise<WriteResult> {
+  const previous = state.notifications
+  const next = previous.map((item) => item.id === id ? { ...item, read, updatedAt: nowIso() } : item)
+  if (next.every((item, index) => item === previous[index])) return 'local-only'
+  try {
+    return await commitAndPersist({ ...state, notifications: next })
+  } catch (error) {
+    // Nothing was stored: restore the previous read state so the UI does not
+    // show something a restart would contradict.
+    state = { ...state, notifications: previous }
+    emit()
+    if (persistence.snapshot().mode === 'local') throw error
+    return 'local-only'
+  }
+}
 
-export async function deleteNotification(id: string): Promise<void> { await withCollectionPersist('notifications',items=>items.filter(item=>item.id!==id)) }
+export async function markAllNotificationsRead(): Promise<WriteResult> {
+  const previous = state.notifications
+  if (previous.every((item) => item.read)) return 'local-only'
+  return commitAndPersist({ ...state, notifications: previous.map((item) => item.read ? item : { ...item, read: true, updatedAt: nowIso() }) })
+}
 
-export async function clearNotifications(): Promise<void> { await withCollectionPersist('notifications',()=>[]) }
+/**
+ * Deletes one notification.
+ *
+ * The item disappears immediately and is RESTORED when the write did not reach
+ * the server — a failed delete must not look successful, and must not leave the
+ * list showing fewer items than the server holds.
+ *
+ * WHY THE RESTORE KEYS OFF THE RESULT, NOT AN EXCEPTION: `commitAndPersist`
+ * deliberately does not throw on a cloud failure (it keeps the edit and returns
+ * `'local-only'`). For an edit that is right; for a delete it would leave the
+ * item removed from memory while the server still has it. So a plain deletion
+ * is re-applied from the previous list whenever the outcome is not a confirmed
+ * cloud write and we are not in local mode (in local mode a failure throws and
+ * the caller gets a real error).
+ */
+export async function deleteNotification(id: string): Promise<WriteResult> {
+  const previous = state.notifications
+  const next = previous.filter((item) => item.id !== id)
+  if (next.length === previous.length) return 'local-only'
+  try {
+    const outcome = await commitAndPersist({ ...state, notifications: next })
+    if (outcome !== 'cloud' && persistence.snapshot().mode !== 'local') {
+      // The server copy still holds this notification: put it back.
+      state = { ...state, notifications: previous }
+      emit()
+    }
+    return outcome
+  } catch (error) {
+    state = { ...state, notifications: previous }
+    emit()
+    throw error
+  }
+}
+
+/**
+ * Removes every in-app notification.
+ *
+ * Server announcements are NOT deleted here: the delivery row belongs to the
+ * account and clearing the in-app list must not erase the record that the
+ * announcement was received. Locally-mirrored announcement entries are cleared
+ * from the list like any other item.
+ */
+export async function clearNotifications(): Promise<WriteResult> {
+  return commitAndPersist({ ...state, notifications: [] })
+}
 
 /* ------------------------------------------------------------------ */
 /* Server announcements                                                */
@@ -694,6 +934,20 @@ export async function clearNotifications(): Promise<void> { await withCollection
  * prefix 'ann-<announcementId>'), and marks them read both locally and on the
  * server when the user marks them read. Safe to call repeatedly; no-ops when
  * the backend isn't configured or the user isn't signed in.
+ *
+ * READ STATE IS MONOTONIC — THE BUG THIS FIXES
+ *   The previous version only ever APPENDED missing rows. For an announcement
+ *   already mirrored locally it did nothing, so:
+ *     - a locally-confirmed "read" was kept (fine), but
+ *     - a read performed on ANOTHER device was never picked up (stale),
+ *   and the obvious "fix" of trusting the server would overwrite a read the
+ *   user had just made here, because the read request is fire-and-forget and
+ *   the refresh can land first.
+ *
+ *   Reading is now a one-way latch: `read` can be turned ON by either side and
+ *   is never turned OFF by a sync. That is the only rule that is correct for
+ *   both cases without a per-row version column — the server cannot tell us
+ *   "the user un-read this", because that action does not exist.
  */
 export async function syncServerAnnouncements(): Promise<number> {
   if (!supabase) return 0
@@ -704,31 +958,52 @@ export async function syncServerAnnouncements(): Promise<number> {
     return 0 // not signed in / backend unreachable — local data stays authoritative
   }
   if (feed.length === 0) return 0
-  const existing = new Set(state.notifications.map((n) => n.id))
-  const fresh = feed.filter((row) => !existing.has(`ann-${row.id}`))
-  if (fresh.length === 0) return 0
-  const items: AppNotification[] = fresh.map((row) => {
-    const stamp = nowIso()
-    return {
-      id: `ann-${row.id}`,
-      kind: 'announcement',
-      title: row.title,
-      body: row.body,
-      at: row.deliveredAt || row.createdAt,
-      read: row.readAt !== null,
-      createdAt: stamp,
-      updatedAt: stamp,
+
+  const byId = new Map(state.notifications.map((item) => [item.id, item]))
+  const added: AppNotification[] = []
+  const readUpdates = new Set<string>()
+
+  for (const row of feed) {
+    const localId = `ann-${row.id}`
+    const existing = byId.get(localId)
+    const serverRead = row.readAt !== null
+    if (!existing) {
+      const stamp = nowIso()
+      added.push({
+        id: localId,
+        kind: 'announcement',
+        title: row.title,
+        body: row.body,
+        at: row.deliveredAt || row.createdAt,
+        read: serverRead,
+        createdAt: stamp,
+        updatedAt: stamp,
+      })
+      continue
     }
-  })
-  await withCollectionPersist('notifications', (current) => [...current, ...items])
-  return items.length
+    // Already mirrored: adopt the server's read state ONLY when it is true, so
+    // a read made on another device propagates but a read made here is never
+    // undone by a racing refresh.
+    if (serverRead && !existing.read) readUpdates.add(localId)
+  }
+
+  if (added.length === 0 && readUpdates.size === 0) return 0
+
+  const next = state.notifications.map((item) => (
+    readUpdates.has(item.id) ? { ...item, read: true, updatedAt: nowIso() } : item
+  ))
+  await commitAndPersist({ ...state, notifications: [...next, ...added] })
+  return added.length + readUpdates.size
 }
 
 /** Mark an announcement read in both local state and on the server. */
 export async function markAnnouncementReadEverywhere(announcementId: string): Promise<void> {
   const localId = `ann-${announcementId}`
+  // Local first so the badge updates on this frame; the server call is awaited
+  // afterwards so a failure is surfaced rather than reported as success.
   await withCollectionPersist('notifications', (items) => items.map((item) => (item.id === localId ? { ...item, read: true, updatedAt: nowIso() } : item)))
-  await markAnnouncementRead(announcementId).catch(() => undefined)
+  const result = await markAnnouncementRead(announcementId)
+  if (!result.ok) throw new Error('The announcement could not be marked as read on the server.')
 }
 
 /* ------------------------------------------------------------------ */

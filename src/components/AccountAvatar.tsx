@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { resolveProfilePhoto } from '../services/profilePhoto'
 
 /**
@@ -19,12 +19,13 @@ export interface AccountAvatarProps {
 
 export function AccountAvatar({ user, size = 40, className }: AccountAvatarProps) {
   const { url, displayName, initial } = resolveProfilePhoto(user, Math.max(192, size * 3))
-  const [failed, setFailed] = useState(false)
+  // The failure is remembered TOGETHER WITH the URL that failed, so a new
+  // account (or a changed photo) clears it by derivation instead of by a
+  // state-resetting effect. That removes a cascading render on every avatar
+  // mount and cannot flash a stale failure for a different photo.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null)
 
-  // A new account (or a changed photo) must clear a previous failure.
-  useEffect(() => { setFailed(false) }, [url])
-
-  const showImage = Boolean(url) && !failed
+  const showImage = Boolean(url) && failedUrl !== url
   const label = displayName || 'Account'
 
   return (
@@ -42,7 +43,7 @@ export function AccountAvatar({ user, size = 40, className }: AccountAvatarProps
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
-          onError={() => setFailed(true)}
+          onError={() => setFailedUrl(url as string)}
         />
       ) : (
         <span className="account-avatar__initial" role="img" aria-label={label}>
