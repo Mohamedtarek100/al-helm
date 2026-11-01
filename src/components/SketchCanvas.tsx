@@ -9,7 +9,7 @@ import { useI18n } from '../i18n/useI18n'
 import { compositeLayers, createLayers, renderInkLayer, type InkLayers } from '../services/inkLayers'
 import {
   CANVAS_H, CANVAS_W, PAPER_SWATCH, appendPoint, clearDraft, emptyDocument,
-  loadDraft, parseDocument, pointFromClient, redoStroke, renderDocument, saveDraft, undoStroke,
+  loadDraft, parseDocument, pointFromClient, renderDocument, saveDraft,
   type DrawingDocument, type PaperKind, type Point, type Shape, type ShapeKind, type Stroke, type TextElement, type Tool,
 } from '../services/drawing'
 import { makeId } from '../services/drawing'
@@ -74,14 +74,18 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   const [viewport, setViewport] = useState<Viewport>(DEFAULT_VIEWPORT)
   const [selected, setSelected] = useState<ElementRef | null>(null)
   /** In-flight selection drag and pan gesture (refs: never stale). */
-  const dragRef = useRef<{ ref: ElementRef; last: Point; bounds: Bounds | null } | null>(null)
+  const dragRef = useRef<{ ref: ElementRef; last: Point; bounds: Bounds | null; origin: DrawingDocument } | null>(null)
   const panStartRef = useRef<{ x: number; y: number } | null>(null)
   /** Latest viewport, for pointer handlers (which must not capture stale state). */
   const viewportRef = useRef<Viewport>(DEFAULT_VIEWPORT)
   /** The shape being dragged (not yet committed). */
   const pendingShapeRef = useRef<Shape | null>(null)
   const [pendingShape, setPendingShape] = useState<Shape | null>(null)
-  const [redo, setRedo] = useState<Stroke[]>([])
+  // Document snapshots provide chronological undo/redo across strokes, shapes,
+  // text, erasing, background changes, deletion and clear operations.
+  const [undoStack, setUndoStack] = useState<DrawingDocument[]>([])
+  const [redoStack, setRedoStack] = useState<DrawingDocument[]>([])
+  const HISTORY_LIMIT = 100
   const [drawing, setDrawing] = useState(false)
   const [title, setTitle] = useState(() => loadDraft(null)?.title ?? '')
   const [savedId, setSavedId] = useState<string | null>(() => loadDraft(null)?.artworkId ?? null)
@@ -173,14 +177,20 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     }, DRAFT_DEBOUNCE_MS)
   }, [persistDraft])
 
-  const updateDoc = useCallback((next: DrawingDocument) => {
+  const updateDoc = useCallback((
+    next: DrawingDocument,
+    options: { recordHistory?: boolean; preserveSelection?: boolean } = {},
+  ) => {
+    const previous = docRef.current
+    if (options.recordHistory !== false && previous !== next) {
+      setUndoStack((stack) => [...stack, previous].slice(-HISTORY_LIMIT))
+      setRedoStack([])
+    }
     docRef.current = next
     setDoc(next)
-    // Selection is POSITIONAL, so every path that structurally changes the
-    // document drops it in the same update. Previously an effect watched the
-    // element counts and cleared the selection afterwards; that left one
-    // render in which the delete button pointed at a shifted element.
-    setSelected(null)
+    // Selection is positional. Structural updates clear it unless the caller
+    // explicitly preserves the selection during a drag gesture.
+    if (!options.preserveSelection) setSelected(null)
     markDirty()
   }, [markDirty])
 
@@ -213,7 +223,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       setSelected(hit)
       if (hit) {
         const bounds = elementBounds(docRef.current, hit)
-        dragRef.current = { ref: hit, last: at, bounds }
+        dragRef.current = { ref: hit, last: at, bounds, origin: docRef.current }
         setDrawing(true)
       }
       return
@@ -226,7 +236,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       if (text && text.trim()) {
         const element: TextElement = { id: makeId('txt'), x: at.x, y: at.y, text: text.trim(), color, size: Math.max(12, size * 6) }
         updateDoc({ ...docRef.current, texts: [...(docRef.current.texts ?? []), element] })
-        setRedo([])
+        setRedoStack([])
       }
       return
     }
@@ -237,7 +247,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       pendingShapeRef.current = { id: makeId('shp'), kind: shapeKind, from, to: from, color, size }
       setPendingShape(pendingShapeRef.current)
       setDrawing(true)
-      setRedo([])
+      setRedoStack([])
       return
     }
 
@@ -264,7 +274,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       const at = toPoint(event)
       const next = moveElement(docRef.current, drag.ref, at.x - drag.last.x, at.y - drag.last.y)
       dragRef.current = { ...drag, last: at }
-      updateDoc(next)
+      updateDoc(next, { recordHistory: false, preserveSelection: true })
       return
     }
 
@@ -299,9 +309,14 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       return
     }
     if (dragRef.current) {
+      const drag = dragRef.current
       dragRef.current = null
       setDrawing(false)
-      setRedo([])
+      // One drag is one history operation regardless of pointer-move count.
+      if (docRef.current !== drag.origin) {
+        setUndoStack((stack) => [...stack, drag.origin].slice(-HISTORY_LIMIT))
+        setRedoStack([])
+      }
       return
     }
     const shape = pendingShapeRef.current
@@ -331,48 +346,21 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
 
   /* ---------------- history & tools ---------------- */
 
-  /**
-   * Undo removes the most recent element of ANY kind, in true drawing order:
-   * text, then shapes, then strokes. Keeps undo predictable after the v3 tools.
-   */
+  /** Undo and redo complete document snapshots in actual operation order. */
   const undo = () => {
-    const current = docRef.current
-    if ((current.texts?.length ?? 0) > 0) {
-      const texts = [...(current.texts ?? [])]
-      const removed = texts.pop() as TextElement
-      updateDoc({ ...current, texts })
-      setRedo([{ kind: 'text', element: removed }] as never)
-      return
-    }
-    if ((current.shapes?.length ?? 0) > 0) {
-      const shapes = [...(current.shapes ?? [])]
-      const removed = shapes.pop() as Shape
-      updateDoc({ ...current, shapes })
-      setRedo([{ kind: 'shape', shape: removed }] as never)
-      return
-    }
-    if (current.strokes.length === 0) return
-    const history = undoStroke({ strokes: current.strokes, redo: [] })
-    updateDoc({ ...current, strokes: history.strokes })
-    setRedo(history.redo)
+    if (!undoStack.length) return
+    const previous = undoStack[undoStack.length - 1]
+    setUndoStack((stack) => stack.slice(0, -1))
+    setRedoStack((stack) => [...stack, docRef.current].slice(-HISTORY_LIMIT))
+    updateDoc(previous, { recordHistory: false })
   }
 
   const redoAction = () => {
-    if (redo.length === 0) return
-    const first = redo[0] as unknown as { kind?: string; element?: TextElement; shape?: Shape }
-    if (first.kind === 'text' && first.element) {
-      updateDoc({ ...docRef.current, texts: [...(docRef.current.texts ?? []), first.element] })
-      setRedo([])
-      return
-    }
-    if (first.kind === 'shape' && first.shape) {
-      updateDoc({ ...docRef.current, shapes: [...(docRef.current.shapes ?? []), first.shape] })
-      setRedo([])
-      return
-    }
-    const history = redoStroke({ strokes: docRef.current.strokes, redo })
-    updateDoc({ ...docRef.current, strokes: history.strokes })
-    setRedo(history.redo)
+    if (!redoStack.length) return
+    const next = redoStack[redoStack.length - 1]
+    setRedoStack((stack) => stack.slice(0, -1))
+    setUndoStack((stack) => [...stack, docRef.current].slice(-HISTORY_LIMIT))
+    updateDoc(next, { recordHistory: false })
   }
 
   const changePaper = (paper: PaperKind) => updateDoc({ ...docRef.current, paper })
@@ -689,9 +677,9 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
             <span className="sketch-size__value">{size}</span>
           </label>
           <div className="sketch-toolbar__group">
-            <IconButton label={t('undo')} size="sm" onClick={undo} disabled={doc.strokes.length === 0}><UndoIcon size={16} /></IconButton>
-            <IconButton label={t('redo')} size="sm" onClick={redoAction} disabled={redo.length === 0}><RedoIcon size={16} /></IconButton>
-            <IconButton label={t('clearCanvas')} size="sm" variant="danger" onClick={() => setConfirmClear(true)} disabled={doc.strokes.length === 0}><TrashIcon size={16} /></IconButton>
+            <IconButton label={t('undo')} size="sm" onClick={undo} disabled={undoStack.length === 0}><UndoIcon size={16} /></IconButton>
+            <IconButton label={t('redo')} size="sm" onClick={redoAction} disabled={redoStack.length === 0}><RedoIcon size={16} /></IconButton>
+            <IconButton label={t('clearCanvas')} size="sm" variant="danger" onClick={() => setConfirmClear(true)} disabled={doc.strokes.length === 0 && (doc.shapes?.length ?? 0) === 0 && (doc.texts?.length ?? 0) === 0}><TrashIcon size={16} /></IconButton>
           </div>
           <div className="sketch-papers" role="radiogroup" aria-label={t('sketchBackground')}>
             {(['white', 'cream', 'grid'] as PaperKind[]).map((paper) => (
