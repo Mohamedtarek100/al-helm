@@ -13,6 +13,7 @@
     "check:edge": "tsc -p supabase/tsconfig.json --noEmit",
     "check:migrations": "node scripts/check-migrations.mjs",
     "check:secrets": "node scripts/qa/bundle-secret-scan.mjs",
+    "check:upgrade": "node scripts/qa/verify-android-upgrade-gate.mjs",
     "gen:migrations": "node scripts/gen-migrations.mjs",
     "check": "npm run check:types && npm run check:edge && npm run test:i18n && npm run test && npm run lint && npm run build && npm run check:secrets",
     "preview": "vite preview",
