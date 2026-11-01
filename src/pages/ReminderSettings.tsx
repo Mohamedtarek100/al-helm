@@ -260,9 +260,20 @@ export function ReminderSettings() {
       } else {
         await createAlarm({ label: form.label, time: form.time, date: form.date || null, tone: form.tone, enabled })
       }
+      const result = await resync()
+      if (supported && result?.error) {
+        setLastResult(result)
+        setFormError(result.error === 'permission_denied' ? t('testNotificationPermission') : result.error)
+        notify(result.error === 'permission_denied' ? t('testNotificationPermission') : result.error, 'danger')
+        return
+      }
+      if (!supported) {
+        setLastResult({ scheduled: 0, permissionGranted: false, webUnsupported: true, error: null })
+      }
       setDialogOpen(false)
-      notify(t('alarmSaved'), 'success')
-      await resync()
+      notify(!supported
+        ? (en ? 'Saved in the app. System alarms require the Android app.' : 'تم الحفظ داخل التطبيق. المنبهات الفعلية تحتاج تطبيق Android.')
+        : t('alarmSaved'), supported ? 'success' : 'warning')
     } catch (error) {
       setFormError(error instanceof Error ? error.message : t('retry'))
     }
