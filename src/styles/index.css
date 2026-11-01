@@ -18,3 +18,5 @@
 @import './components-addendum.css';
 @import './account.css';
 @import './admin.css';
+/* Production UX refresh overrides for drawing, alarms, notifications and tasks. */
+@import './production-ux-refresh.css';
