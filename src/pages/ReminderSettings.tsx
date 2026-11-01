@@ -242,40 +242,82 @@ export function ReminderSettings() {
   }
 
   const submitAlarm = async () => {
+    setFormError(null)
     if (!form.label.trim()) { setFormError(t('alarmTitleRequired')); return }
     if (!/^\d{2}:\d{2}$/.test(form.time)) { setFormError(t('alarmTimeRequired')); return }
-    // Enabling an alarm without notification permission would silently never
-    // ring, so permission is requested FIRST and the alarm is left off if denied.
+    if (form.date) {
+      const requestedAt = new Date(`${form.date}T${form.time}:00`)
+      if (Number.isNaN(requestedAt.getTime()) || requestedAt.getTime() <= Date.now()) {
+        setFormError(en ? 'Choose a date and time in the future.' : 'اختار تاريخ ووقت في المستقبل.')
+        return
+      }
+    }
+
+    // Save preference state and OS scheduling are separate operations. A
+    // scheduling failure must never leave the form open and create duplicates
+    // when the user retries an alarm that was already saved.
     let enabled = true
+    let permissionDenied = false
     if (supported) {
       const granted = await requestReminderPermission()
       if (!granted) {
         enabled = false
-        setLastResult({ scheduled: 0, permissionGranted: false, webUnsupported: false, error: 'permission_denied' })
+        permissionDenied = true
       }
     }
+
     try {
       if (editingId) {
-        await updateAlarm(editingId, { label: form.label, time: form.time, date: form.date || null, tone: form.tone, enabled })
+        await updateAlarm(editingId, { label: form.label.trim(), time: form.time, date: form.date || null, tone: form.tone, enabled })
       } else {
-        await createAlarm({ label: form.label, time: form.time, date: form.date || null, tone: form.tone, enabled })
+        await createAlarm({ label: form.label.trim(), time: form.time, date: form.date || null, tone: form.tone, enabled })
       }
+    } catch (error) {
+      // The record was not saved, so keep the form and its contents available.
+      setFormError(error instanceof Error ? error.message : t('retry'))
+      return
+    }
+
+    setDialogOpen(false)
+    if (!supported) {
+      setLastResult({ scheduled: 0, permissionGranted: false, webUnsupported: true, error: null })
+      notify(en
+        ? 'Saved in the app only. Background system alarms require the Android app.'
+        : 'تم الحفظ داخل التطبيق فقط. تشغيل المنبه في الخلفية يحتاج تطبيق Android.',
+        'warning')
+      return
+    }
+
+    if (permissionDenied) {
+      setLastResult({ scheduled: 0, permissionGranted: false, webUnsupported: false, error: 'permission_denied' })
+      notify(t('testNotificationPermission'), 'warning')
+      return
+    }
+
+    try {
       const result = await resync()
-      if (supported && result?.error) {
-        setLastResult(result)
-        setFormError(result.error === 'permission_denied' ? t('testNotificationPermission') : result.error)
-        notify(result.error === 'permission_denied' ? t('testNotificationPermission') : result.error, 'danger')
+      if (result?.error || !result?.permissionGranted || (enabled && result.scheduled === 0)) {
+        const detail = result?.error || (enabled ? (en ? 'No upcoming alarm was scheduled.' : 'لم تتم جدولة أي منبه قادم.') : t('retry'))
+        setLastResult({
+          scheduled: result?.scheduled ?? 0,
+          permissionGranted: result?.permissionGranted ?? false,
+          webUnsupported: false,
+          error: detail,
+        })
+        notify(en
+          ? `Saved, but Android could not schedule this alarm: ${detail}`
+          : `تم حفظ المنبه، لكن Android لم يستطع جدولته: ${detail}`,
+          'danger')
         return
       }
-      if (!supported) {
-        setLastResult({ scheduled: 0, permissionGranted: false, webUnsupported: true, error: null })
-      }
-      setDialogOpen(false)
-      notify(!supported
-        ? (en ? 'Saved in the app. System alarms require the Android app.' : 'تم الحفظ داخل التطبيق. المنبهات الفعلية تحتاج تطبيق Android.')
-        : t('alarmSaved'), supported ? 'success' : 'warning')
+      notify(t('alarmSaved'), 'success')
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : t('retry'))
+      const detail = error instanceof Error ? error.message : t('retry')
+      setLastResult({ scheduled: 0, permissionGranted: true, webUnsupported: false, error: detail })
+      notify(en
+        ? `Saved, but alarm scheduling failed: ${detail}`
+        : `تم حفظ المنبه، لكن جدولة التنبيه فشلت: ${detail}`,
+        'danger')
     }
   }
 
