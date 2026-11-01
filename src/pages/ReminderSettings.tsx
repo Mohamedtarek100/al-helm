@@ -225,11 +225,13 @@ export function ReminderSettings() {
         const result = await sendTestNotification(tone)
         setTestResult(result.ok
           ? t('alarmPreviewSent')
-          : result.error === 'permission_denied' ? t('testNotificationPermission') : t('alarmPreviewFailed'))
+          : result.error === 'permission_denied' ? t('testNotificationPermission') : `${t('alarmPreviewFailed')}: ${result.error ?? ''}`)
         return
       }
       const preview = await previewTone(tone)
       setTestResult(preview.ok ? t('alarmPreviewWeb') : t('alarmNoSounds'))
+    } catch (error) {
+      setTestResult(error instanceof Error ? error.message : t('alarmPreviewFailed'))
     } finally {
       setTesting(false)
     }
@@ -244,6 +246,8 @@ export function ReminderSettings() {
       else if (result.error === 'web_unsupported') setTestResult(t('testNotificationWebUnsupported'))
       else if (result.error === 'permission_denied') setTestResult(t('testNotificationPermission'))
       else setTestResult(`${t('testNotificationFailed')}: ${result.error}`)
+    } catch (error) {
+      setTestResult(error instanceof Error ? error.message : t('testNotificationFailed'))
     } finally {
       setTesting(false)
     }
