@@ -515,6 +515,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     if (fromModel) {
       docRef.current = fromModel
       setDoc(fromModel)
+      setUndoStack([])
       setRedoStack([])
       setTitle(artwork.title)
       savedIdRef.current = artwork.id
@@ -526,7 +527,10 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       return
     }
     // Legacy drawing without a vector model: show the stored image on top of a
-    // blank page so new strokes can be added over it.
+    // blank page so new strokes can be added over it. Start a fresh history
+    // boundary so Undo never affects the artwork that was open previously.
+    setUndoStack([])
+    setRedoStack([])
     setTitle(artwork.title)
     titleRef.current = artwork.title
     savedIdRef.current = artwork.id
