@@ -4,6 +4,7 @@ import { PageFrame, PageHeading } from './PageFrame'
 import { useI18n } from '../i18n/useI18n'
 import { refreshAdminGate, useAdminGate } from '../services/edge/adminGate'
 import { logAdminAction } from '../services/edge/admin'
+import { useAdminHealth } from '../services/edge/adminHealth'
 import { useAdminPreferences } from '../services/edge/adminSettings'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
@@ -75,6 +76,10 @@ export function AdminPage() {
   // One audit entry per console visit (not per tab switch): the log answers
   // "who opened the console and when", and per-tab noise would bury it.
   const authorizedEmail = gateState.state === 'authorized' ? gateState.email : null
+  // Declared here, ABOVE the early returns, because hooks must run in the same
+  // order on every render. Reading a store hook after a conditional return
+  // would break the Rules of Hooks.
+  const health = useAdminHealth()
   useEffect(() => {
     if (!authorizedEmail) return
     void logAdminAction('app_open', null, { viewport: typeof window === 'undefined' ? 0 : window.innerWidth }).catch(() => undefined)
@@ -123,6 +128,24 @@ export function AdminPage() {
   // continues to do so.
   const activeTab = TABS.find((item) => item.id === tab) ?? TABS[0]
 
+  /**
+   * The topbar badge reports AUTHENTICATION and, once checks have run, the real
+   * health result. It never says "Verified" for checks that have not run.
+   *
+   * Previously it was a hardcoded `tone: 'ok', label: 'VERIFIED'`, which read as
+   * "everything is fine" while the Security panel listed checks as "Not checked".
+   */
+  const healthBadge = ((): { tone: 'ok' | 'warn' | 'error' | 'info' | 'muted'; label: string } => {
+    if (health.summary === 'checking') return { tone: 'info', label: t('acRunningChecks') }
+    if (health.summary === 'healthy') return { tone: 'ok', label: en ? 'All checks passed' : 'كل الفحوص نجحت' }
+    if (health.summary === 'degraded') return { tone: 'warn', label: en ? 'Degraded' : 'متدهور' }
+    if (health.summary === 'failed') return { tone: 'error', label: en ? 'Checks failed' : 'فشل الفحص' }
+    if (health.error) return { tone: 'warn', label: en ? 'Health unavailable' : 'الصحة غير متاحة' }
+    // Authorized but not yet checked: this is the honest state, and it must not
+    // borrow the word "verified".
+    return { tone: 'muted', label: en ? 'Not checked' : 'لم يُفحص' }
+  })()
+
   return (
     <AdminLayout
       nav={navItems}
@@ -132,7 +155,7 @@ export function AdminPage() {
       title={t(activeTab.key)}
       ownerEmail={gateState.email}
       authorization="authorized"
-      status={{ tone: 'ok', label: en ? 'Live' : 'مباشر' }}
+      status={healthBadge}
       onRefresh={() => { void refresh() }}
       labels={{
         openNav: t('acOpenNav'),

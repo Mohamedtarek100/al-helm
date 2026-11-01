@@ -96,6 +96,10 @@ export function AppShell() {
           <button className="language-toggle" type="button" onClick={() => setLanguage(language === 'en' ? 'ar' : 'en')} aria-label={language === 'en' ? 'Switch to Arabic' : 'Switch to English'}>{language === 'en' ? 'العربية' : 'English'}</button>
           <NavLink className="topbar-bell" to="/notifications" aria-label={t('notifications')}>
             <BellIcon size={20} />
+            {/* Red dot: present whenever any notification is unread, derived from
+                state so it appears on arrival without opening the page. The count
+                is shown as well when it fits. */}
+            {unread > 0 && <span className="topbar-dot" aria-hidden="true" />}
             {unread > 0 && <span className="topbar-badge">{unread}</span>}
           </NavLink>
           <NavLink className="topbar-bell" to="/settings" aria-label={t('settings')}>

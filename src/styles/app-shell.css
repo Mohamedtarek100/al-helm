@@ -69,3 +69,21 @@
 .theme-quick-toggle:hover{background:var(--paper-sunk);color:var(--ink);transform:translateY(-1px)}
 .theme-quick-toggle:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
 @media(max-width:420px){.theme-quick-toggle span{display:none}.theme-quick-toggle{padding:9px 11px}}
+
+/* Persistent unread dot on the notification bell.
+   Positioned so it cannot obscure the count badge (which sits top-right); the
+   dot marks "there is something new" even when the count is too small to read. */
+.topbar-dot{
+  position:absolute;
+  top:6px;
+  inset-inline-start:6px;
+  width:9px;
+  height:9px;
+  border-radius:50%;
+  background:#e5484d;
+  box-shadow:0 0 0 2px var(--paper-3);
+  pointer-events:none;
+  animation:topbar-dot-in 160ms var(--ease,ease-out);
+}
+@keyframes topbar-dot-in{from{transform:scale(0.4);opacity:0}to{transform:none;opacity:1}}
+@media (prefers-reduced-motion: reduce){.topbar-dot{animation:none}}

@@ -236,6 +236,70 @@ describe('authentication is unchanged', () => {
   })
 })
 
+describe('announcement recall', () => {
+  /**
+   * Recall is owner-only and server-authoritative: it stamps `revoked_at` on
+   * the delivery rows for ONE announcement. These tests prove it refuses
+   * anything else and never touches a different announcement.
+   */
+  const VALID_ID = '11111111-2222-3333-4444-555555555555'
+
+  it('rejects a non-owner', async () => {
+    const res = await call({
+      method: 'POST',
+      headers: OTHER,
+      body: JSON.stringify({ action: 'recall', announcementId: VALID_ID }),
+    }, '/admin/recall')
+    expect(res.status).toBe(403)
+    expect(JSON.parse(res.body).error).toMatch(/not an authorized admin/i)
+  })
+
+  it('rejects an unauthenticated request', async () => {
+    const res = await call({ method: 'POST', body: JSON.stringify({ action: 'recall', announcementId: VALID_ID }) })
+    expect(res.status).toBe(403)
+  })
+
+  it('rejects a malformed or missing announcement id', async () => {
+    for (const announcementId of ['', 'not-a-uuid', '123', "' or 1=1--"]) {
+      const res = await call({
+        method: 'POST',
+        headers: OWNER,
+        body: JSON.stringify({ action: 'recall', announcementId }),
+      }, '/admin/recall')
+      expect(res.status, announcementId).toBe(400)
+    }
+  })
+
+  it('is routed below the authorization gate', async () => {
+    // A handler placed above the gate would run for a non-owner; the 403 above
+    // proves it does not.
+    const source = readFileSync('supabase/functions/admin/index.ts', 'utf8')
+    const gate = source.indexOf('if (!email || !admins.includes(email)) return deny')
+    const recall = source.indexOf("action === 'recall'")
+    expect(gate).toBeGreaterThan(-1)
+    expect(recall).toBeGreaterThan(gate)
+  })
+
+  it('scopes the delivery update to one announcement', async () => {
+    // Deleting every notification would be catastrophic; the update must be
+    // filtered by announcement_id.
+    const source = readFileSync('supabase/functions/admin/index.ts', 'utf8')
+    const recallBlock = source.slice(source.indexOf("action === 'recall'"), source.indexOf("action === 'analytics'"))
+    expect(recallBlock).toMatch(/\.eq\('announcement_id', announcementId\)/)
+    // It must never issue an unconditional delete.
+    expect(recallBlock).not.toMatch(/\.delete\(\)/)
+  })
+
+  it('hides recalled rows from the recipient feed', async () => {
+    // The feed filter is what actually makes a recall visible to users, so it
+    // is asserted rather than assumed.
+    const source = readFileSync('supabase/functions/admin/index.ts', 'utf8')
+    const feedStart = source.indexOf("action === 'feed'")
+    const feedEnd = source.indexOf("action === 'read'")
+    expect(source.slice(feedStart, feedEnd)).toMatch(/\.is\('revoked_at', null\)/)
+  })
+})
+
 describe('Phase 2–4 endpoints enforce the same gate', () => {
   /**
    * Every endpoint added for the newer console screens is exercised against the

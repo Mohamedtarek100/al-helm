@@ -472,8 +472,17 @@ function onSystemThemeChange(event: MediaQueryListEvent): void {
 
 export async function updateSettings(patch: Partial<Settings>): Promise<void> {
   const next = { ...state.settings, ...patch }
+  // THEME IS APPLIED FIRST, SYNCHRONOUSLY.
+  //
+  // The previous order was `await commitAndPersist(...)` then `applyTheme(...)`,
+  // which meant the colour change waited for a localStorage write and, in cloud
+  // mode, for a network round-trip — the app sat unchanged for hundreds of
+  // milliseconds after the toggle was pressed. Theme is a pure CSS-variable
+  // swap on `document.documentElement`, so it costs nothing and must lead.
+  // The write still happens; it simply no longer gates the repaint.
+  if (patch.theme !== undefined) applyTheme(next.theme)
   await commitAndPersist({ ...state, settings:next })
-  applyTheme(next.theme)
+  if (patch.theme === undefined) applyTheme(next.theme)
   if (patch.reminders) void syncReminders(next.reminders).then((r) => { if (r.error) console.warn('Reminder scheduling issue:', r.error) })
 }
 

@@ -161,6 +161,12 @@ export const messages = {
     acDetailTitle: 'Announcement detail', acDetailDelivered: 'Delivered rows', acDetailOpened: 'Opened rows', acDetailUnopened: 'Not opened', acAudienceLabel: 'Audience',
     acBodyLabel: 'Message', acSearchHistory: 'Search announcements…', acAnnounceSearchEmpty: 'No announcement matches this search.',
 
+    /* ---- Announcement recall ---- */
+    acRecall: 'Recall announcement', acRecallConfirm: 'Yes, remove from all inboxes',
+    acRecallHint: 'Recalling removes this announcement from every recipient’s inbox. Delivery history is kept so your counts stay accurate. This cannot be undone.',
+    acRecallDone: 'Recalled. It is no longer shown to {count} recipients.', acRecallFailed: 'The announcement could not be recalled.',
+    acRecalledOn: 'Recalled on {at}', acRecalledBadge: 'Recalled',
+
     /* ---- Security / health / settings -------------------------------- */
     acSecurityTitle: 'Security center', acSecuritySubtitle: 'How this console is protected, stated exactly as implemented.',
     acSecurityAuth: 'Server-side authorization', acSecurityAuthBody: 'Every privileged request is re-verified by the admin Edge Function: the bearer JWT is checked against the authentication service, then the resulting email is compared with the ADMIN_EMAILS allowlist kept in Supabase secrets.',
@@ -375,6 +381,12 @@ export const messages = {
     acNoRecipients: 'الجمهور ده مفيهوش مستلمين حاليًا.',
     acDetailTitle: 'تفاصيل الإعلان', acDetailDelivered: 'صفوف موصّلة', acDetailOpened: 'صفوف مفتوحة', acDetailUnopened: 'لم تُفتح', acAudienceLabel: 'الجمهور',
     acBodyLabel: 'الرسالة', acSearchHistory: 'ابحثي في الإعلانات…', acAnnounceSearchEmpty: 'مفيش إعلان مطابق للبحث.',
+
+    /* ---- سحب الإعلانات ---- */
+    acRecall: 'سحب الإعلان', acRecallConfirm: 'أيوه، اشيليه من كل الصناديق',
+    acRecallHint: 'السحب بيشيل الإعلان من صندوق كل المستلمين. سجل التوصيل بيتم الاحتفاظ بيه عشان الأرقام تفضل دقيقة. مفيش رجوع في العملية دي.',
+    acRecallDone: 'تم السحب. مش هيظهر تاني لـ {count} مستلم.', acRecallFailed: 'تعذر سحب الإعلان.',
+    acRecalledOn: 'تم السحب في {at}', acRecalledBadge: 'مسحوب',
 
     /* ---- الأمان والصحة والإعدادات ------------------------------------- */
     acSecurityTitle: 'مركز الأمان', acSecuritySubtitle: 'إزاي اللوحة محمية، مكتوب زي ما هو منفّذ بالظبط.',

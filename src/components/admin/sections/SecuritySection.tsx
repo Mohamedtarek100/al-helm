@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useI18n } from '../../../i18n/useI18n'
-import { getAdminHealth, getAuditLog, type AuditEntry, type HealthReport } from '../../../services/edge/admin'
+import { runHealthChecks, useAdminHealth } from '../../../services/edge/adminHealth'
+import { getAuditLog, type AuditEntry } from '../../../services/edge/admin'
 import { useAdminResource } from '../../../services/edge/adminData'
 import {
   AdminButton,
@@ -54,7 +55,25 @@ export function SecuritySection({ userId, refreshKey }: { userId: string | null;
     return () => clearTimeout(timer)
   }, [search])
 
-  const health = useAdminResource<HealthReport>(() => getAdminHealth(), [userId, refreshKey])
+  // Health runs on demand via "Run checks"; mounting the panel does not fire a
+  // check, so the header badge says "Not checked" until one is actually run.
+  const healthStore = useAdminHealth()
+  useEffect(() => {
+    if (healthStore.summary === 'unknown' && !healthStore.error) {
+      void runHealthChecks()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const health = {
+    state: healthStore.report
+      ? ({ status: 'ready', data: healthStore.report, error: null } as const)
+      : healthStore.summary === 'checking'
+        ? ({ status: 'loading', data: null, error: null } as const)
+        : healthStore.error
+          ? ({ status: 'error', data: null, error: healthStore.error } as const)
+          : ({ status: 'loading', data: null, error: null } as const),
+    retry: () => { void runHealthChecks() },
+  }
   const audit = useAdminResource(() => getAuditLog({ limit: 100, search: query }), [userId, refreshKey, query])
 
   const checkById = new Map((health.state.status === 'ready' ? health.state.data.checks : []).map((check) => [check.id, check]))

@@ -368,6 +368,9 @@ Deno.serve(async (req) => {
       .from('announcement_delivery')
       .select('announcement_id,delivered_at,read_at')
       .eq('user_id', user.id)
+      // Recalled announcements disappear from the recipient's feed. Applied
+      // server-side so no client can resurrect one by skipping a local check.
+      .is('revoked_at', null)
       .order('delivered_at', { ascending: false })
       .limit(50)
     if (delErr) return json({ error: safeDbError(delErr, 'announcement feed') }, 500)
@@ -795,7 +798,7 @@ Deno.serve(async (req) => {
   if (action === 'history') {
     const { data, error } = await admin
       .from('announcements')
-      .select('id,title,body,audience,created_at,announcement_delivery(count)')
+      .select('id,title,body,audience,created_at,revoked_at,announcement_delivery(count)')
       .order('created_at', { ascending: false }).limit(100)
     if (error) return json({ error: safeDbError(error, 'admin data') }, 500)
     const ids = (data ?? []).map((a: { id: string }) => a.id)
@@ -818,16 +821,67 @@ Deno.serve(async (req) => {
       }
     }
     return json({
-      history: (data ?? []).map((a: { id: string; title: string; body: string; audience: string; created_at: string; announcement_delivery?: { count: number }[] }) => ({
+      history: (data ?? []).map((a: { id: string; title: string; body: string; audience: string; created_at: string; revoked_at?: string | null; announcement_delivery?: { count: number }[] }) => ({
         id: a.id,
         title: a.title,
         body: a.body,
         audience: a.audience,
         createdAt: a.created_at,
+        revokedAt: a.revoked_at ?? null,
         recipientCount: deliveredByAnnouncement.get(a.id) ?? a.announcement_delivery?.[0]?.count ?? 0,
         openedCount: openedByAnnouncement.get(a.id) ?? 0,
       })),
     })
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Announcement recall                                             */
+  /* ---------------------------------------------------------------- */
+
+  if (action === 'recall') {
+    // Owner-only (this runs below the allowlist gate). Recall is
+    // SERVER-AUTHORITATIVE: it stamps `revoked_at` on every delivery row for the
+    // announcement, so the next feed fetch — on any device, including one that
+    // was offline — no longer returns it.
+    const announcementId = String((body as { announcementId?: string }).announcementId ?? '').trim()
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(announcementId)) {
+      return json({ error: 'A valid announcementId is required.' }, 400)
+    }
+    const now = new Date().toISOString()
+
+    // Stamp the announcement itself first: the admin history reads this, and an
+    // announcement with no delivery rows yet still needs to be recalled.
+    const { data: announcement, error: annError } = await admin
+      .from('announcements')
+      .update({ revoked_at: now })
+      .eq('id', announcementId)
+      .select('id')
+      .maybeSingle()
+    if (annError) return json({ error: safeDbError(annError, 'announcement recall') }, 500)
+    if (!announcement) return json({ error: 'Announcement not found.' }, 404)
+
+    // Stamp only THIS announcement's delivery rows. Scoping by announcement_id
+    // is what guarantees no other notification is touched.
+    const { data: revokedRows, error: deliveryError } = await admin
+      .from('announcement_delivery')
+      .update({ revoked_at: now })
+      .eq('announcement_id', announcementId)
+      .is('revoked_at', null)
+      .select('user_id')
+    if (deliveryError) return json({ error: safeDbError(deliveryError, 'announcement recall') }, 500)
+
+    const revokedCount = (revokedRows ?? []).length
+    // Best-effort audit: a failed log must not make a completed recall look
+    // failed (the owner would retry against an already-recalled message).
+    await admin.from('admin_audit_log').insert({
+      actor_id: user.id,
+      actor_email: email,
+      action: 'announcement_recall',
+      target: announcementId,
+      detail: { revokedRecipients: revokedCount },
+    })
+
+    return json({ ok: true, announcementId, revokedRecipients: revokedCount, revokedAt: now })
   }
 
   /* ---------------------------------------------------------------- */

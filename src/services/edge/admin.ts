@@ -119,6 +119,8 @@ export interface AnnouncementHistoryRow {
   createdAt: string
   recipientCount: number
   openedCount?: number
+  /** Set when the owner recalled this announcement. */
+  revokedAt?: string | null
 }
 
 export interface SendResult {
@@ -258,6 +260,18 @@ export function sendAnnouncement(
 
 export function getAdminHistory(): Promise<{ history: AnnouncementHistoryRow[] }> {
   return adminFetch<{ history: AnnouncementHistoryRow[] }>('history')
+}
+
+/**
+ * Recalls a sent announcement.
+ *
+ * Server-authoritative: the Edge Function stamps every delivery row for this
+ * announcement, so it disappears from recipients' inboxes on all devices at the
+ * next sync. This call only asks for that to happen — it does not remove
+ * anything locally, and it cannot affect any other notification.
+ */
+export function recallAnnouncement(announcementId: string): Promise<{ ok: true; announcementId: string; revokedRecipients: number; revokedAt: string }> {
+  return adminFetch<{ ok: true; announcementId: string; revokedRecipients: number; revokedAt: string }>('recall', { announcementId })
 }
 
 export function getAuditLog(options: { limit?: number; search?: string } = {}): Promise<{ entries: AuditEntry[]; appendOnly: boolean }> {

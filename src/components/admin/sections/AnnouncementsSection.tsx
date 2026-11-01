@@ -3,6 +3,7 @@ import { useAdminPreferences } from '../../../services/edge/adminSettings'
 import { useI18n } from '../../../i18n/useI18n'
 import { useToast } from '../../../components/toastContext'
 import {
+  recallAnnouncement,
   getAdminHistory,
   getRecipientCount,
   logAdminAction,
@@ -80,6 +81,31 @@ export function AnnouncementsSection({
   const [sending, setSending] = useState(false)
   const [historySearch, setHistorySearch] = useState('')
   const [selected, setSelected] = useState<AnnouncementHistoryRow | null>(null)
+  const [recallTarget, setRecallTarget] = useState<AnnouncementHistoryRow | null>(null)
+  const [recalling, setRecalling] = useState(false)
+
+  /**
+   * Recalls a sent announcement from every recipient's inbox.
+   *
+   * The server does the work; this only reports the outcome. On success the
+   * history is refetched so the recalled state comes from the backend rather
+   * than being assumed locally.
+   */
+  const doRecall = async (announcementId: string) => {
+    setRecalling(true)
+    try {
+      const result = await recallAnnouncement(announcementId)
+      notify(t('acRecallDone', { count: result.revokedRecipients }), 'success')
+      setRecallTarget(null)
+      setSelected(null)
+      history.retry()
+      onSent()
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('acRecallFailed'), 'danger')
+    } finally {
+      setRecalling(false)
+    }
+  }
   const [previewTime] = useState(() => new Date().toLocaleString(en ? 'en-US' : 'ar-EG', { dateStyle: 'medium', timeStyle: 'short' }))
 
   // Resolve the recipient count for the CURRENT audience, and re-resolve when
@@ -156,7 +182,12 @@ export function AnnouncementsSection({
   }, [history.state, historySearch])
 
   const historyColumns: AdminColumn<AnnouncementHistoryRow>[] = [
-    { key: 'title', header: t('adminTitleCol'), render: (row) => <b>{row.title}</b> },
+    { key: 'title', header: t('adminTitleCol'), render: (row) => (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <b style={row.revokedAt ? { textDecoration: 'line-through', opacity: 0.6 } : undefined}>{row.title}</b>
+        {row.revokedAt && <AdminStatusBadge tone="muted">{t('acRecalledBadge')}</AdminStatusBadge>}
+      </span>
+    ) },
     {
       key: 'audience',
       header: t('acAudienceLabel'),
@@ -396,6 +427,33 @@ export function AnnouncementsSection({
                 <div className="ac-quoted">{selected.body}</div>
               </div>
             )}
+
+            {/* RECALL — removes the announcement from every recipient's inbox.
+                Shown only while it is still live, and it requires confirmation
+                because it is irreversible. */}
+            <div style={{ marginTop: 18 }}>
+              {selected.revokedAt ? (
+                <p className="ac-footnote" style={{ color: 'var(--ac-emerald)' }}>
+                  {t('acRecalledOn', { at: new Date(selected.revokedAt).toLocaleString(en ? 'en-US' : 'ar-EG') })}
+                </p>
+              ) : (
+                <>
+                  <p className="ac-footnote" style={{ marginBottom: 8 }}>{t('acRecallHint')}</p>
+                  {recallTarget?.id === selected.id ? (
+                    <div className="ac-form__actions">
+                      <AdminButton variant="ghost" onClick={() => setRecallTarget(null)}>{t('adminCancel')}</AdminButton>
+                      <AdminButton variant="danger" loading={recalling} onClick={() => { void doRecall(selected.id) }}>
+                        {t('acRecallConfirm')}
+                      </AdminButton>
+                    </div>
+                  ) : (
+                    <AdminButton variant="danger" onClick={() => setRecallTarget(selected)} disabled={recalling}>
+                      {t('acRecall')}
+                    </AdminButton>
+                  )}
+                </>
+              )}
+            </div>
           </>
         )}
       </AdminDrawer>
