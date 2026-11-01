@@ -302,6 +302,27 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     paint(stroke)
   }
 
+  const cancelGesture = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current
+    dragRef.current = null
+    panStartRef.current = null
+    pendingShapeRef.current = null
+    currentRef.current = null
+    setPendingShape(null)
+    setDrawing(false)
+    if (drag && docRef.current !== drag.origin) {
+      // A cancelled drag must restore the exact pre-gesture document and must
+      // not create an undo entry for an action the user did not complete.
+      updateDoc(drag.origin, { recordHistory: false })
+    }
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      }
+    } catch { /* capture may already have been released by the browser */ }
+    paint(null)
+  }
+
   const end = (event?: React.PointerEvent<HTMLCanvasElement>) => {
     if (panStartRef.current) {
       panStartRef.current = null
@@ -727,7 +748,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
             onPointerDown={start}
             onPointerMove={move}
             onPointerUp={end}
-            onPointerCancel={end}
+            onPointerCancel={cancelGesture}
             onPointerLeave={(event) => { if (event.pointerType === 'mouse' && event.buttons === 0) end(event) }}
             onContextMenu={(event) => event.preventDefault()}
           />
