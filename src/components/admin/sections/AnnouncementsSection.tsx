@@ -249,6 +249,11 @@ export function AnnouncementsSection({
       {tab === 'compose' && (
         <div className="ac-grid ac-grid--panels">
           <AdminCard title={t('acAnnounceCompose')}>
+            <p className="alert alert--warning" role="note">
+              {en
+                ? 'In-app delivery only: this creates entries in recipients’ notification inboxes. Browser and Android push notifications are not currently sent.'
+                : 'الإرسال داخل التطبيق فقط: ده بيضيف الإعلان لصندوق إشعارات المستلمين. إشعارات Push للمتصفح أو أندرويد مش شغالة حاليًا.'}
+            </p>
             <div className="ac-form">
               <label className="ac-field">
                 <span className="ac-field__label">{t('adminTitleCol')}</span>
