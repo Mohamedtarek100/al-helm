@@ -46,7 +46,8 @@ export function ColorPicker({
   const { t } = useI18n()
   const wheelRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
-  const [hsv, setHsv] = useState(() => hexToHsv(value) ?? { h: 0, s: 0, v: 0 })
+  const [hsv, setHsv] = useState(() => hexToHsv(value) ?? { h: 0, s: 0, v: 1 })
+  const hsvRef = useRef(hsv)
 
   // The wheel derives its own HSV from the incoming value so an external change
   // (palette click, reopen) moves the handle without a state-syncing effect.
@@ -54,6 +55,7 @@ export function ColorPicker({
 
   const apply = useCallback((next: { h: number; s: number; v: number }, commit: boolean) => {
     const hex = hsvToHex(next)
+    hsvRef.current = next
     setHsv(next)
     onChange(hex)
     if (commit) onCommit?.(hex)
@@ -84,10 +86,10 @@ export function ColorPicker({
   const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return
     draggingRef.current = false
-    try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* already released */ }
-    // Commit once per gesture, so "recent colours" records what was chosen
-    // rather than every pixel the pointer crossed.
-    onCommit?.(hsvToHex(current))
+    try { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* already released */ }
+    // Read the latest value from a ref: pointer-up can occur before React has
+    // rendered the final pointer-move state, especially in Android WebView.
+    onCommit?.(hsvToHex(hsvRef.current))
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
@@ -103,7 +105,7 @@ export function ColorPicker({
   }
 
   const handle = pointToPercent(hsvToPoint(current))
-  const size = compact ? 132 : 176
+  const size = compact ? 176 : 224
 
   return (
     <div className={`color-picker ${compact ? 'color-picker--compact' : ''}`}>
@@ -115,7 +117,8 @@ export function ColorPicker({
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
-          onPointerCancel={endDrag}
+          onPointerCancel={(event) => { draggingRef.current = false; try { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* already released */ } }}
+          onLostPointerCapture={() => { draggingRef.current = false }}
         >
           {/* Hue ring (conic) + saturation falloff (radial) underneath a real
               saturation disc, so the visible colour matches what is picked. */}
