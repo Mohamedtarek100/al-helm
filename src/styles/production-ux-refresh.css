@@ -1,0 +1,60 @@
+/* 4uLife UX refresh: additive, responsive presentation overrides. */
+.sketch-studio{gap:16px}
+.sketch-studio .sketch-card{overflow:visible;border:1px solid var(--line-strong);border-radius:20px;box-shadow:var(--shadow-md)}
+.sketch-studio .sketch-toolbar{position:relative;z-index:3;display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--paper-3);border-bottom:1px solid var(--line)}
+.sketch-studio .sketch-toolbar__group{display:flex;align-items:center;gap:6px;padding:5px 7px;border:1px solid var(--line);border-radius:13px;background:var(--paper-2)}
+.sketch-studio .sketch-surface{min-height:clamp(420px,68vh,820px);width:100%;display:grid;place-items:center;padding:clamp(12px,2vw,24px);overflow:auto;background:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--ink-3) 13%,transparent) 1px,transparent 1.5px) 0 0/18px 18px,var(--paper-sunk)}
+.sketch-studio .sketch-canvas{display:block;max-width:100%;max-height:100%;border-radius:5px;background:#fff;box-shadow:0 8px 32px rgba(20,18,16,.18),0 1px 3px rgba(20,18,16,.12)}
+.sketch-studio .sketch-footer{gap:12px;padding:14px 16px;background:var(--paper-3);border-top:1px solid var(--line)}
+.sketch-studio .sketch-swatch{width:32px;height:32px;border-width:2px}
+.sketch-wheel-panel{position:relative;z-index:4;padding:18px;background:var(--paper-3);border-block:1px solid var(--line)}
+.color-picker{align-items:center;gap:22px}
+.color-picker__wheel{user-select:none;-webkit-user-select:none;touch-action:none}
+.color-picker__surface{z-index:2}
+.color-picker__handle{z-index:3}
+.color-picker__palette{min-width:min(220px,100%)}
+.color-picker__swatches{gap:8px}
+.color-swatch{width:28px;height:28px}
+
+/* Modal backdrop blur is isolated from the dialog itself. */
+.modal-scrim{isolation:isolate;background:rgba(18,18,22,.46);-webkit-backdrop-filter:none;backdrop-filter:none}
+.modal-scrim::before{content:'';position:fixed;inset:0;z-index:-1;pointer-events:none;background:rgba(18,18,22,.16);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+.modal-scrim>.modal{position:relative;z-index:1;filter:none!important;opacity:1!important;transform:translateZ(0)}
+
+/* Task hierarchy and touch targets. */
+.task-toolbar{display:grid;gap:14px;padding:16px;border:1px solid var(--line);border-radius:18px;background:var(--paper-3)}
+.task-toolbar__row{display:grid;gap:12px}
+.task-list{gap:11px}
+.task-card{min-height:88px;padding:15px 17px;border:1px solid var(--line);border-radius:16px;background:var(--paper-3);box-shadow:var(--shadow-xs);transition:transform 150ms ease,box-shadow 150ms ease,border-color 150ms ease}
+.task-card:hover{transform:translateY(-1px);box-shadow:var(--shadow-sm)}
+.task-card__title{font-size:clamp(15px,1.4vw,18px);line-height:1.4}
+.task-card__meta{row-gap:8px}
+.task-card__actions{gap:5px}
+.task-card--overdue{border-inline-start:4px solid var(--warning)}
+.task-card--done{opacity:.82}
+.filter-tab{min-height:40px}
+.filter-selects .input{min-height:42px}
+
+/* Alarm cards and grouping. */
+.reminder-panel{gap:18px}
+.reminder-panel__head{align-items:center}
+.reminder-group{padding:14px;border:1px solid var(--line);border-radius:16px;background:var(--paper-2)}
+.reminder-group__title{margin-bottom:3px}
+.reminder-list{gap:9px}
+.reminder-row{padding:13px 14px;border:1px solid var(--line);border-radius:13px;background:var(--paper-3)}
+.reminder-row--on{border-color:color-mix(in srgb,var(--sage) 60%,var(--line))}
+.reminder-row__label{font-size:var(--t-md)}
+.reminder-panel__actions{display:flex;flex-wrap:wrap;gap:9px}
+.platform-pill{min-height:32px}
+
+/* Notification center. */
+.notif-list{gap:4px}
+.notif-item{padding:15px 10px;border:1px solid transparent;border-bottom-color:var(--line);border-radius:13px}
+.notif-item--unread{border-color:color-mix(in srgb,var(--clay) 24%,var(--line));background:color-mix(in srgb,var(--clay) 7%,var(--paper-3));box-shadow:inset 3px 0 0 var(--clay)}
+.notif-item__title{line-height:1.45}
+.notif-item__text{margin-top:5px;line-height:1.55}
+.notif-item__actions{display:flex;gap:5px}
+
+@media(min-width:900px){.sketch-studio .sketch-surface{min-height:min(74vh,900px)}.task-toolbar__row{grid-template-columns:minmax(180px,.8fr) minmax(0,1.5fr);align-items:center}}
+@media(max-width:640px){.sketch-studio .sketch-surface{min-height:54vh;padding:8px}.sketch-studio .sketch-toolbar{gap:7px;padding:9px}.sketch-studio .sketch-toolbar__group{flex-wrap:wrap}.sketch-wheel-panel{padding:12px}.color-picker{justify-content:center}.task-card{grid-template-columns:36px minmax(0,1fr);padding:12px}.task-card__actions{grid-column:2;justify-content:flex-end}.reminder-group{padding:10px}.notif-item{grid-template-columns:30px minmax(0,1fr)}.notif-item__actions{grid-column:2;justify-content:flex-end}}
+@media(prefers-reduced-motion:reduce){.task-card{transition:none}.task-card:hover{transform:none}}
