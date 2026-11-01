@@ -17,8 +17,8 @@
 .color-swatch{width:28px;height:28px}
 
 /* Modal backdrop blur is isolated from the dialog itself. */
-.modal-scrim{isolation:isolate;background:rgba(18,18,22,.46);-webkit-backdrop-filter:none;backdrop-filter:none}
-.modal-scrim::before{content:'';position:fixed;inset:0;z-index:-1;pointer-events:none;background:rgba(18,18,22,.16);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+.modal-scrim{isolation:isolate;background:transparent;-webkit-backdrop-filter:none;backdrop-filter:none}
+.modal-scrim::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;background:rgba(18,18,22,.46);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
 .modal-scrim>.modal{position:relative;z-index:1;filter:none!important;opacity:1!important;transform:translateZ(0)}
 
 /* Task hierarchy and touch targets. */
