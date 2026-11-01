@@ -253,7 +253,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
 
     currentRef.current = { points: [toPoint(event)], color, size, eraser: tool === 'eraser' }
     setDrawing(true)
-    setRedo([])
+    setRedoStack([])
     paint(currentRef.current)
   }
 
@@ -340,7 +340,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* not captured */ }
     }
     updateDoc({ ...docRef.current, strokes: [...docRef.current.strokes, live] })
-    setRedo([])
+    setRedoStack([])
     paint(null)
   }
 
@@ -376,7 +376,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     if (!selected) return
     updateDoc(deleteElement(docRef.current, selected))
     setSelected(null)
-    setRedo([])
+    setRedoStack([])
   }
 
 
@@ -385,7 +385,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     setConfirmClear(false)
     const cleared = { ...docRef.current, strokes: [], shapes: [], texts: [] }
     updateDoc(cleared)
-    setRedo([])
+    setRedoStack([])
     // Clearing is an explicit action; the saved artwork is only replaced on Save.
     persistDraft(cleared, savedIdRef.current, titleRef.current)
   }
@@ -515,7 +515,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     if (fromModel) {
       docRef.current = fromModel
       setDoc(fromModel)
-      setRedo([])
+      setRedoStack([])
       setTitle(artwork.title)
       savedIdRef.current = artwork.id
       setSavedId(artwork.id)
