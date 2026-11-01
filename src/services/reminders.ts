@@ -110,12 +110,10 @@ function ensureChannel(tone: ReminderTone | null | undefined): Promise<void> {
     vibration: true,
     sound: definition.soundUri ?? 'default',
   }
-  // createChannel is idempotent on Android; a failure here is not fatal because
-  // the schedule call reports the real outcome to the UI.
-  return LocalNotifications.createChannel(channel).then(
-    () => undefined,
-    () => undefined,
-  )
+  // A channel failure is a real scheduling failure. Do not swallow it: the
+  // caller must not report an alarm as active when Android rejected its sound
+  // channel configuration.
+  return LocalNotifications.createChannel(channel).then(() => undefined)
 }
 
 export interface ReminderSyncResult {
