@@ -37,8 +37,16 @@ export function TasksPage() {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [subjectMessage, setSubjectMessage] = useState('')
+  const [query, setQuery] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState<TaskCategory | 'all'>('all')
 
-  const visible = useMemo(() => sortTasks(filterTasks(data.tasks, filter), sort), [data.tasks, filter, sort])
+  const visible = useMemo(() => {
+    const filtered = filterTasks(data.tasks, filter).filter((task) =>
+      (categoryFilter === 'all' || task.category === categoryFilter) &&
+      (!query.trim() || `${task.title} ${task.description}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+    )
+    return sortTasks(filtered, sort)
+  }, [data.tasks, filter, sort, categoryFilter, query])
   const priorityOptions = useMemo(
     () => [{ value: 'all' as const, label: t('priorityAll') }, ...PRIORITY_ORDER.map((priority) => ({ value: priority, label: <PriorityBadge priority={priority} size="sm" /> }))],
     [t],
@@ -132,9 +140,14 @@ export function TasksPage() {
             <Segmented value={filter.priority === 'all' ? 'all' : filter.priority} options={priorityOptions} size="sm" aria-label={t('priorityFilterLabel')} onChange={(value) => setFilter({ ...filter, priority: value as TaskPriority | 'all' })} />
           </div>
           <div className="filter-selects">
+            <TextInput value={query} onChange={(e) => setQuery(e.target.value)} aria-label={en ? 'Search tasks' : 'ابحث في المهام'} placeholder={en ? 'Search tasks…' : 'ابحث عن مهمة…'} />
             <Select aria-label={en ? 'Filter by subject' : 'تصفية حسب المادة'} value={filter.subjectId} onChange={(e) => setFilter({ ...filter, subjectId: e.target.value })}>
               <option value="all">{en ? 'All subjects' : 'كل المواد'}</option>
               {data.subjects.map((subject) => <option value={subject.id} key={subject.id}>{subject.name}</option>)}
+            </Select>
+            <Select aria-label={en ? 'Filter by category' : 'تصفية حسب التصنيف'} value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value as TaskCategory | 'all')}>
+              <option value="all">{en ? 'All categories' : 'كل التصنيفات'}</option>
+              {Object.entries(categoryLabels).map(([key,label]) => <option key={key} value={key}>{label}</option>)}
             </Select>
             <Select aria-label={en ? 'Sort tasks' : 'ترتيب المهام'} value={sort} onChange={(e) => setSort(e.target.value as TaskSortKey)}>
               <option value="due">{en ? 'Due date' : 'الأقرب موعدًا'}</option>
