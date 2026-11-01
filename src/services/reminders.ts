@@ -227,10 +227,11 @@ export async function sendTestNotification(tone?: ReminderTone | null): Promise<
   if (!isNative()) return { ok: false, error: 'web_unsupported' }
   const granted = await requestReminderPermission()
   if (!granted) return { ok: false, error: 'permission_denied' }
-  // The test rings on the tone the user is auditioning, which is the only
-  // reliable way to confirm what an alarm will actually sound like.
-  await ensureChannel(tone)
+  // Channel creation is part of delivery. Keep it inside the same error
+  // boundary as scheduling so plugin failures are returned to the UI rather
+  // than becoming unhandled promise rejections.
   try {
+    await ensureChannel(tone)
     await LocalNotifications.schedule({
       notifications: [
         {
