@@ -41,6 +41,7 @@ import {
 const PALETTE = STUDIO_PALETTE_FLAT
 const DRAFT_DEBOUNCE_MS = 900
 const AUTOSAVE_DEBOUNCE_MS = 2600
+const HISTORY_LIMIT = 100
 
 type SaveState = 'saved' | 'dirty' | 'saving' | 'error'
 
@@ -85,8 +86,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   // text, erasing, background changes, deletion and clear operations.
   const [undoStack, setUndoStack] = useState<DrawingDocument[]>([])
   const [redoStack, setRedoStack] = useState<DrawingDocument[]>([])
-  const HISTORY_LIMIT = 100
-  const [drawing, setDrawing] = useState(false)
+    const [drawing, setDrawing] = useState(false)
   const [title, setTitle] = useState(() => loadDraft(null)?.title ?? '')
   const [savedId, setSavedId] = useState<string | null>(() => loadDraft(null)?.artworkId ?? null)
   const [confirmClear, setConfirmClear] = useState(false)
