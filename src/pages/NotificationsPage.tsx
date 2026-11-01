@@ -52,11 +52,18 @@ export function NotificationsPage() {
   const [busy, setBusy] = useState<Set<string>>(() => new Set())
   const [clearing, setClearing] = useState(false)
 
-  // Pull server announcements once on open. A failure is silent by design: the
-  // user's own notifications must still render if the network is down.
+  // Pull server announcements on open. Local notifications remain visible if
+  // the network is unavailable, but a failed cloud refresh must not be silent:
+  // otherwise users assume the admin message was never sent or delivered.
   useEffect(() => {
-    void syncServerAnnouncements().catch(() => undefined)
-  }, [])
+    let active = true
+    void syncServerAnnouncements().catch((error) => {
+      if (!active) return
+      const detail = error instanceof Error ? error.message : t('retry')
+      notify(`${t('retry')}: ${detail}`, 'warning')
+    })
+    return () => { active = false }
+  }, [notify, t])
 
   const sorted = useMemo(() => [...items].sort((a, b) => b.at.localeCompare(a.at)), [items])
   const unread = sorted.filter((item) => !item.read).length
