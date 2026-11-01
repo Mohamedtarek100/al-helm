@@ -47,6 +47,19 @@ export function TasksPage() {
     )
     return sortTasks(filtered, sort)
   }, [data.tasks, filter, sort, categoryFilter, query])
+
+  const reportTaskWrite = (successMessage: string, successTone: 'success' | 'info' = 'success') => {
+    if (getLastWriteResult() === 'local-only') {
+      notify(
+        en
+          ? 'Saved on this device. Cloud sync will retry when the connection returns.'
+          : 'اتحفظ على الجهاز ده. مزامنة السحابة هتحاول تاني لما الاتصال يرجع.',
+        'warning',
+      )
+      return
+    }
+    notify(successMessage, successTone)
+  }
   const priorityOptions = useMemo(
     () => [{ value: 'all' as const, label: t('priorityAll') }, ...PRIORITY_ORDER.map((priority) => ({ value: priority, label: <PriorityBadge priority={priority} size="sm" /> }))],
     [t],
@@ -99,14 +112,14 @@ export function TasksPage() {
 
   const remove = async () => {
     if (!deleting) return
-    try { await deleteTask(deleting.id); setDeleting(null); notify(t('taskDeleted'), 'info') }
+    try { await deleteTask(deleting.id); setDeleting(null); reportTaskWrite(t('taskDeleted'), 'info') }
     catch (error) { notify(error instanceof Error ? error.message : t('retry'), 'danger') }
   }
 
   const reschedule = async (task: Task) => {
     const next = new Date(`${task.dueDate || todayKey()}T12:00:00`); next.setDate(next.getDate() + 1)
     const key = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(next.getDate()).padStart(2, '0')}`
-    try { await updateTask(task.id, { dueDate: key }); notify(en ? 'Task moved to tomorrow.' : 'اتنقلت المهمة لبكرة.', 'success') }
+    try { await updateTask(task.id, { dueDate: key }); reportTaskWrite(en ? 'Task moved to tomorrow.' : 'اتنقلت المهمة لبكرة.') }
     catch (error) { notify(error instanceof Error ? error.message : t('retry'), 'danger') }
   }
 
@@ -175,7 +188,7 @@ export function TasksPage() {
                     onClick={async () => {
                       try {
                         await setTaskCompleted(task.id, !task.completed)
-                        notify(task.completed ? (en ? 'Task reopened.' : 'رجعت المهمة للقائمة.') : t('taskCompleted'), 'success')
+                        reportTaskWrite(task.completed ? (en ? 'Task reopened.' : 'رجعت المهمة للقائمة.') : t('taskCompleted'))
                       } catch (error) { notify(error instanceof Error ? error.message : t('retry'), 'danger') }
                     }}
                   >
