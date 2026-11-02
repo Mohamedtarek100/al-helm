@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Task, TaskCategory, TaskPriority } from '../types'
 import { Button, IconButton } from '../components/Button'
@@ -11,7 +11,7 @@ import { SubjectSelect } from '../components/SubjectSelect'
 import { CheckIcon, CheckSquareIcon, EditIcon, PlusIcon, TrashIcon } from '../components/icons'
 import { describeDueDate, formatMinutes, formatTime, todayKey } from '../services/date'
 import { emptyTaskFilter, filterTasks, sortTasks, type TaskFilter, type TaskSortKey, type TaskStatusFilter, isTaskOverdue } from '../services/taskSelectors'
-import { createTask, deleteTask, getLastWriteResult, setTaskCompleted, updateTask, useAppData, type NewTask } from '../services/store'
+import { createTask, deleteTask, setTaskCompleted, updateTask, useAppData, type NewTask, type WriteResult } from '../services/store'
 import { PageFrame, PageHeading } from './PageFrame'
 import { useToast } from '../components/toastContext'
 import { useI18n } from '../i18n/useI18n'
@@ -36,9 +36,18 @@ export function TasksPage() {
   const [form, setForm] = useState<NewTask>(blank())
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
   const [subjectMessage, setSubjectMessage] = useState('')
+  const [query, setQuery] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState<TaskCategory | 'all'>('all')
 
-  const visible = useMemo(() => sortTasks(filterTasks(data.tasks, filter), sort), [data.tasks, filter, sort])
+  const visible = useMemo(() => {
+    const filtered = filterTasks(data.tasks, filter).filter((task) =>
+      (categoryFilter === 'all' || task.category === categoryFilter) &&
+      (!query.trim() || `${task.title} ${task.description}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+    )
+    return sortTasks(filtered, sort)
+  }, [data.tasks, filter, sort, categoryFilter, query])
   const priorityOptions = useMemo(
     () => [{ value: 'all' as const, label: t('priorityAll') }, ...PRIORITY_ORDER.map((priority) => ({ value: priority, label: <PriorityBadge priority={priority} size="sm" /> }))],
     [t],
@@ -54,51 +63,68 @@ export function TasksPage() {
     setOpen(true)
   }
 
-  const save = async (event: FormEvent) => {
+  const closeForm = () => {
+    if (!savingRef.current) setOpen(false)
+  }
+
+  const reportTaskWrite = (result: WriteResult, successMessage: string, successTone: 'success' | 'info' = 'success') => {
+    if (result === 'session-only') {
+      notify(t('taskSessionOnly'), 'warning')
+      return
+    }
+    if (result === 'local-only') {
+      notify(
+        en
+          ? 'Saved on this device. Cloud sync will retry when the connection returns.'
+          : 'اتحفظ على الجهاز ده. مزامنة السحابة هتحاول تاني لما الاتصال يرجع.',
+        'warning',
+      )
+      return
+    }
+    notify(successMessage, successTone)
+  }
+
+  const save = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (savingRef.current) return
     const next: Record<string, string> = {}
     if (!form.title.trim()) next.title = t('required')
     if (!form.dueDate) next.dueDate = en ? 'Choose a due date.' : 'اختاري تاريخ الاستحقاق.'
     if (form.estimatedMinutes < 5 || form.estimatedMinutes > 600) next.estimatedMinutes = en ? 'Choose a duration from 5 to 600 minutes.' : 'اختاري مدة من ٥ إلى ٦٠ دقيقة.'
     if (Object.keys(next).length) { setErrors(next); return }
+    savingRef.current = true
     setSaving(true)
     try {
-      if (editing) await updateTask(editing.id, form)
-      else await createTask(form)
+      const result = editing
+        ? await updateTask(editing.id, form)
+        : (await createTask(form)).writeResult
+      setFilter(emptyTaskFilter)
+      setCategoryFilter('all')
+      setQuery('')
+      setSort('created')
       setOpen(false)
-      // The write result is decided by the store, not guessed here: when the
-      // task is on this device but the account copy is behind, the user gets a
-      // warning (and no reason to retry, which would duplicate the task).
-      if (getLastWriteResult() === 'local-only') {
-        notify(
-          en
-            ? 'Saved on this device. It will sync when the connection returns.'
-            : 'اتحفظت على الجهاز. هتتزامن أول ما النت يرجع.',
-          'warning',
-        )
-      } else {
-        notify(editing ? t('taskSaved') : t('taskAdded'), 'success')
-      }
+      reportTaskWrite(result, editing ? t('taskSaved') : t('taskAdded'))
     } catch (error) {
       // Keep the sheet open with the draft intact — nothing typed is lost.
       // Reaching here means NOTHING was stored, so an error is accurate.
       const message = error instanceof Error ? error.message : ''
       notify(message || (en ? 'Could not save the task. Your entry is still here — try again.' : 'تعذر حفظ المهمة. الكتابة لسه موجودة — جرّبي تاني.'), 'danger')
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
   }
 
   const remove = async () => {
     if (!deleting) return
-    try { await deleteTask(deleting.id); setDeleting(null); notify(t('taskDeleted'), 'info') }
+    try { const result = await deleteTask(deleting.id); setDeleting(null); reportTaskWrite(result, t('taskDeleted'), 'info') }
     catch (error) { notify(error instanceof Error ? error.message : t('retry'), 'danger') }
   }
 
   const reschedule = async (task: Task) => {
     const next = new Date(`${task.dueDate || todayKey()}T12:00:00`); next.setDate(next.getDate() + 1)
     const key = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(next.getDate()).padStart(2, '0')}`
-    try { await updateTask(task.id, { dueDate: key }); notify(en ? 'Task moved to tomorrow.' : 'اتنقلت المهمة لبكرة.', 'success') }
+    try { const result = await updateTask(task.id, { dueDate: key }); reportTaskWrite(result, en ? 'Task moved to tomorrow.' : 'اتنقلت المهمة لبكرة.') }
     catch (error) { notify(error instanceof Error ? error.message : t('retry'), 'danger') }
   }
 
@@ -132,9 +158,14 @@ export function TasksPage() {
             <Segmented value={filter.priority === 'all' ? 'all' : filter.priority} options={priorityOptions} size="sm" aria-label={t('priorityFilterLabel')} onChange={(value) => setFilter({ ...filter, priority: value as TaskPriority | 'all' })} />
           </div>
           <div className="filter-selects">
+            <TextInput value={query} onChange={(e) => setQuery(e.target.value)} aria-label={en ? 'Search tasks' : 'ابحث في المهام'} placeholder={en ? 'Search tasks…' : 'ابحث عن مهمة…'} />
             <Select aria-label={en ? 'Filter by subject' : 'تصفية حسب المادة'} value={filter.subjectId} onChange={(e) => setFilter({ ...filter, subjectId: e.target.value })}>
               <option value="all">{en ? 'All subjects' : 'كل المواد'}</option>
               {data.subjects.map((subject) => <option value={subject.id} key={subject.id}>{subject.name}</option>)}
+            </Select>
+            <Select aria-label={en ? 'Filter by category' : 'تصفية حسب التصنيف'} value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value as TaskCategory | 'all')}>
+              <option value="all">{en ? 'All categories' : 'كل التصنيفات'}</option>
+              {Object.entries(categoryLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
             </Select>
             <Select aria-label={en ? 'Sort tasks' : 'ترتيب المهام'} value={sort} onChange={(e) => setSort(e.target.value as TaskSortKey)}>
               <option value="due">{en ? 'Due date' : 'الأقرب موعدًا'}</option>
@@ -161,8 +192,8 @@ export function TasksPage() {
                     aria-pressed={task.completed}
                     onClick={async () => {
                       try {
-                        await setTaskCompleted(task.id, !task.completed)
-                        notify(task.completed ? (en ? 'Task reopened.' : 'رجعت المهمة للقائمة.') : t('taskCompleted'), 'success')
+                        const result = await setTaskCompleted(task.id, !task.completed)
+                        reportTaskWrite(result, task.completed ? (en ? 'Task reopened.' : 'رجعت المهمة للقائمة.') : t('taskCompleted'))
                       } catch (error) { notify(error instanceof Error ? error.message : t('retry'), 'danger') }
                     }}
                   >
@@ -213,13 +244,13 @@ export function TasksPage() {
 
       <Modal
         open={open}
-        onClose={() => setOpen(false)}
+        onClose={closeForm}
         title={editing ? t('taskFormEdit') : t('taskFormTitle')}
         subtitle={t('taskFormHint')}
         variant="sheet"
-        footer={<><Button variant="ghost" onClick={() => setOpen(false)}>{t('back')}</Button><Button variant="primary" loading={saving} onClick={save}>{editing ? t('save') : t('taskNew')}</Button></>}
+        footer={<><Button variant="ghost" disabled={saving} onClick={closeForm}>{t('back')}</Button><Button variant="primary" type="submit" form="task-form" loading={saving}>{editing ? t('save') : t('taskNew')}</Button></>}
       >
-        <form className="form-grid" onSubmit={save}>
+        <form id="task-form" className="form-grid" onSubmit={save}>
           <Field label={t('taskTitle')} required error={errors.title} className="form-grid__full">
             <TextInput autoFocus value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder={en ? 'e.g. Review chapter one' : 'مثلاً: مراجعة الفصل الأول'} />
           </Field>

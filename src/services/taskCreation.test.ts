@@ -25,12 +25,16 @@ const cloud = vi.hoisted(() => ({
 }))
 
 vi.mock('./persistence/adapter', () => {
+  const key = '__task_creation_snapshot__'
   const adapter = {
     label: 'local',
     kind: 'local',
-    load: async () => null,
-    save: async () => undefined,
-    clear: async () => undefined,
+    load: async () => {
+      const raw = window.localStorage.getItem(key)
+      return raw ? JSON.parse(raw) : null
+    },
+    save: async (data: unknown) => window.localStorage.setItem(key, JSON.stringify(data)),
+    clear: async () => window.localStorage.removeItem(key),
     userId: async () => 'local',
     hasSession: async () => true,
     isCloudEmpty: async () => true,
@@ -46,7 +50,10 @@ vi.mock('./persistence/supabase', () => {
   const cloudAdapter = () => ({
     label: 'cloud',
     kind: 'cloud' as const,
-    load: async () => null,
+    load: async () => {
+      const { createInitialData } = await import('./domain')
+      return createInitialData()
+    },
     save: async () => {
       cloud.saveCalls += 1
       if (cloud.saveThrows) throw new Error(cloud.saveThrows)
@@ -102,6 +109,8 @@ describe('task creation reporting', () => {
     const tasks = store.getState().tasks
     expect(tasks.filter((task) => task.title === 'Read chapter one')).toHaveLength(1)
     expect(tasks[0].id).toBe(created.id)
+    expect(created.writeResult).toBe('cloud')
+    expect(cloud.saveCalls).toBe(1)
   })
 
   it('keeps the task visible and reports local-only when the cloud write fails', async () => {
@@ -117,13 +126,12 @@ describe('task creation reporting', () => {
     expect(created.writeResult).not.toBe('cloud')
   })
 
-  it('does not create a duplicate when the same write is issued twice', async () => {
+  it('does not require a retry after a cloud failure when the task is already local', async () => {
     cloud.saveThrows = 'network timeout'
     const task = await store.createTask(taskInput('No duplicates please'))
-    // A caller that naively retried would call createTask again; the store must
-    // not append a second row for one user action. The UI prevents the retry by
-    // reporting 'local-only' rather than an error, and this asserts the data
-    // consequence if it ever did.
+    // The local-only result prevents a false failure message that could prompt
+    // the user to retry and create a second task.
+    expect(task.writeResult).toBe('local-only')
     const sameTitle = store.getState().tasks.filter((t) => t.title === 'No duplicates please')
     expect(sameTitle).toHaveLength(1)
     expect(sameTitle[0].id).toBe(task.id)
@@ -147,6 +155,64 @@ describe('task creation reporting', () => {
       ;(adapter.dataAdapter as unknown as { save: unknown }).save = originalSave
     }
   })
+
+  it('persists task details with a subject, category, priority, and selected due date', async () => {
+    const input = {
+      ...taskInput('Practice algebra'),
+      subjectId: 'subject-algebra',
+      category: 'practice' as const,
+      priority: 'urgent' as const,
+      dueDate: '2026-11-09',
+    }
+
+    const created = await store.createTask(input)
+
+    expect(created).toMatchObject({
+      subjectId: 'subject-algebra',
+      category: 'practice',
+      priority: 'urgent',
+      dueDate: '2026-11-09',
+    })
+    expect(store.getState().tasks).toContainEqual(expect.objectContaining({ id: created.id, ...input }))
+  })
+
+  it.each(['study', 'homework', 'revision', 'practice', 'art', 'other'] as const)(
+    'persists the %s category',
+    async (category) => {
+      const created = await store.createTask({ ...taskInput(`Category ${category}`), category })
+      expect(store.getState().tasks.find((task) => task.id === created.id)?.category).toBe(category)
+    },
+  )
+
+  it.each(['urgent', 'high', 'medium', 'low'] as const)('persists the %s priority', async (priority) => {
+    const created = await store.createTask({ ...taskInput(`Priority ${priority}`), priority })
+    expect(store.getState().tasks.find((task) => task.id === created.id)?.priority).toBe(priority)
+  })
+
+  it('restores a locally saved task after store reinitialization', async () => {
+    cloud.session = false
+    await store.logoutCloudUser()
+    await store.initStore(true)
+    const created = await store.createTask(taskInput('Survives reload'))
+
+    await store.initStore(true)
+
+    expect(store.getState().tasks).toContainEqual(expect.objectContaining({
+      id: created.id,
+      title: 'Survives reload',
+      dueDate: '2026-11-05',
+    }))
+  })
+
+  it('preserves the task locally and reports a cloud RLS rejection', async () => {
+    cloud.saveThrows = 'new row violates row-level security policy'
+
+    const created = await store.createTask(taskInput('Keep after RLS failure'))
+
+    expect(created.writeResult).toBe('local-only')
+    expect(store.getState().tasks).toContainEqual(expect.objectContaining({ id: created.id }))
+    expect(store.getPendingCloudError()).toContain('row-level security')
+  })
 })
 
 describe('completed tasks stay in the list', () => {
@@ -169,5 +235,39 @@ describe('completed tasks stay in the list', () => {
     const task = store.getState().tasks.find((item) => item.id === created.id)
     expect(task?.completed).toBe(false)
     expect(task?.completedAt).toBeNull()
+  })
+
+  it('persists edits, rescheduling, completion, reopening, and deletion', async () => {
+    const created = await store.createTask(taskInput('Manage all task changes'))
+    const updatedWrite = await store.updateTask(created.id, { title: 'Updated task', dueDate: '2026-11-12' })
+    expect(updatedWrite).toBe('cloud')
+    expect(store.getState().tasks.find((item) => item.id === created.id)).toMatchObject({
+      title: 'Updated task',
+      dueDate: '2026-11-12',
+    })
+
+    await store.rescheduleTask(created.id, '2026-11-13')
+    expect(store.getState().tasks.find((item) => item.id === created.id)?.dueDate).toBe('2026-11-13')
+
+    const completeWrite = await store.setTaskCompleted(created.id, true)
+    expect(completeWrite).toBe('cloud')
+    expect(store.getState().tasks.find((item) => item.id === created.id)?.completed).toBe(true)
+
+    await store.setTaskCompleted(created.id, false)
+    expect(store.getState().tasks.find((item) => item.id === created.id)?.completed).toBe(false)
+
+    const deleteWrite = await store.deleteTask(created.id)
+    expect(deleteWrite).toBe('cloud')
+    expect(store.getState().tasks.some((item) => item.id === created.id)).toBe(false)
+  })
+
+  it('returns the result of the current edit instead of a stale create result', async () => {
+    const created = await store.createTask(taskInput('Result must be current'))
+    cloud.saveThrows = 'network timeout'
+
+    const result = await store.updateTask(created.id, { title: 'Edited locally' })
+
+    expect(result).toBe('local-only')
+    expect(store.getLastWriteResult()).toBe('local-only')
   })
 })

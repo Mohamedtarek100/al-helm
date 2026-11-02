@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useSyncStatus, probeCloudReachable, type SyncStatus } from '../services/syncStatus'
 import { getPendingCloudError, retryPersistence, useAppData } from '../services/store'
+import { isGuestSession } from '../services/guestMode'
 import { Button } from './Button'
 import { useI18n } from '../i18n/useI18n'
 
@@ -21,12 +22,15 @@ export function SyncIndicator() {
   const pending = getPendingCloudError()
   const effective: SyncStatus = pending ? { ...status, sync: 'failed', error: pending, localOnly: false } : status
   const { t, language } = useI18n()
+  const guestSession = isGuestSession()
   const [open, setOpen] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState<string | null>(null)
   const en = language === 'en'
 
-  const view = describe(effective, en)
+  const view = guestSession
+    ? { tone: 'warning', label: t('guestSessionStatus'), detail: t('guestSessionStatusDetail') }
+    : describe(effective, en)
 
   return (
     <div className="sync-indicator">
@@ -53,27 +57,29 @@ export function SyncIndicator() {
             </p>
           )}
           <div className="row row--wrap" style={{ marginTop: 8 }}>
-            <Button
-              size="sm"
-              variant="secondary"
-              loading={retrying}
-              onClick={async () => {
-                setRetrying(true)
-                setRetryError(null)
-                try {
-                  await probeCloudReachable(true)
-                  // Reports success only when the cloud write is confirmed;
-                  // a failed retry surfaces its reason instead of vanishing.
-                  await retryPersistence()
-                } catch (error) {
-                  setRetryError(error instanceof Error ? error.message : (en ? 'Retry failed.' : 'تعذرت إعادة المحاولة.'))
-                } finally {
-                  setRetrying(false)
-                }
-              }}
-            >
-              {en ? 'Retry now' : 'أعيدي المحاولة'}
-            </Button>
+            {!guestSession && (
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={retrying}
+                onClick={async () => {
+                  setRetrying(true)
+                  setRetryError(null)
+                  try {
+                    await probeCloudReachable(true)
+                    // Reports success only when the cloud write is confirmed;
+                    // a failed retry surfaces its reason instead of vanishing.
+                    await retryPersistence()
+                  } catch (error) {
+                    setRetryError(error instanceof Error ? error.message : (en ? 'Retry failed.' : 'تعذرت إعادة المحاولة.'))
+                  } finally {
+                    setRetrying(false)
+                  }
+                }}
+              >
+                {en ? 'Retry now' : 'أعيدي المحاولة'}
+              </Button>
+            )}
             <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>{t('close')}</Button>
           </div>
         </div>

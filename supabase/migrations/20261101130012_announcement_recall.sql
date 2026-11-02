@@ -31,7 +31,7 @@
 --
 -- ── ROLLBACK ─────────────────────────────────────────────────────────────
 --   alter table public.announcement_delivery drop column if exists revoked_at;
---   drop index if exists public.announcement_delivery_revoked_idx;
+--   drop index if exists public.idx_announcement_delivery_active;
 --   (Drops only the recall marker; delivery history is untouched.)
 
 alter table public.announcement_delivery
@@ -44,7 +44,7 @@ alter table public.announcements
 
 -- The recipient feed filters on `revoked_at is null`; this keeps that cheap on
 -- large delivery tables without affecting anything else.
-create index if not exists announcement_delivery_revoked_idx
+create index if not exists idx_announcement_delivery_active
   on public.announcement_delivery (announcement_id)
   where revoked_at is null;
 

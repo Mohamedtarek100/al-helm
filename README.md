@@ -62,11 +62,30 @@ announcements.
 
 ### Push / reminders
 
-- Android: local notifications via `@capacitor/local-notifications`; scheduled
-  from Settings, with a Test-notification button. Physical-device verification
-  is still outstanding.
-- Web push: requires VAPID keys stored as server-side secrets plus a trusted
-  scheduler; not yet operational — the UI does not claim otherwise.
+- Android reminders use `@capacitor/local-notifications`; scheduled from
+  Settings, with a Test-notification button. Physical-device verification is
+  still outstanding.
+- Browser Web Push is implemented in source: users explicitly opt in, their
+  subscription is tied to their authenticated account, the admin sender records
+  provider outcomes, and failed endpoints can be retried. Production operation
+  still requires migration `20261102140013_announcement_web_push.sql`, the
+  matching `VITE_VAPID_PUBLIC_KEY` build variable, and server-only
+  `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` secrets. Reconcile
+  the live schema first and get owner approval before applying the migration or
+  changing production configuration. Provider acceptance is not proof that a
+  device displayed a notification.
+- Android remote push is separate from local reminders and Web Push. The
+  Android client now supports explicit permission, authenticated token
+  registration/rotation, disable, and announcement-tap routing. The locally
+  supplied `google-services.json` matches `com.alhelm.studyplanner` and remains
+ignored; never commit it. Production FCM still requires migrations
+`20261102140013_announcement_web_push.sql` and
+`20261103140014_fcm_push_tokens.sql`, migration
+`20261103150015_harden_announcement_privileges.sql`, a deployed Edge
+Function, the Firebase Cloud Messaging API, and a least-privilege service
+account stored only as the Edge secret `FCM_SERVICE_ACCOUNT_JSON`. No
+service-account credential has been created or deployed. Provider acceptance
+does not prove device display; physical-device delivery remains unverified.
 
 ## Android release
 

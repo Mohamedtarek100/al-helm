@@ -5,9 +5,9 @@ import { activePersistenceMode, getActivePersistenceCoordinator, getState, useSe
 /**
  * Guest-mode guard.
  *
- * A guest's data lives in the same local snapshot the app always used, so
- * nothing is migrated, copied or rewritten here. The single job of this
- * provider is to make sure that signing in NEVER silently discards guest work:
+ * Guest edits are temporary in-memory state and never enter local or cloud
+ * persistence. The single job of this provider is to make sure that signing
+ * in NEVER silently discards work from a non-guest local session:
  *
  *  - `PersistenceCoordinator.authenticate()` already keeps the local snapshot
  *    alive and reports `migrationRequired` instead of entering cloud mode when
@@ -42,9 +42,8 @@ export function useGuestContext(): GuestContextValue {
 }
 
 /**
- * Keeps guest data addressable across sessions and warns (once) if a sign-in
- * would have replaced it. The warning is a console-only diagnostic for support;
- * the user-facing explanation lives in the account panel.
+ * Checks non-guest local data before a sign-in and warns in development if the
+ * persistence coordinator appears to have skipped the explicit migration flow.
  */
 export function AnonymousGuestProvider({ children }: { children: ReactNode }) {
   useEffect(() => {

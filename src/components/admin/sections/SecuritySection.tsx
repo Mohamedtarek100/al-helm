@@ -192,6 +192,18 @@ export function SecuritySection({ userId, refreshKey }: { userId: string | null;
                   </AdminStatusBadge>
                 </li>
                 <li className="ac-health__row">
+                  <span className="ac-health__label">{en ? 'Web Push configuration present' : 'إعدادات Web Push موجودة'}</span>
+                  <AdminStatusBadge tone={health.state.data.runtime.webPushConfigured ? 'ok' : 'muted'}>
+                    {health.state.data.runtime.webPushConfigured ? t('acCheckPassed') : t('acCheckFailed')}
+                  </AdminStatusBadge>
+                </li>
+                <li className="ac-health__row">
+                  <span className="ac-health__label">{en ? 'FCM service-account configuration present' : 'إعدادات حساب خدمة FCM موجودة'}</span>
+                  <AdminStatusBadge tone={health.state.data.runtime.fcmConfigured ? 'ok' : 'muted'}>
+                    {health.state.data.runtime.fcmConfigured ? t('acCheckPassed') : t('acCheckFailed')}
+                  </AdminStatusBadge>
+                </li>
+                <li className="ac-health__row">
                   <span className="ac-health__label">{en ? 'Verified owner' : 'المالك الموثّق'}</span>
                   <span className="ac-mono">{health.state.data.runtime.ownerEmail ?? '—'}</span>
                 </li>

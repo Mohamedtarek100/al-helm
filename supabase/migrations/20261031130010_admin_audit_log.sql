@@ -45,7 +45,7 @@ create table if not exists public.admin_audit_log (
 );
 
 -- Newest-first listing is the only read pattern.
-create index if not exists admin_audit_log_created_at_idx
+create index if not exists idx_admin_audit_log_created_at
   on public.admin_audit_log (created_at desc);
 
 alter table public.admin_audit_log enable row level security;

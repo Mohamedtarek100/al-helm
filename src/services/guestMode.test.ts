@@ -45,7 +45,7 @@ describe('no guest data reaches storage', () => {
     await initStore(true)
     startGuestSession()
 
-    await createTask({
+    const task = await createTask({
       title: 'Guest task',
       description: '',
       subjectId: null,
@@ -58,6 +58,7 @@ describe('no guest data reaches storage', () => {
 
     // Held in memory for this session only…
     expect(getState().tasks.map((t) => t.title)).toContain('Guest task')
+    expect(task.writeResult).toBe('session-only')
     // …and never written anywhere durable.
     expect(localStorage.getItem('alhelm.v1.tasks')).toBeNull()
   })

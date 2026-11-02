@@ -1,4 +1,5 @@
 import { Route, Routes } from 'react-router-dom'
+import { useEffect } from 'react'
 import { AppShell } from './app/AppShell'
 import { HomePage } from './pages/HomePage'
 import { TasksPage } from './pages/TasksPage'
@@ -15,6 +16,7 @@ import { ToastProvider } from './components/Toast'
 import { AdminPage } from './pages/AdminPage'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { LockGate } from './app/LockGate'
+import { initializeAndroidPush } from './services/androidPush'
 
 /**
  * Application routes.
@@ -25,6 +27,21 @@ import { LockGate } from './app/LockGate'
  * independent subscription trees for the same settings.
  */
 function App() {
+  useEffect(() => {
+    let active = true
+    let removeListeners: (() => void) | null = null
+    void initializeAndroidPush()
+      .then((remove) => {
+        if (active) removeListeners = remove
+        else remove()
+      })
+      .catch((error: unknown) => console.error('Android push initialization failed.', error))
+    return () => {
+      active = false
+      removeListeners?.()
+    }
+  }, [])
+
   return (
       <ToastProvider>
       <ErrorBoundary>

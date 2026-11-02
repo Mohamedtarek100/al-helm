@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Toggle } from '../components/Field'
@@ -60,6 +60,23 @@ function defaultLabel(id: string, t: (key: TranslationKey) => string, fallback: 
   return key ? t(key) : fallback
 }
 
+function dateTimeIsFuture(date: string, time: string): boolean {
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
+  const clock = /^(\d{2}):(\d{2})$/.exec(time)
+  if (!day || !clock) return false
+  const year = Number(day[1]), month = Number(day[2]), dayOfMonth = Number(day[3])
+  const hours = Number(clock[1]), minutes = Number(clock[2])
+  const requested = new Date(year, month - 1, dayOfMonth, hours, minutes, 0, 0)
+  if (
+    requested.getFullYear() !== year ||
+    requested.getMonth() !== month - 1 ||
+    requested.getDate() !== dayOfMonth ||
+    requested.getHours() !== hours ||
+    requested.getMinutes() !== minutes
+  ) return false
+  return requested.getTime() > Date.now()
+}
+
 export function ReminderSettings() {
   const settings = useSettings()
   const { t, language, formatDate } = useI18n()
@@ -77,6 +94,8 @@ export function ReminderSettings() {
   const [lastResult, setLastResult] = useState<ReminderSyncResult | null>(null)
   const [testResult, setTestResult] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
+  const [savingAlarm, setSavingAlarm] = useState(false)
+  const savingAlarmRef = useRef(false)
 
   const reminders = settings.reminders
 
@@ -107,11 +126,15 @@ export function ReminderSettings() {
         const granted = await requestReminderPermission()
         if (!granted) {
           setLastResult({ scheduled: 0, permissionGranted: false, webUnsupported: false, error: 'permission_denied' })
-          return // keep the previous (off) state — never show a false "on"
+          notify(t('testNotificationPermission'), 'warning')
+          return
         }
       }
       await updateSettings({ reminders: next, notificationsOptIn: next.some((reminder) => reminder.enabled) })
-      await resync(next)
+      const result = await resync(next)
+      if (supported && result?.error) notify(result.error, 'danger')
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('retry'), 'danger')
     } finally {
       setPendingId(null)
     }
@@ -119,11 +142,22 @@ export function ReminderSettings() {
 
   const changeTime = async (id: string, time: string) => {
     if (!/^\d{2}:\d{2}$/.test(time)) return
+    const current = reminders.find((reminder) => reminder.id === id)
+    if (!current) return
+    if (current.date && !dateTimeIsFuture(current.date, time)) {
+      notify(en ? 'This one-time alarm date has passed.' : 'موعد المنبه لمرة واحدة انتهى بالفعل.', 'warning')
+      return
+    }
     const next = reminders.map((reminder) => (reminder.id === id ? { ...reminder, time } : reminder))
     setPendingId(id)
     try {
       await updateSettings({ reminders: next })
-      if (next.find((reminder) => reminder.id === id)?.enabled) await resync(next)
+      if (next.find((reminder) => reminder.id === id)?.enabled && supported) {
+        const result = await resync(next)
+        if (result?.error) notify(result.error, 'danger')
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('retry'), 'danger')
     } finally {
       setPendingId(null)
     }
@@ -154,7 +188,13 @@ export function ReminderSettings() {
       await updateSettings({ reminders: next })
       // A scheduled notification carries the title captured when it was
       // scheduled, so an enabled reminder must be rescheduled with the new name.
-      if (current.enabled && supported) await resync(next)
+      if (current.enabled && supported) {
+        const result = await resync(next)
+        if (result?.error) {
+          notify(`${t('alarmSaved')} ${t('reminderScheduleFailed', { error: result.error })}`, 'danger')
+          return
+        }
+      }
       notify(t('alarmSaved'), 'success')
     } catch (error) {
       notify(error instanceof Error ? error.message : t('retry'), 'danger')
@@ -170,7 +210,13 @@ export function ReminderSettings() {
     setPendingId(id)
     try {
       await updateSettings({ reminders: next })
-      if (next.find((reminder) => reminder.id === id)?.enabled && supported) await resync(next)
+      if (next.find((reminder) => reminder.id === id)?.enabled && supported) {
+        const result = await resync(next)
+        if (result?.error) {
+          notify(`${t('alarmSaved')} ${t('reminderScheduleFailed', { error: result.error })}`, 'danger')
+          return
+        }
+      }
       notify(t('alarmSaved'), 'success')
     } catch (error) {
       notify(error instanceof Error ? error.message : t('retry'), 'danger')
@@ -242,44 +288,87 @@ export function ReminderSettings() {
   }
 
   const submitAlarm = async () => {
+    if (savingAlarmRef.current) return
     if (!form.label.trim()) { setFormError(t('alarmTitleRequired')); return }
     if (!/^\d{2}:\d{2}$/.test(form.time)) { setFormError(t('alarmTimeRequired')); return }
-    // Enabling an alarm without notification permission would silently never
-    // ring, so permission is requested FIRST and the alarm is left off if denied.
-    let enabled = true
-    if (supported) {
-      const granted = await requestReminderPermission()
-      if (!granted) {
-        enabled = false
-        setLastResult({ scheduled: 0, permissionGranted: false, webUnsupported: false, error: 'permission_denied' })
-      }
+    if (form.date && !dateTimeIsFuture(form.date, form.time)) {
+      setFormError(en ? 'Choose a future date and time.' : 'اختاري تاريخ ووقت في المستقبل.')
+      return
     }
+    savingAlarmRef.current = true
+    setSavingAlarm(true)
+    let preferenceSaved = false
+    let permissionDenied = false
     try {
+      // Editing a disabled alarm must not silently enable it.
+      let enabled = editingId
+        ? reminders.find((reminder) => reminder.id === editingId)?.enabled ?? true
+        : true
+      if (enabled && supported) {
+        const granted = await requestReminderPermission()
+        if (!granted) {
+          enabled = false
+          permissionDenied = true
+          setLastResult({ scheduled: 0, permissionGranted: false, webUnsupported: false, error: 'permission_denied' })
+        }
+      }
       if (editingId) {
         await updateAlarm(editingId, { label: form.label, time: form.time, date: form.date || null, tone: form.tone, enabled })
       } else {
         await createAlarm({ label: form.label, time: form.time, date: form.date || null, tone: form.tone, enabled })
       }
+      preferenceSaved = true
       setDialogOpen(false)
-      notify(t('alarmSaved'), 'success')
-      await resync()
+      if (permissionDenied) {
+        notify(`${t('alarmSaved')} ${t('testNotificationPermission')}`, 'warning')
+      } else {
+        const result = await resync()
+        if (supported && result?.error) {
+          notify(`${t('alarmSaved')} ${t('reminderScheduleFailed', { error: result.error })}`, 'danger')
+        } else {
+          notify(supported ? t('reminderSavedNative') : t('reminderSavedWeb'), 'success')
+        }
+      }
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : t('retry'))
+      const message = error instanceof Error ? error.message : t('retry')
+      if (preferenceSaved) {
+        setDialogOpen(false)
+        notify(`${t('alarmSaved')} ${t('reminderScheduleFailed', { error: message })}`, 'danger')
+      } else {
+        setFormError(message)
+      }
+    } finally {
+      savingAlarmRef.current = false
+      setSavingAlarm(false)
     }
   }
 
   const confirmDelete = async () => {
     if (!deletingId) return
+    let preferenceRemoved = false
     try {
       await deleteAlarm(deletingId)
+      preferenceRemoved = true
       setDeletingId(null)
-      notify(t('alarmDeleted'), 'info')
-      await resync()
+      const result = await resync()
+      if (supported && result?.error) {
+        notify(`${t('alarmDeleted')} ${t('reminderScheduleFailed', { error: result.error })}`, 'danger')
+      } else {
+        notify(t('alarmDeleted'), 'info')
+      }
     } catch (error) {
-      // The alarm is still stored (the store throws before removing it), so the
-      // message must not claim it was deleted.
-      notify(error instanceof Error ? error.message : t('retry'), 'danger')
+      const message = error instanceof Error ? error.message : t('retry')
+      notify(
+        preferenceRemoved
+          ? `${t('alarmDeleted')} ${t('reminderScheduleFailed', { error: message })}`
+          : message,
+        'danger',
+      )
     }
+  }
+
+  const closeAlarmForm = () => {
+    if (!savingAlarmRef.current) setDialogOpen(false)
   }
 
   const alarms = reminders
@@ -407,14 +496,14 @@ export function ReminderSettings() {
       {/* Create / edit alarm. Title, time and an optional one-off date. */}
       <Modal
         open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
+        onClose={closeAlarmForm}
         title={editingId ? t('alarmEdit') : t('alarmNew')}
         footer={<>
-          <Button variant="ghost" onClick={() => setDialogOpen(false)}>{t('adminCancel')}</Button>
-          <Button variant="primary" onClick={() => { void submitAlarm() }}>{t('save')}</Button>
+          <Button variant="ghost" disabled={savingAlarm} onClick={closeAlarmForm}>{t('adminCancel')}</Button>
+          <Button variant="primary" type="submit" form="alarm-form" loading={savingAlarm}>{t('save')}</Button>
         </>}
       >
-        <div className="form-grid">
+        <form id="alarm-form" className="form-grid" onSubmit={(event) => { event.preventDefault(); void submitAlarm() }}>
           <Field label={t('alarmTitle')} required error={formError ?? undefined} className="form-grid__full">
             <TextInput
               value={form.label}
@@ -445,7 +534,7 @@ export function ReminderSettings() {
             </Button>
             {testResult && <span className="t-xs t-muted">{testResult}</span>}
           </div>
-        </div>
+        </form>
       </Modal>
 
       <ConfirmDialog

@@ -9,7 +9,7 @@ import { useI18n } from '../i18n/useI18n'
 import { compositeLayers, createLayers, renderInkLayer, type InkLayers } from '../services/inkLayers'
 import {
   CANVAS_H, CANVAS_W, PAPER_SWATCH, appendPoint, clearDraft, emptyDocument,
-  loadDraft, parseDocument, pointFromClient, redoStroke, renderDocument, saveDraft, undoStroke,
+  loadDraft, parseDocument, pointFromClient, renderDocument, saveDraft,
   type DrawingDocument, type PaperKind, type Point, type Shape, type ShapeKind, type Stroke, type TextElement, type Tool,
 } from '../services/drawing'
 import { makeId } from '../services/drawing'
@@ -41,6 +41,7 @@ import {
 const PALETTE = STUDIO_PALETTE_FLAT
 const DRAFT_DEBOUNCE_MS = 900
 const AUTOSAVE_DEBOUNCE_MS = 2600
+const HISTORY_LIMIT = 100
 
 type SaveState = 'saved' | 'dirty' | 'saving' | 'error'
 
@@ -74,14 +75,15 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   const [viewport, setViewport] = useState<Viewport>(DEFAULT_VIEWPORT)
   const [selected, setSelected] = useState<ElementRef | null>(null)
   /** In-flight selection drag and pan gesture (refs: never stale). */
-  const dragRef = useRef<{ ref: ElementRef; last: Point; bounds: Bounds | null } | null>(null)
+  const dragRef = useRef<{ ref: ElementRef; last: Point; bounds: Bounds | null; origin: DrawingDocument } | null>(null)
   const panStartRef = useRef<{ x: number; y: number } | null>(null)
   /** Latest viewport, for pointer handlers (which must not capture stale state). */
   const viewportRef = useRef<Viewport>(DEFAULT_VIEWPORT)
   /** The shape being dragged (not yet committed). */
   const pendingShapeRef = useRef<Shape | null>(null)
   const [pendingShape, setPendingShape] = useState<Shape | null>(null)
-  const [redo, setRedo] = useState<Stroke[]>([])
+  const [undoStack, setUndoStack] = useState<DrawingDocument[]>([])
+  const [redoStack, setRedoStack] = useState<DrawingDocument[]>([])
   const [drawing, setDrawing] = useState(false)
   const [title, setTitle] = useState(() => loadDraft(null)?.title ?? '')
   const [savedId, setSavedId] = useState<string | null>(() => loadDraft(null)?.artworkId ?? null)
@@ -173,14 +175,22 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     }, DRAFT_DEBOUNCE_MS)
   }, [persistDraft])
 
-  const updateDoc = useCallback((next: DrawingDocument) => {
+  const updateDoc = useCallback((
+    next: DrawingDocument,
+    options: { recordHistory?: boolean; preserveSelection?: boolean } = {},
+  ) => {
+    const previous = docRef.current
+    if (options.recordHistory !== false && previous !== next) {
+      setUndoStack((stack) => [...stack, previous].slice(-HISTORY_LIMIT))
+      setRedoStack([])
+    }
     docRef.current = next
     setDoc(next)
     // Selection is POSITIONAL, so every path that structurally changes the
     // document drops it in the same update. Previously an effect watched the
     // element counts and cleared the selection afterwards; that left one
     // render in which the delete button pointed at a shifted element.
-    setSelected(null)
+    if (!options.preserveSelection) setSelected(null)
     markDirty()
   }, [markDirty])
 
@@ -213,7 +223,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       setSelected(hit)
       if (hit) {
         const bounds = elementBounds(docRef.current, hit)
-        dragRef.current = { ref: hit, last: at, bounds }
+        dragRef.current = { ref: hit, last: at, bounds, origin: docRef.current }
         setDrawing(true)
       }
       return
@@ -226,7 +236,6 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       if (text && text.trim()) {
         const element: TextElement = { id: makeId('txt'), x: at.x, y: at.y, text: text.trim(), color, size: Math.max(12, size * 6) }
         updateDoc({ ...docRef.current, texts: [...(docRef.current.texts ?? []), element] })
-        setRedo([])
       }
       return
     }
@@ -237,13 +246,11 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       pendingShapeRef.current = { id: makeId('shp'), kind: shapeKind, from, to: from, color, size }
       setPendingShape(pendingShapeRef.current)
       setDrawing(true)
-      setRedo([])
       return
     }
 
     currentRef.current = { points: [toPoint(event)], color, size, eraser: tool === 'eraser' }
     setDrawing(true)
-    setRedo([])
     paint(currentRef.current)
   }
 
@@ -264,7 +271,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       const at = toPoint(event)
       const next = moveElement(docRef.current, drag.ref, at.x - drag.last.x, at.y - drag.last.y)
       dragRef.current = { ...drag, last: at }
-      updateDoc(next)
+      updateDoc(next, { recordHistory: false, preserveSelection: true })
       return
     }
 
@@ -292,6 +299,25 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     paint(stroke)
   }
 
+  const cancelGesture = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current
+    dragRef.current = null
+    panStartRef.current = null
+    pendingShapeRef.current = null
+    currentRef.current = null
+    setPendingShape(null)
+    setDrawing(false)
+    if (drag && docRef.current !== drag.origin) {
+      updateDoc(drag.origin, { recordHistory: false })
+    }
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      }
+    } catch { /* capture may already have been released by the browser */ }
+    paint(null)
+  }
+
   const end = (event?: React.PointerEvent<HTMLCanvasElement>) => {
     if (panStartRef.current) {
       panStartRef.current = null
@@ -299,9 +325,13 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       return
     }
     if (dragRef.current) {
+      const drag = dragRef.current
       dragRef.current = null
       setDrawing(false)
-      setRedo([])
+      if (docRef.current !== drag.origin) {
+        setUndoStack((stack) => [...stack, drag.origin].slice(-HISTORY_LIMIT))
+        setRedoStack([])
+      }
       return
     }
     const shape = pendingShapeRef.current
@@ -325,54 +355,26 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* not captured */ }
     }
     updateDoc({ ...docRef.current, strokes: [...docRef.current.strokes, live] })
-    setRedo([])
     paint(null)
   }
 
   /* ---------------- history & tools ---------------- */
 
-  /**
-   * Undo removes the most recent element of ANY kind, in true drawing order:
-   * text, then shapes, then strokes. Keeps undo predictable after the v3 tools.
-   */
+  /** Undo and redo complete document snapshots in actual operation order. */
   const undo = () => {
-    const current = docRef.current
-    if ((current.texts?.length ?? 0) > 0) {
-      const texts = [...(current.texts ?? [])]
-      const removed = texts.pop() as TextElement
-      updateDoc({ ...current, texts })
-      setRedo([{ kind: 'text', element: removed }] as never)
-      return
-    }
-    if ((current.shapes?.length ?? 0) > 0) {
-      const shapes = [...(current.shapes ?? [])]
-      const removed = shapes.pop() as Shape
-      updateDoc({ ...current, shapes })
-      setRedo([{ kind: 'shape', shape: removed }] as never)
-      return
-    }
-    if (current.strokes.length === 0) return
-    const history = undoStroke({ strokes: current.strokes, redo: [] })
-    updateDoc({ ...current, strokes: history.strokes })
-    setRedo(history.redo)
+    if (!undoStack.length) return
+    const previous = undoStack[undoStack.length - 1]
+    setUndoStack((stack) => stack.slice(0, -1))
+    setRedoStack((stack) => [...stack, docRef.current].slice(-HISTORY_LIMIT))
+    updateDoc(previous, { recordHistory: false })
   }
 
   const redoAction = () => {
-    if (redo.length === 0) return
-    const first = redo[0] as unknown as { kind?: string; element?: TextElement; shape?: Shape }
-    if (first.kind === 'text' && first.element) {
-      updateDoc({ ...docRef.current, texts: [...(docRef.current.texts ?? []), first.element] })
-      setRedo([])
-      return
-    }
-    if (first.kind === 'shape' && first.shape) {
-      updateDoc({ ...docRef.current, shapes: [...(docRef.current.shapes ?? []), first.shape] })
-      setRedo([])
-      return
-    }
-    const history = redoStroke({ strokes: docRef.current.strokes, redo })
-    updateDoc({ ...docRef.current, strokes: history.strokes })
-    setRedo(history.redo)
+    if (!redoStack.length) return
+    const next = redoStack[redoStack.length - 1]
+    setRedoStack((stack) => stack.slice(0, -1))
+    setUndoStack((stack) => [...stack, docRef.current].slice(-HISTORY_LIMIT))
+    updateDoc(next, { recordHistory: false })
   }
 
   const changePaper = (paper: PaperKind) => updateDoc({ ...docRef.current, paper })
@@ -388,7 +390,6 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     if (!selected) return
     updateDoc(deleteElement(docRef.current, selected))
     setSelected(null)
-    setRedo([])
   }
 
 
@@ -397,7 +398,6 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     setConfirmClear(false)
     const cleared = { ...docRef.current, strokes: [], shapes: [], texts: [] }
     updateDoc(cleared)
-    setRedo([])
     // Clearing is an explicit action; the saved artwork is only replaced on Save.
     persistDraft(cleared, savedIdRef.current, titleRef.current)
   }
@@ -527,7 +527,8 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     if (fromModel) {
       docRef.current = fromModel
       setDoc(fromModel)
-      setRedo([])
+      setUndoStack([])
+      setRedoStack([])
       setTitle(artwork.title)
       savedIdRef.current = artwork.id
       setSavedId(artwork.id)
@@ -538,7 +539,10 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       return
     }
     // Legacy drawing without a vector model: show the stored image on top of a
-    // blank page so new strokes can be added over it.
+    // blank page so new strokes can be added over it. Keep history scoped to
+    // the artwork currently being edited.
+    setUndoStack([])
+    setRedoStack([])
     setTitle(artwork.title)
     titleRef.current = artwork.title
     savedIdRef.current = artwork.id
@@ -620,8 +624,8 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
 
   return (
     <div className={`page-stack sketch-studio ${focusMode ? 'sketch-studio--focus' : ''}`} ref={rootRef}>
-      <Card padded={false} className="sketch-card">
-        <div className="sketch-toolbar" role="toolbar" aria-label={t('canvasTab')}>
+      <Card padded={false} className={`sketch-card ${paletteOpen ? 'sketch-card--picker-open' : ''}`}>
+        <div className={`sketch-toolbar ${paletteOpen ? 'sketch-toolbar--picker-open' : ''}`} role="toolbar" aria-label={t('canvasTab')}>
           <div className="sketch-toolbar__group">
             <IconButton label={t('sketchPencil')} variant={tool === 'pencil' ? 'primary' : 'secondary'} onClick={() => setTool('pencil')}><PencilIcon size={17} /></IconButton>
             <IconButton label={t('sketchEraser')} variant={tool === 'eraser' ? 'primary' : 'secondary'} onClick={() => setTool('eraser')}><EraserIcon size={17} /></IconButton>
@@ -656,7 +660,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
             <button
               type="button"
               className="sketch-swatch sketch-swatch--wheel"
-              style={{ background: `conic-gradient(#ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)` }}
+              style={{ background: 'conic-gradient(from 90deg, #ff0000, #ff00ff, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)' }}
               aria-label={t('sketchColorWheel')}
               aria-expanded={paletteOpen}
               onClick={() => setPaletteOpen((open) => !open)}
@@ -689,9 +693,9 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
             <span className="sketch-size__value">{size}</span>
           </label>
           <div className="sketch-toolbar__group">
-            <IconButton label={t('undo')} size="sm" onClick={undo} disabled={doc.strokes.length === 0}><UndoIcon size={16} /></IconButton>
-            <IconButton label={t('redo')} size="sm" onClick={redoAction} disabled={redo.length === 0}><RedoIcon size={16} /></IconButton>
-            <IconButton label={t('clearCanvas')} size="sm" variant="danger" onClick={() => setConfirmClear(true)} disabled={doc.strokes.length === 0}><TrashIcon size={16} /></IconButton>
+            <IconButton label={t('undo')} size="sm" onClick={undo} disabled={undoStack.length === 0}><UndoIcon size={16} /></IconButton>
+            <IconButton label={t('redo')} size="sm" onClick={redoAction} disabled={redoStack.length === 0}><RedoIcon size={16} /></IconButton>
+            <IconButton label={t('clearCanvas')} size="sm" variant="danger" onClick={() => setConfirmClear(true)} disabled={doc.strokes.length === 0 && (doc.shapes?.length ?? 0) === 0 && (doc.texts?.length ?? 0) === 0}><TrashIcon size={16} /></IconButton>
           </div>
           <div className="sketch-papers" role="radiogroup" aria-label={t('sketchBackground')}>
             {(['white', 'cream', 'grid'] as PaperKind[]).map((paper) => (
@@ -708,21 +712,17 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
               />
             ))}
           </div>
+          {paletteOpen && (
+            <div className="sketch-wheel-panel">
+              <ColorPicker
+                value={color}
+                compact
+                onChange={(hex) => { setColor(hex); setTool('pencil') }}
+                onCommit={rememberColor}
+              />
+            </div>
+          )}
         </div>
-
-        {/* The colour wheel lives in its own panel so opening it never shrinks
-            the canvas: on wide screens it sits beside the toolbar, on narrow
-            screens it overlays. */}
-        {paletteOpen && (
-          <div className="sketch-wheel-panel">
-            <ColorPicker
-              value={color}
-              compact
-              onChange={(hex) => { setColor(hex); setTool('pencil') }}
-              onCommit={rememberColor}
-            />
-          </div>
-        )}
 
         <div className="sketch-surface">
           <canvas
@@ -735,7 +735,7 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
             onPointerDown={start}
             onPointerMove={move}
             onPointerUp={end}
-            onPointerCancel={end}
+            onPointerCancel={cancelGesture}
             onPointerLeave={(event) => { if (event.pointerType === 'mouse' && event.buttons === 0) end(event) }}
             onContextMenu={(event) => event.preventDefault()}
           />

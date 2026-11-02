@@ -1450,7 +1450,6 @@
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  filter: saturate(1.15);
 }
 
 .color-picker__disc {
@@ -1570,6 +1569,56 @@
   border-radius: var(--r-sm);
   background: var(--paper-3);
   cursor: pointer;
+}
+
+.color-picker__custom-controls {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 7px;
+}
+
+.color-picker__custom input[type='color'] {
+  height: 36px;
+}
+
+.color-picker__custom .color-picker__hex-input {
+  min-width: 0;
+  height: 36px;
+  padding-inline: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-transform: uppercase;
+}
+
+.color-picker__hex-error {
+  color: var(--danger);
+  font-size: var(--t-xs);
+}
+
+.sketch-studio .sketch-toolbar {
+  position: relative;
+  z-index: 4;
+}
+
+.sketch-card--picker-open {
+  overflow: visible;
+}
+
+.sketch-toolbar--picker-open {
+  max-height: none;
+  overflow: visible;
+}
+
+.sketch-toolbar--picker-open .sketch-wheel-panel {
+  position: absolute;
+  inset-inline: 8px;
+  top: calc(100% + 6px);
+  z-index: 20;
+  max-height: min(52dvh, 520px);
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: var(--paper-3);
+  box-shadow: var(--shadow-lg, 0 12px 32px rgba(20, 18, 16, 0.2));
 }
 
 @media (max-width: 640px) {

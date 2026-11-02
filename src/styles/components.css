@@ -667,12 +667,29 @@
     display: grid;
     place-items: center;
     padding: 20px;
-    background: rgba(31, 27, 24, .48);
-    backdrop-filter: blur(3px);
+    isolation: isolate;
+    background: transparent;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
     animation: fade-in 160ms ease-out;
 }
 
+.modal-scrim::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: rgba(31, 27, 24, .48);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+}
+
 .modal {
+    position: relative;
+    z-index: 1;
+    filter: none !important;
+    opacity: 1 !important;
     display: flex;
     flex-direction: column;
     width: min(100%, 560px);

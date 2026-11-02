@@ -165,11 +165,735 @@ async function activityMap(admin: ReturnType<typeof adminClient>): Promise<Map<s
   return new Map((data ?? []).map((row: { user_id: string; last_seen_at: string }) => [row.user_id, row.last_seen_at]))
 }
 
-/** Distinct user ids with a registered push subscription. */
+/** Distinct users with either a browser subscription or an Android token. */
 async function pushSubscriberIds(admin: ReturnType<typeof adminClient>): Promise<Set<string> | { error: string }> {
-  const { data, error } = await admin.from('push_subscriptions').select('user_id')
-  if (error) return { error: error.message }
-  return new Set((data ?? []).map((row: { user_id: string }) => row.user_id))
+  const [web, android] = await Promise.all([
+    admin.from('push_subscriptions').select('user_id'),
+    admin.from('fcm_push_tokens').select('user_id'),
+  ])
+  if (web.error) return { error: web.error.message }
+  if (android.error) return { error: android.error.message }
+  return new Set([
+    ...(web.data ?? []).map((row: { user_id: string }) => row.user_id),
+    ...(android.data ?? []).map((row: { user_id: string }) => row.user_id),
+  ])
+}
+
+interface WebPushSubscription {
+  endpoint: string
+  keys: { p256dh: string; auth: string }
+}
+
+interface FcmServiceAccount {
+  projectId: string
+  clientEmail: string
+  privateKey: string
+}
+
+interface PushOutcome {
+  status: 'accepted' | 'failed' | 'expired'
+  providerStatus: number | null
+  errorCode: string | null
+}
+
+interface PushReport {
+  status: 'not_configured' | 'no_subscriptions' | 'no_retryable_failures' | 'recalled' | 'sent' | 'partial' | 'failed' | 'recording_failed' | 'outcome_persistence_failed' | 'already_processed'
+  attempted: number
+  accepted: number
+  failed: number
+  expired: number
+  remaining?: number
+  error?: string
+}
+
+function validPushEndpoint(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 4096) return false
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) return false
+    const host = url.hostname.toLowerCase()
+    return host === 'fcm.googleapis.com'
+      || host.endsWith('.push.services.mozilla.com')
+      || host === 'push.services.mozilla.com'
+      || host === 'web.push.apple.com'
+      || host.endsWith('.notify.windows.com')
+  } catch {
+    return false
+  }
+}
+
+function validFcmToken(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length >= 20
+    && value.length <= 4096
+    && !/[\u0000-\u0020\u007f]/.test(value)
+}
+
+function validDeviceId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
+}
+
+function parseWebPushSubscription(value: unknown): WebPushSubscription | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  const keys = record.keys && typeof record.keys === 'object'
+    ? record.keys as Record<string, unknown>
+    : null
+  if (!validPushEndpoint(record.endpoint)
+    || !keys
+    || typeof keys.p256dh !== 'string'
+    || typeof keys.auth !== 'string'
+    || !/^[A-Za-z0-9_-]+$/.test(keys.p256dh)
+    || !/^[A-Za-z0-9_-]+$/.test(keys.auth)) return null
+  return { endpoint: record.endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } }
+}
+
+async function subscriptionId(endpoint: string): Promise<string> {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(endpoint))
+  return [...new Uint8Array(bytes)].map((value) => value.toString(16).padStart(2, '0')).join('')
+}
+
+function pushConfiguration() {
+  const publicKey = Deno.env.get('VAPID_PUBLIC_KEY') ?? ''
+  const privateKey = Deno.env.get('VAPID_PRIVATE_KEY') ?? ''
+  const subject = Deno.env.get('VAPID_SUBJECT') ?? ''
+  if (!publicKey || !privateKey || !subject) return null
+  if (!subject.startsWith('mailto:') && !subject.startsWith('https://')) return null
+  return { publicKey, privateKey, subject }
+}
+
+function fcmServiceAccount(): FcmServiceAccount | null {
+  const raw = Deno.env.get('FCM_SERVICE_ACCOUNT_JSON') ?? ''
+  if (!raw || raw.length > 32768) return null
+  try {
+    const account = JSON.parse(raw) as Record<string, unknown>
+    if (account.project_id !== 'ulife-e4b04'
+      || typeof account.client_email !== 'string'
+      || !account.client_email.endsWith('.iam.gserviceaccount.com')
+      || typeof account.private_key !== 'string'
+      || !account.private_key.includes('-----BEGIN PRIVATE KEY-----')) return null
+    return {
+      projectId: account.project_id,
+      clientEmail: account.client_email,
+      privateKey: account.private_key,
+    }
+  } catch {
+    return null
+  }
+}
+
+function base64UrlEncode(value: string | Uint8Array): string {
+  const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
+}
+
+function decodePrivateKey(value: string): Uint8Array<ArrayBuffer> {
+  const body = value
+    .replace('-----BEGIN PRIVATE KEY-----', '')
+    .replace('-----END PRIVATE KEY-----', '')
+    .replace(/\s/g, '')
+  const binary = atob(body)
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length))
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return bytes
+}
+
+let cachedFcmAccessToken: { value: string; expiresAt: number; clientEmail: string } | null = null
+
+async function fcmAccessToken(account: FcmServiceAccount): Promise<string> {
+  if (cachedFcmAccessToken
+    && cachedFcmAccessToken.clientEmail === account.clientEmail
+    && cachedFcmAccessToken.expiresAt > Date.now() + 60_000) {
+    return cachedFcmAccessToken.value
+  }
+
+  const issuedAt = Math.floor(Date.now() / 1000)
+  const header = base64UrlEncode(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
+  const claims = base64UrlEncode(JSON.stringify({
+    iss: account.clientEmail,
+    scope: 'https://www.googleapis.com/auth/firebase.messaging',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: issuedAt,
+    exp: issuedAt + 3600,
+  }))
+  const signingInput = `${header}.${claims}`
+  const key = await crypto.subtle.importKey(
+    'pkcs8',
+    decodePrivateKey(account.privateKey),
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const signature = new Uint8Array(await crypto.subtle.sign(
+    'RSASSA-PKCS1-v1_5',
+    key,
+    new TextEncoder().encode(signingInput),
+  ))
+  const assertion = `${signingInput}.${base64UrlEncode(signature)}`
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion,
+    }),
+  })
+  if (!response.ok) throw new Error('fcm_auth_failed')
+  const result = await response.json() as { access_token?: unknown; expires_in?: unknown }
+  if (typeof result.access_token !== 'string' || typeof result.expires_in !== 'number') {
+    throw new Error('fcm_auth_failed')
+  }
+  cachedFcmAccessToken = {
+    value: result.access_token,
+    expiresAt: Date.now() + Math.max(0, result.expires_in - 60) * 1000,
+    clientEmail: account.clientEmail,
+  }
+  return result.access_token
+}
+
+async function deliverFcmPush(
+  token: string,
+  payload: { title: string; body: string; url: string; announcementId: string },
+  account: FcmServiceAccount,
+): Promise<PushOutcome> {
+  try {
+    const accessToken = await fcmAccessToken(account)
+    const response = await fetch(
+      `https://fcm.googleapis.com/v1/projects/${encodeURIComponent(account.projectId)}/messages:send`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: {
+            token,
+            notification: { title: payload.title, body: payload.body },
+            data: { announcementId: payload.announcementId, url: payload.url },
+          },
+        }),
+      },
+    )
+    if (response.ok) return { status: 'accepted', providerStatus: response.status, errorCode: null }
+
+    const result = await response.json().catch(() => null) as {
+      error?: { status?: unknown; details?: Array<{ errorCode?: unknown }> }
+    } | null
+    const providerCode = result?.error?.details?.find((detail) => typeof detail.errorCode === 'string')?.errorCode
+    const errorCode = typeof providerCode === 'string' && /^[A-Z0-9_]+$/.test(providerCode)
+      ? providerCode
+      : 'provider_error'
+    return {
+      status: errorCode === 'UNREGISTERED' ? 'expired' : 'failed',
+      providerStatus: response.status,
+      errorCode,
+    }
+  } catch {
+    return { status: 'failed', providerStatus: null, errorCode: 'fcm_transport_error' }
+  }
+}
+
+async function deliverWebPush(
+  subscription: WebPushSubscription,
+  payload: { title: string; body: string; url: string; announcementId: string },
+  config: { publicKey: string; privateKey: string; subject: string },
+): Promise<PushOutcome> {
+  try {
+    const { default: webpush } = await import('npm:web-push@3.6.7')
+    webpush.setVapidDetails(config.subject, config.publicKey, config.privateKey)
+    const response = await webpush.sendNotification(subscription, JSON.stringify(payload), {
+      TTL: '86400',
+      urgency: 'normal',
+    })
+    return { status: 'accepted', providerStatus: response.statusCode, errorCode: null }
+  } catch (error) {
+    const providerStatus = error && typeof error === 'object' && 'statusCode' in error
+      && typeof error.statusCode === 'number' ? error.statusCode : null
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      && typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code)
+      ? error.code
+      : 'provider_error'
+    return {
+      status: providerStatus === 404 || providerStatus === 410 ? 'expired' : 'failed',
+      providerStatus,
+      errorCode,
+    }
+  }
+}
+
+async function persistPushSummary(
+  admin: ReturnType<typeof adminClient>,
+  announcementId: string,
+  report: PushReport,
+  resolvedFailures = 0,
+): Promise<void> {
+  const { error } = await admin.rpc('record_announcement_push_summary', {
+    p_announcement_id: announcementId,
+    p_status: report.status,
+    p_attempted: report.attempted,
+    p_accepted: report.accepted,
+    p_failed: report.failed,
+    p_expired: report.expired,
+    p_resolved_failed: resolvedFailures,
+  })
+  if (error) {
+    report.status = 'outcome_persistence_failed'
+    report.error = safeDbError(error, 'push outcome summary')
+  }
+}
+
+async function sendAnnouncementWebPush(
+  admin: ReturnType<typeof adminClient>,
+  announcementId: string,
+  recipients: string[],
+  title: string,
+  body: string,
+): Promise<PushReport> {
+  const config = pushConfiguration()
+  if (!config) return { status: 'not_configured', attempted: 0, accepted: 0, failed: 0, expired: 0 }
+  if (!recipients.length) return { status: 'no_subscriptions', attempted: 0, accepted: 0, failed: 0, expired: 0 }
+
+  const recipientSet = new Set(recipients)
+  const { data, error } = await admin
+    .from('push_subscriptions')
+    .select('id,user_id,subscription')
+    .in('user_id', recipients)
+  if (error) {
+    return {
+      status: 'failed',
+      attempted: 0,
+      accepted: 0,
+      failed: 0,
+      expired: 0,
+      error: safeDbError(error, 'push subscriptions'),
+    }
+  }
+  const subscriptions = (data ?? []).filter((row: { user_id: string }) => recipientSet.has(row.user_id))
+  if (!subscriptions.length) return { status: 'no_subscriptions', attempted: 0, accepted: 0, failed: 0, expired: 0 }
+
+  const parsed = subscriptions.map((row: { id: string; user_id: string; subscription: unknown }) => ({
+    id: row.id,
+    userId: row.user_id,
+    subscription: parseWebPushSubscription(row.subscription),
+  }))
+  const attemptedAt = new Date().toISOString()
+  const { error: recordError } = await admin.from('announcement_push_deliveries').insert(
+    parsed.map((entry) => ({
+      announcement_id: announcementId,
+      user_id: entry.userId,
+      subscription_id: entry.id,
+      provider: 'webpush',
+      status: 'pending',
+      attempt_count: 1,
+      attempted_at: attemptedAt,
+      updated_at: attemptedAt,
+      error_code: entry.subscription ? null : 'invalid_subscription',
+    })),
+  )
+  if (recordError) {
+    return {
+      status: 'recording_failed',
+      attempted: 0,
+      accepted: 0,
+      failed: 0,
+      expired: 0,
+      error: safeDbError(recordError, 'push outcome'),
+    }
+  }
+
+  const report: PushReport = { status: 'sent', attempted: 0, accepted: 0, failed: 0, expired: 0 }
+  const payload = {
+    title,
+    body,
+    url: `#/notifications?announcementId=${encodeURIComponent(announcementId)}`,
+    announcementId,
+  }
+  for (let offset = 0; offset < parsed.length; offset += 10) {
+    const batch = parsed.slice(offset, offset + 10)
+    await Promise.all(batch.map(async (entry) => {
+      const outcome = entry.subscription
+        ? await deliverWebPush(entry.subscription, payload, config)
+        : { status: 'failed' as const, providerStatus: null, errorCode: 'invalid_subscription' }
+      report.attempted += entry.subscription ? 1 : 0
+      if (outcome.status === 'accepted') report.accepted += 1
+      else if (outcome.status === 'expired') report.expired += 1
+      else report.failed += 1
+
+      const updatedAt = new Date().toISOString()
+      const { error: updateError } = await admin
+        .from('announcement_push_deliveries')
+        .update({
+          status: outcome.status,
+          provider_status: outcome.providerStatus,
+          error_code: outcome.errorCode,
+          attempted_at: updatedAt,
+          accepted_at: outcome.status === 'accepted' ? updatedAt : null,
+          updated_at: updatedAt,
+        })
+        .eq('announcement_id', announcementId)
+        .eq('user_id', entry.userId)
+        .eq('provider', 'webpush')
+        .eq('subscription_id', entry.id)
+      if (updateError) {
+        report.status = 'outcome_persistence_failed'
+        report.error = safeDbError(updateError, 'push outcome')
+      }
+
+      if (outcome.status === 'expired') {
+        const { error: deleteError } = await admin.from('push_subscriptions')
+          .delete()
+          .eq('user_id', entry.userId)
+          .eq('id', entry.id)
+        if (deleteError) {
+          report.status = 'outcome_persistence_failed'
+          report.error = safeDbError(deleteError, 'expired subscription cleanup')
+        }
+      }
+    }))
+  }
+  if (report.status !== 'outcome_persistence_failed' && report.failed + report.expired > 0) {
+    report.status = report.accepted > 0 ? 'partial' : 'failed'
+  }
+  return report
+}
+
+async function sendAnnouncementFcm(
+  admin: ReturnType<typeof adminClient>,
+  announcementId: string,
+  recipients: string[],
+  title: string,
+  body: string,
+): Promise<PushReport> {
+  const account = fcmServiceAccount()
+  if (!account) return { status: 'not_configured', attempted: 0, accepted: 0, failed: 0, expired: 0 }
+  if (!recipients.length) return { status: 'no_subscriptions', attempted: 0, accepted: 0, failed: 0, expired: 0 }
+
+  const recipientSet = new Set(recipients)
+  const { data, error } = await admin.from('fcm_push_tokens')
+    .select('token_hash,user_id,token')
+    .in('user_id', recipients)
+  if (error) {
+    return {
+      status: 'failed',
+      attempted: 0,
+      accepted: 0,
+      failed: 0,
+      expired: 0,
+      error: safeDbError(error, 'FCM registrations'),
+    }
+  }
+  const tokens = (data ?? []).filter((row: { user_id: string }) => recipientSet.has(row.user_id))
+  if (!tokens.length) return { status: 'no_subscriptions', attempted: 0, accepted: 0, failed: 0, expired: 0 }
+
+  const attemptedAt = new Date().toISOString()
+  const { error: recordError } = await admin.from('announcement_push_deliveries').insert(
+    tokens.map((row: { token_hash: string; user_id: string }) => ({
+      announcement_id: announcementId,
+      user_id: row.user_id,
+      subscription_id: row.token_hash,
+      provider: 'fcm',
+      status: 'pending',
+      attempt_count: 1,
+      attempted_at: attemptedAt,
+      updated_at: attemptedAt,
+    })),
+  )
+  if (recordError) {
+    return {
+      status: 'recording_failed',
+      attempted: 0,
+      accepted: 0,
+      failed: 0,
+      expired: 0,
+      error: safeDbError(recordError, 'push outcome'),
+    }
+  }
+
+  const report: PushReport = { status: 'sent', attempted: 0, accepted: 0, failed: 0, expired: 0 }
+  const payload = {
+    title,
+    body,
+    url: `#/notifications?announcementId=${encodeURIComponent(announcementId)}`,
+    announcementId,
+  }
+  for (let offset = 0; offset < tokens.length; offset += 10) {
+    await Promise.all(tokens.slice(offset, offset + 10).map(async (row: {
+      token_hash: string
+      user_id: string
+      token: string
+    }) => {
+      report.attempted += 1
+      const outcome = await deliverFcmPush(row.token, payload, account)
+      if (outcome.status === 'accepted') report.accepted += 1
+      else if (outcome.status === 'expired') report.expired += 1
+      else report.failed += 1
+
+      const updatedAt = new Date().toISOString()
+      const { error: updateError } = await admin.from('announcement_push_deliveries')
+        .update({
+          status: outcome.status,
+          provider_status: outcome.providerStatus,
+          error_code: outcome.errorCode,
+          attempted_at: updatedAt,
+          accepted_at: outcome.status === 'accepted' ? updatedAt : null,
+          updated_at: updatedAt,
+        })
+        .eq('announcement_id', announcementId)
+        .eq('user_id', row.user_id)
+        .eq('provider', 'fcm')
+        .eq('subscription_id', row.token_hash)
+      if (updateError) {
+        report.status = 'outcome_persistence_failed'
+        report.error = safeDbError(updateError, 'push outcome')
+      }
+
+      if (outcome.status === 'expired') {
+        const { error: deleteError } = await admin.from('fcm_push_tokens')
+          .delete()
+          .eq('user_id', row.user_id)
+          .eq('token_hash', row.token_hash)
+        if (deleteError) {
+          report.status = 'outcome_persistence_failed'
+          report.error = safeDbError(deleteError, 'expired FCM token cleanup')
+        }
+      }
+    }))
+  }
+  if (report.status !== 'outcome_persistence_failed' && report.failed + report.expired > 0) {
+    report.status = report.accepted > 0 ? 'partial' : 'failed'
+  }
+  return report
+}
+
+function combinePushReports(reports: PushReport[]): PushReport {
+  const attempted = reports.reduce((sum, report) => sum + report.attempted, 0)
+  const accepted = reports.reduce((sum, report) => sum + report.accepted, 0)
+  const failed = reports.reduce((sum, report) => sum + report.failed, 0)
+  const expired = reports.reduce((sum, report) => sum + report.expired, 0)
+  const errors = [...new Set(reports.map((report) => report.error).filter((error): error is string => Boolean(error)))]
+  let status: PushReport['status']
+
+  if (reports.some((report) => report.status === 'outcome_persistence_failed')) {
+    status = 'outcome_persistence_failed'
+  } else if (reports.some((report) => report.status === 'recording_failed')) {
+    status = 'recording_failed'
+  } else if (failed + expired > 0) {
+    status = accepted > 0 ? 'partial' : 'failed'
+  } else if (attempted > 0) {
+    status = 'sent'
+  } else if (reports.some((report) => report.status === 'failed')) {
+    status = 'failed'
+  } else if (reports.some((report) => report.status === 'not_configured')) {
+    status = 'not_configured'
+  } else {
+    status = 'no_subscriptions'
+  }
+
+  return {
+    status,
+    attempted,
+    accepted,
+    failed,
+    expired,
+    ...(errors.length ? { error: errors.join(' ') } : {}),
+  }
+}
+
+async function sendAnnouncementPush(
+  admin: ReturnType<typeof adminClient>,
+  announcementId: string,
+  recipients: string[],
+  title: string,
+  body: string,
+): Promise<PushReport> {
+  const reports = await Promise.all([
+    sendAnnouncementWebPush(admin, announcementId, recipients, title, body),
+    sendAnnouncementFcm(admin, announcementId, recipients, title, body),
+  ])
+  return combinePushReports(reports)
+}
+
+async function retryAnnouncementPush(
+  admin: ReturnType<typeof adminClient>,
+  announcementId: string,
+): Promise<PushReport> {
+  const webPushConfig = pushConfiguration()
+  const fcmConfig = fcmServiceAccount()
+  if (!webPushConfig && !fcmConfig) return { status: 'not_configured', attempted: 0, accepted: 0, failed: 0, expired: 0 }
+
+  const { data: announcement, error: announcementError } = await admin.from('announcements')
+    .select('id,title,body,revoked_at')
+    .eq('id', announcementId)
+    .maybeSingle()
+  if (announcementError) {
+    return {
+      status: 'failed',
+      attempted: 0,
+      accepted: 0,
+      failed: 0,
+      expired: 0,
+      error: safeDbError(announcementError, 'announcement'),
+    }
+  }
+  if (!announcement) {
+    return { status: 'failed', attempted: 0, accepted: 0, failed: 0, expired: 0, error: 'Announcement not found.' }
+  }
+  if (announcement.revoked_at) {
+    return { status: 'recalled', attempted: 0, accepted: 0, failed: 0, expired: 0 }
+  }
+
+  const MAX_ATTEMPTS = 5
+  const { data: failures, count, error: failuresError } = await admin.from('announcement_push_deliveries')
+    .select('user_id,subscription_id,attempt_count,provider', { count: 'exact' })
+    .eq('announcement_id', announcementId)
+    .eq('status', 'failed')
+    .lt('attempt_count', MAX_ATTEMPTS)
+    .limit(100)
+  if (failuresError) {
+    return {
+      status: 'failed',
+      attempted: 0,
+      accepted: 0,
+      failed: 0,
+      expired: 0,
+      error: safeDbError(failuresError, 'push outcome'),
+    }
+  }
+  const retryable = (failures ?? []).filter((row: { provider: string }) =>
+    (row.provider === 'webpush' && webPushConfig) || (row.provider === 'fcm' && fcmConfig),
+  )
+  if (!retryable.length && failures?.length) {
+    return { status: 'not_configured', attempted: 0, accepted: 0, failed: 0, expired: 0, remaining: count ?? failures.length }
+  }
+  if (!retryable.length) {
+    return { status: 'no_retryable_failures', attempted: 0, accepted: 0, failed: 0, expired: 0, remaining: 0 }
+  }
+
+  const report: PushReport = { status: 'sent', attempted: 0, accepted: 0, failed: 0, expired: 0, remaining: count ?? retryable.length }
+  let claimedCount = 0
+  const now = new Date().toISOString()
+  for (const row of retryable as { user_id: string; subscription_id: string; attempt_count: number; provider: 'webpush' | 'fcm' }[]) {
+    const { data: claimed, error: claimError } = await admin.from('announcement_push_deliveries')
+      .update({ status: 'pending', attempt_count: row.attempt_count + 1, attempted_at: now, updated_at: now })
+      .eq('announcement_id', announcementId)
+      .eq('user_id', row.user_id)
+      .eq('provider', row.provider)
+      .eq('subscription_id', row.subscription_id)
+      .eq('status', 'failed')
+      .lt('attempt_count', MAX_ATTEMPTS)
+      .select('user_id,subscription_id')
+      .maybeSingle()
+    if (claimError) {
+      report.status = 'recording_failed'
+      report.error = safeDbError(claimError, 'push retry claim')
+      continue
+    }
+    if (!claimed) continue
+    claimedCount += 1
+
+    let outcome: PushOutcome
+    let savedRegistration = false
+    if (row.provider === 'webpush') {
+      const { data: saved, error: subscriptionError } = await admin.from('push_subscriptions')
+        .select('id,user_id,subscription')
+        .eq('user_id', row.user_id)
+        .eq('id', row.subscription_id)
+        .maybeSingle()
+      if (subscriptionError) {
+        outcome = { status: 'failed', providerStatus: null, errorCode: 'subscription_lookup_failed' }
+      } else if (!saved) {
+        outcome = { status: 'expired', providerStatus: null, errorCode: 'subscription_removed' }
+      } else {
+        savedRegistration = true
+        const subscription = parseWebPushSubscription(saved.subscription)
+        if (!subscription) {
+          outcome = { status: 'failed', providerStatus: null, errorCode: 'invalid_subscription' }
+        } else {
+          report.attempted += 1
+          outcome = await deliverWebPush(subscription, {
+            title: announcement.title,
+            body: announcement.body,
+            url: `#/notifications?announcementId=${encodeURIComponent(announcementId)}`,
+            announcementId,
+          }, webPushConfig as NonNullable<typeof webPushConfig>)
+        }
+      }
+    } else {
+      const { data: saved, error: tokenError } = await admin.from('fcm_push_tokens')
+        .select('token_hash,user_id,token')
+        .eq('user_id', row.user_id)
+        .eq('token_hash', row.subscription_id)
+        .maybeSingle()
+      if (tokenError) {
+        outcome = { status: 'failed', providerStatus: null, errorCode: 'token_lookup_failed' }
+      } else if (!saved) {
+        outcome = { status: 'expired', providerStatus: null, errorCode: 'token_removed' }
+      } else {
+        savedRegistration = true
+        report.attempted += 1
+        outcome = await deliverFcmPush(saved.token, {
+          title: announcement.title,
+          body: announcement.body,
+          url: `#/notifications?announcementId=${encodeURIComponent(announcementId)}`,
+          announcementId,
+        }, fcmConfig as FcmServiceAccount)
+      }
+    }
+
+    if (outcome.status === 'accepted') report.accepted += 1
+    else if (outcome.status === 'expired') report.expired += 1
+    else report.failed += 1
+
+    const updatedAt = new Date().toISOString()
+    const { error: updateError } = await admin.from('announcement_push_deliveries')
+      .update({
+        status: outcome.status,
+        provider_status: outcome.providerStatus,
+        error_code: outcome.errorCode,
+        updated_at: updatedAt,
+        accepted_at: outcome.status === 'accepted' ? updatedAt : null,
+      })
+      .eq('announcement_id', announcementId)
+      .eq('user_id', row.user_id)
+      .eq('provider', row.provider)
+      .eq('subscription_id', row.subscription_id)
+    if (updateError) {
+      report.status = 'outcome_persistence_failed'
+      report.error = safeDbError(updateError, 'push outcome')
+    }
+    if (outcome.status === 'expired' && savedRegistration) {
+      const table = row.provider === 'webpush' ? 'push_subscriptions' : 'fcm_push_tokens'
+      const key = row.provider === 'webpush' ? 'id' : 'token_hash'
+      const { error: deleteError } = await admin.from(table)
+        .delete()
+        .eq('user_id', row.user_id)
+        .eq(key, row.subscription_id)
+      if (deleteError) {
+        report.status = 'outcome_persistence_failed'
+        report.error = safeDbError(deleteError, 'expired push registration cleanup')
+      }
+    }
+  }
+
+  if (claimedCount === 0 && report.status === 'sent') {
+    return { status: 'no_retryable_failures', attempted: 0, accepted: 0, failed: 0, expired: 0, remaining: count ?? 0 }
+  }
+
+  if (report.status !== 'outcome_persistence_failed' && report.status !== 'recording_failed') {
+    if (report.failed + report.expired > 0) report.status = report.accepted > 0 ? 'partial' : 'failed'
+  }
+  const { count: remaining } = await admin.from('announcement_push_deliveries')
+    .select('*', { count: 'exact', head: true })
+    .eq('announcement_id', announcementId)
+    .eq('status', 'failed')
+    .lt('attempt_count', MAX_ATTEMPTS)
+  report.remaining = remaining ?? 0
+  if (report.remaining > 0 && report.status === 'sent') report.status = 'partial'
+  await persistPushSummary(admin, announcementId, report, claimedCount)
+  return report
 }
 
 /** Type guard for the `{ error: string }` shape the helpers return on failure. */
@@ -381,7 +1105,12 @@ Deno.serve(async (req) => {
       .select('id,title,body,created_at')
       .in('id', ids)
     if (annErr) return json({ error: safeDbError(annErr, 'admin data') }, 500)
-    const byId = new Map((anns ?? []).map((a) => [a.id, a]))
+    // Keep the key/value types explicit. Without the tuple assertion, TypeScript
+    // can infer `(string | AnnouncementRow)[]` instead of a Map entry tuple,
+    // making `byId.get()` return an unusable/unknown value in the feed mapper.
+    const byId = new Map<string, AnnouncementRow>(
+      (anns ?? []).map((a): [string, AnnouncementRow] => [a.id, a as AnnouncementRow]),
+    )
     const feed = (deliveries ?? []).flatMap((d: DeliveryRow) => {
       const ann: AnnouncementRow | undefined = byId.get(d.announcement_id)
       if (!ann) return [] // announcement deleted — skip instead of showing an empty row
@@ -412,6 +1141,108 @@ Deno.serve(async (req) => {
     return json({ ok: true })
   }
 
+  if (action === 'push:register') {
+    if (!pushConfiguration()) return json({ error: 'Browser push is not configured on the server.' }, 503)
+    const subscription = parseWebPushSubscription((body as { subscription?: unknown }).subscription)
+    if (!subscription) return json({ error: 'A valid browser push subscription is required.' }, 400)
+    const admin = adminClient()
+    const id = await subscriptionId(subscription.endpoint)
+
+    // An endpoint belongs to the currently authenticated account in this
+    // browser. Removing any prior owner prevents a shared device from sending
+    // a later account's notifications to the previous account's session.
+    const { error: previousOwnerError } = await admin.from('push_subscriptions')
+      .delete()
+      .eq('endpoint', subscription.endpoint)
+      .neq('user_id', user.id)
+    if (previousOwnerError) return json({ error: safeDbError(previousOwnerError, 'push subscription') }, 500)
+
+    const { error } = await admin.from('push_subscriptions').upsert({
+      id,
+      user_id: user.id,
+      endpoint: subscription.endpoint,
+      subscription,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id,endpoint' })
+    if (error) return json({ error: safeDbError(error, 'push subscription') }, 500)
+    return json({ ok: true })
+  }
+
+  if (action === 'push:status') {
+    const endpoint = (body as { endpoint?: unknown }).endpoint
+    if (endpoint !== undefined && !validPushEndpoint(endpoint)) {
+      return json({ error: 'A valid browser push endpoint is required.' }, 400)
+    }
+    let subscribed = false
+    if (typeof endpoint === 'string') {
+      const { data, error } = await adminClient().from('push_subscriptions')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('endpoint', endpoint)
+        .maybeSingle()
+      if (error) return json({ error: safeDbError(error, 'push subscription') }, 500)
+      subscribed = Boolean(data)
+    }
+    return json({ configured: Boolean(pushConfiguration()), subscribed })
+  }
+
+  if (action === 'push:delete') {
+    const endpoint = (body as { endpoint?: unknown }).endpoint
+    if (!validPushEndpoint(endpoint)) return json({ error: 'A valid browser push endpoint is required.' }, 400)
+    const { error } = await adminClient().from('push_subscriptions')
+      .delete()
+      .eq('user_id', user.id)
+      .eq('endpoint', endpoint)
+    if (error) return json({ error: safeDbError(error, 'push subscription') }, 500)
+    return json({ ok: true })
+  }
+
+  if (action === 'fcm:register') {
+    const registration = body as { token?: unknown; deviceId?: unknown }
+    if (!validFcmToken(registration.token) || !validDeviceId(registration.deviceId)) {
+      return json({ error: 'A valid Android push token and device ID are required.' }, 400)
+    }
+    const admin = adminClient()
+    const tokenHash = await subscriptionId(registration.token)
+    const { error: removePreviousOwnerError } = await admin.from('fcm_push_tokens')
+      .delete()
+      .eq('token_hash', tokenHash)
+    if (removePreviousOwnerError) return json({ error: safeDbError(removePreviousOwnerError, 'FCM registration') }, 500)
+
+    const { error } = await admin.from('fcm_push_tokens').upsert({
+      token_hash: tokenHash,
+      user_id: user.id,
+      device_id: registration.deviceId,
+      token: registration.token,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id,device_id' })
+    if (error) return json({ error: safeDbError(error, 'FCM registration') }, 500)
+    return json({ ok: true, configured: Boolean(fcmServiceAccount()) })
+  }
+
+  if (action === 'fcm:status') {
+    const deviceId = (body as { deviceId?: unknown }).deviceId
+    if (!validDeviceId(deviceId)) return json({ error: 'A valid device ID is required.' }, 400)
+    const { data, error } = await adminClient().from('fcm_push_tokens')
+      .select('token_hash')
+      .eq('user_id', user.id)
+      .eq('device_id', deviceId)
+      .maybeSingle()
+    if (error) return json({ error: safeDbError(error, 'FCM registration') }, 500)
+    return json({ configured: Boolean(fcmServiceAccount()), registered: Boolean(data) })
+  }
+
+  if (action === 'fcm:delete') {
+    const deviceId = (body as { deviceId?: unknown }).deviceId
+    if (!validDeviceId(deviceId)) return json({ error: 'A valid device ID is required.' }, 400)
+    const { error } = await adminClient().from('fcm_push_tokens')
+      .delete()
+      .eq('user_id', user.id)
+      .eq('device_id', deviceId)
+    if (error) return json({ error: safeDbError(error, 'FCM registration') }, 500)
+    return json({ ok: true })
+  }
+
   // ────────────────────────────────────────────────────────────────────
   // Everything below requires the admin allowlist (server-side only).
   // ────────────────────────────────────────────────────────────────────
@@ -427,18 +1258,19 @@ Deno.serve(async (req) => {
   if (action === 'metrics') {
     const weekAgo = new Date(Date.now() - 7 * 864e5).toISOString()
     const monthAgo = new Date(Date.now() - 30 * 864e5).toISOString()
-    const [act7, act30, subs] = await Promise.all([
+    const [act7, act30, subscribers] = await Promise.all([
       admin.from('user_activity').select('*', { count: 'exact', head: true }).gte('last_seen_at', weekAgo),
       admin.from('user_activity').select('*', { count: 'exact', head: true }).gte('last_seen_at', monthAgo),
-      admin.from('push_subscriptions').select('*', { count: 'exact', head: true }),
+      pushSubscriberIds(admin),
     ])
     // Surface query failures instead of silently reporting zero counts.
-    for (const result of [act7, act30, subs]) {
+    for (const result of [act7, act30]) {
       if (result.error) return json({ error: safeDbError(result.error, 'admin data') }, 500)
     }
+    if (isFailure(subscribers)) return json({ error: safeDbError({ message: subscribers.error }, 'admin data') }, 500)
     const active7 = act7.count ?? 0
     const active30 = act30.count ?? 0
-    const pushOptIns = subs.count ?? 0
+    const pushOptIns = subscribers.size
     // Registered-user counts come from the auth system (server-side only).
     const listed = await listAllUsers(admin, 40)
     if (isFailure(listed)) return json({ error: safeDbError({ message: listed.error }, 'metrics') }, 500)
@@ -657,6 +1489,11 @@ Deno.serve(async (req) => {
       .select('*', { count: 'exact', head: true })
       .eq('user_id', userId)
     if (subscriptionError) return json({ error: safeDbError(subscriptionError, 'admin data') }, 500)
+    const { count: fcmDeviceCount, error: fcmDeviceError } = await admin
+      .from('fcm_push_tokens')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+    if (fcmDeviceError) return json({ error: safeDbError(fcmDeviceError, 'admin data') }, 500)
     const { count: deliveredCount, error: deliveredError } = await admin
       .from('announcement_delivery')
       .select('*', { count: 'exact', head: true })
@@ -679,7 +1516,8 @@ Deno.serve(async (req) => {
         // Only provider NAMES are exposed — never tokens or identities.
         providers: (u.app_metadata?.providers as string[] | undefined) ?? [],
         emailConfirmed: Boolean(u.email_confirmed_at),
-        pushSubscriptions: subscriptionCount ?? 0,
+        pushSubscriptions: (subscriptionCount ?? 0) + (fcmDeviceCount ?? 0),
+        fcmDevices: fcmDeviceCount ?? 0,
         pushOptIn: Boolean(u.user_metadata?.reminders_opt_in ?? false),
         announcementsDelivered: deliveredCount ?? 0,
         announcementsOpened: openedCount ?? 0,
@@ -752,11 +1590,47 @@ Deno.serve(async (req) => {
     const title = String((body as { title?: string }).title ?? '').trim()
     const message = String((body as { message?: string }).message ?? '').trim()
     const audience = (body as { audience?: string }).audience === 'opted_in' ? 'opted_in' : 'all'
+    const rawRequestId = String((body as { requestId?: string }).requestId ?? '').trim()
+    const requestId = rawRequestId || crypto.randomUUID()
     if (!title || !message) return json({ error: 'Title and message are required.' }, 400)
     // Server-side limits mirror the client's counters so a hand-crafted request
     // cannot bypass them.
     if (title.length > 120) return json({ error: 'The title is too long (120 characters maximum).' }, 400)
     if (message.length > 2000) return json({ error: 'The message is too long (2000 characters maximum).' }, 400)
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
+      return json({ error: 'A valid requestId is required.' }, 400)
+    }
+
+    const duplicateResult = async (
+      announcementId: string,
+      savedPush: { push_status?: string | null; push_attempted?: number; push_accepted?: number; push_failed?: number; push_expired?: number },
+    ) => {
+      const { count, error: countError } = await admin.from('announcement_delivery')
+        .select('*', { count: 'exact', head: true })
+        .eq('announcement_id', announcementId)
+      if (countError) return json({ error: safeDbError(countError, 'announcement delivery') }, 500)
+      return json({
+        ok: true,
+        duplicate: true,
+        announcementId,
+        recipientCount: count ?? 0,
+        push: {
+          status: 'already_processed',
+          originalStatus: savedPush.push_status ?? null,
+          attempted: savedPush.push_attempted ?? 0,
+          accepted: savedPush.push_accepted ?? 0,
+          failed: savedPush.push_failed ?? 0,
+          expired: savedPush.push_expired ?? 0,
+        },
+      })
+    }
+
+    const { data: existing, error: existingError } = await admin.from('announcements')
+      .select('id,push_status,push_attempted,push_accepted,push_failed,push_expired')
+      .eq('request_id', requestId)
+      .maybeSingle()
+    if (existingError) return json({ error: safeDbError(existingError, 'announcement idempotency') }, 500)
+    if (existing) return await duplicateResult(existing.id, existing)
 
     // Resolve recipients server-side. opted_in requires a push subscription.
     let recipients: string[] = []
@@ -772,14 +1646,41 @@ Deno.serve(async (req) => {
       recipients = listed.users.map((u: User) => u.id)
     }
 
-    const { data: ann, error: annErr } = await admin.from('announcements').insert({ title, body: message, audience, created_by: user.id }).select().single()
-    if (annErr) return json({ error: safeDbError(annErr, 'announcement') }, 500)
+    const { data: ann, error: annErr } = await admin.from('announcements')
+      .insert({ title, body: message, audience, created_by: user.id, request_id: requestId })
+      .select()
+      .single()
+    if (annErr) {
+      if (annErr.code === '23505') {
+        const { data: raced, error: raceError } = await admin.from('announcements')
+            .select('id,push_status,push_attempted,push_accepted,push_failed,push_expired')
+          .eq('request_id', requestId)
+          .maybeSingle()
+        if (raceError) return json({ error: safeDbError(raceError, 'announcement idempotency') }, 500)
+          if (raced) return await duplicateResult(raced.id, raced)
+      }
+      return json({ error: safeDbError(annErr, 'announcement') }, 500)
+    }
     if (recipients.length) {
       const { error: delErr } = await admin.from('announcement_delivery').insert(
         recipients.map((uid: string) => ({ announcement_id: ann.id, user_id: uid })),
       )
       if (delErr) return json({ error: safeDbError(delErr, 'announcement fan-out') }, 500)
     }
+    let push: PushReport
+    try {
+      push = await sendAnnouncementPush(admin, ann.id, recipients, title, message)
+    } catch (error) {
+      push = {
+        status: 'failed',
+        attempted: 0,
+        accepted: 0,
+        failed: 0,
+        expired: 0,
+        error: safeDbError({ message: error instanceof Error ? error.message : 'Unknown push error' }, 'push delivery'),
+      }
+    }
+    await persistPushSummary(admin, ann.id, push)
     // Recorded after the fact, best-effort: a failed audit insert must never
     // turn a successful send into a 500 the owner would then retry (sending
     // the announcement twice). `detail` is built from values this handler
@@ -790,15 +1691,32 @@ Deno.serve(async (req) => {
       actor_email: email,
       action: 'announcement_send',
       target: ann.id,
-      detail: { title: title.slice(0, AUDIT_MAX_STRING), audience, recipientCount: recipients.length },
+      detail: {
+        title: title.slice(0, AUDIT_MAX_STRING),
+        audience,
+        recipientCount: recipients.length,
+        pushStatus: push.status,
+        pushAttempted: push.attempted,
+        pushAccepted: push.accepted,
+        pushFailed: push.failed + push.expired,
+      },
     })
-    return json({ ok: true, announcementId: ann.id, recipientCount: recipients.length })
+    return json({ ok: true, announcementId: ann.id, recipientCount: recipients.length, push })
+  }
+
+  if (action === 'push:retry') {
+    const announcementId = String((body as { announcementId?: string }).announcementId ?? '').trim()
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(announcementId)) {
+      return json({ error: 'A valid announcementId is required.' }, 400)
+    }
+    const push = await retryAnnouncementPush(admin, announcementId)
+    return json({ ok: true, announcementId, push })
   }
 
   if (action === 'history') {
     const { data, error } = await admin
       .from('announcements')
-      .select('id,title,body,audience,created_at,revoked_at,announcement_delivery(count)')
+      .select('id,title,body,audience,created_at,revoked_at,announcement_delivery(count),push_status,push_attempted,push_accepted,push_failed,push_expired')
       .order('created_at', { ascending: false }).limit(100)
     if (error) return json({ error: safeDbError(error, 'admin data') }, 500)
     const ids = (data ?? []).map((a: { id: string }) => a.id)
@@ -821,7 +1739,20 @@ Deno.serve(async (req) => {
       }
     }
     return json({
-      history: (data ?? []).map((a: { id: string; title: string; body: string; audience: string; created_at: string; revoked_at?: string | null; announcement_delivery?: { count: number }[] }) => ({
+      history: (data ?? []).map((a: {
+        id: string
+        title: string
+        body: string
+        audience: string
+        created_at: string
+        revoked_at?: string | null
+        announcement_delivery?: { count: number }[]
+        push_status?: string | null
+        push_attempted?: number
+        push_accepted?: number
+        push_failed?: number
+        push_expired?: number
+      }) => ({
         id: a.id,
         title: a.title,
         body: a.body,
@@ -830,6 +1761,11 @@ Deno.serve(async (req) => {
         revokedAt: a.revoked_at ?? null,
         recipientCount: deliveredByAnnouncement.get(a.id) ?? a.announcement_delivery?.[0]?.count ?? 0,
         openedCount: openedByAnnouncement.get(a.id) ?? 0,
+        pushStatus: a.push_status ?? null,
+        pushAttempted: a.push_attempted ?? 0,
+        pushAccepted: a.push_accepted ?? 0,
+        pushFailed: a.push_failed ?? 0,
+        pushExpired: a.push_expired ?? 0,
       })),
     })
   }
@@ -1032,6 +1968,7 @@ Deno.serve(async (req) => {
     await record('delivery', 'Delivery table', async () => ({ error: (await admin.from('announcement_delivery').select('*', { count: 'exact', head: true })).error }))
     await record('activity', 'Activity table', async () => ({ error: (await admin.from('user_activity').select('*', { count: 'exact', head: true })).error }))
     await record('push', 'Push subscriptions', async () => ({ error: (await admin.from('push_subscriptions').select('*', { count: 'exact', head: true })).error }))
+    await record('fcm', 'Android FCM registrations', async () => ({ error: (await admin.from('fcm_push_tokens').select('*', { count: 'exact', head: true })).error }))
     await record('audit', 'Audit log', async () => ({ error: (await admin.from('admin_audit_log').select('*', { count: 'exact', head: true })).error }))
     await record('auth', 'Authentication directory', async () => {
       const { error } = await admin.auth.admin.listUsers({ page: 1, perPage: 1 })
@@ -1048,6 +1985,8 @@ Deno.serve(async (req) => {
         ownerEmail: email,
         serviceRoleConfigured: Boolean(Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')),
         anonKeyConfigured: Boolean(Deno.env.get('SUPABASE_ANON_KEY')),
+        webPushConfigured: Boolean(pushConfiguration()),
+        fcmConfigured: Boolean(fcmServiceAccount()),
       },
     })
   }

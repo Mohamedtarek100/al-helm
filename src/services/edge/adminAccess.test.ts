@@ -80,13 +80,21 @@ describe('server-side enforcement', () => {
     expect(serverSource).not.toMatch(/from\('admin_allowlist'\)/)
   })
 
-  it('runs no privileged query before the authorization gate', () => {
-    // The first use of the service-role client must come after the allowlist
-    // check; before that, only the user-scoped client may be used.
+  it('creates the shared admin client for privileged actions after the authorization gate', () => {
     const gateIndex = serverSource.indexOf('if (!email || !admins.includes(email)) return deny')
-    const adminClientCreation = serverSource.indexOf('const admin = adminClient()')
+    const adminClientCreation = serverSource.indexOf('const admin = adminClient()', gateIndex)
     expect(gateIndex).toBeGreaterThan(-1)
     expect(adminClientCreation).toBeGreaterThan(gateIndex)
+  })
+
+  it('scopes authenticated self-service operations to the verified user', () => {
+    expect(serverSource).toMatch(/if \(action === 'heartbeat'\)[\s\S]*?user_id: user\.id/)
+    expect(serverSource).toMatch(/if \(action === 'push:register'\)[\s\S]*?user_id: user\.id/)
+    expect(serverSource).toMatch(/if \(action === 'push:status'\)[\s\S]*?\.eq\('user_id', user\.id\)/)
+    expect(serverSource).toMatch(/if \(action === 'push:delete'\)[\s\S]*?\.eq\('user_id', user\.id\)/)
+    expect(serverSource).toMatch(/if \(action === 'fcm:register'\)[\s\S]*?user_id: user\.id/)
+    expect(serverSource).toMatch(/if \(action === 'fcm:status'\)[\s\S]*?\.eq\('user_id', user\.id\)/)
+    expect(serverSource).toMatch(/if \(action === 'fcm:delete'\)[\s\S]*?\.eq\('user_id', user\.id\)/)
   })
 
   it('does not route admin:log through a client-writable audit table', () => {

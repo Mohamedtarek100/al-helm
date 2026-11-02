@@ -105,12 +105,18 @@ describe('admin edge client contract', () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ action: 'read', announcementId: 'a1' })
   })
 
-  it('sendAnnouncement passes title, message and audience', async () => {
-    fetchMock.mockResolvedValueOnce(okResponse({ ok: true, announcementId: 'x', recipientCount: 3 }))
-    const res = await sendAnnouncement('hi', 'there', 'all')
+  it('sendAnnouncement passes its idempotency key with the message', async () => {
+    const requestId = '11111111-2222-4333-8444-555555555555'
+    fetchMock.mockResolvedValueOnce(okResponse({
+      ok: true,
+      announcementId: 'x',
+      recipientCount: 3,
+      push: { status: 'not_configured', attempted: 0, accepted: 0, failed: 0, expired: 0 },
+    }))
+    const res = await sendAnnouncement('hi', 'there', 'all', requestId)
     expect(res.recipientCount).toBe(3)
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
-    expect(body).toEqual({ action: 'send', title: 'hi', message: 'there', audience: 'all' })
+    expect(body).toEqual({ action: 'send', title: 'hi', message: 'there', audience: 'all', requestId })
   })
 
   it('metrics and history hit their endpoints with bearer auth', async () => {

@@ -93,7 +93,12 @@ function occurrenceFor(reminder: { time: string; date?: string | null }, from = 
   const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(reminder.date)
   if (!day) return null
   const when = new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3]), parts.hours, parts.minutes, 0, 0)
-  if (Number.isNaN(when.getTime())) return null
+  if (
+    Number.isNaN(when.getTime()) ||
+    when.getFullYear() !== Number(day[1]) ||
+    when.getMonth() !== Number(day[2]) - 1 ||
+    when.getDate() !== Number(day[3])
+  ) return null
   return when.getTime() > from.getTime() ? when : null
 }
 
@@ -110,12 +115,7 @@ function ensureChannel(tone: ReminderTone | null | undefined): Promise<void> {
     vibration: true,
     sound: definition.soundUri ?? 'default',
   }
-  // createChannel is idempotent on Android; a failure here is not fatal because
-  // the schedule call reports the real outcome to the UI.
-  return LocalNotifications.createChannel(channel).then(
-    () => undefined,
-    () => undefined,
-  )
+  return LocalNotifications.createChannel(channel).then(() => undefined)
 }
 
 export interface ReminderSyncResult {
@@ -157,7 +157,8 @@ export async function syncReminders(
   const storedBefore = readStored()
   // A user who disabled every reminder should not even be prompted.
   if (enabled.length === 0) {
-    await cancelNativeIds(Object.keys(storedBefore).map(hashId))
+    const error = await cancelNativeIds(Object.keys(storedBefore).map(hashId))
+    if (error) return { scheduled: 0, permissionGranted: false, webUnsupported: false, error }
     writeStored({})
     return { scheduled: 0, permissionGranted: false, webUnsupported: false, error: null }
   }
@@ -174,22 +175,37 @@ export async function syncReminders(
   for (const reminder of enabled) {
     const when = occurrenceFor(reminder)
     if (!when) {
-      // A dated alarm whose moment has passed is not a scheduling failure — it
-      // is simply done. Only a malformed TIME is reported as an error.
-      if (!parseTime(reminder.time)) failure = failure ?? `invalid time: ${reminder.time}`
+      failure = failure ?? (parseTime(reminder.time)
+        ? `invalid or past date: ${reminder.date ?? ''}`
+        : `invalid time: ${reminder.time}`)
+      if (stored[reminder.id]) {
+        const cancelError = await cancelNativeIds([hashId(reminder.id)])
+        if (cancelError) {
+          failure = failure ?? cancelError
+          next[reminder.id] = stored[reminder.id]
+        }
+      }
       continue
     }
 
-    // Skip if we already scheduled this exact occurrence for this reminder.
-    if (stored[reminder.id] === when.toISOString()) {
-      next[reminder.id] = when.toISOString()
+    // Android captures the title and tone in the scheduled notification.
+    const signature = `${when.toISOString()}|${reminder.label}|${toneById(reminder.tone).channelId}`
+    if (stored[reminder.id] === signature) {
+      next[reminder.id] = signature
       scheduled += 1
       continue
     }
 
     // Cancel any stale native schedule for this reminder id before
     // rescheduling so a time change never leaves two pending alarms.
-    if (stored[reminder.id]) await cancelNativeIds([hashId(reminder.id)])
+    if (stored[reminder.id]) {
+      const cancelError = await cancelNativeIds([hashId(reminder.id)])
+      if (cancelError) {
+        failure = failure ?? cancelError
+        next[reminder.id] = stored[reminder.id]
+        continue
+      }
+    }
 
     try {
       await ensureChannel(reminder.tone)
@@ -205,7 +221,7 @@ export async function syncReminders(
           },
         ],
       })
-      next[reminder.id] = when.toISOString()
+      next[reminder.id] = signature
       scheduled += 1
     } catch (e) {
       failure = failure ?? (e instanceof Error ? e.message : String(e))
@@ -214,7 +230,12 @@ export async function syncReminders(
 
   // Cancel schedules for reminders that were removed entirely.
   const enabledIds = new Set(enabled.map((r) => r.id))
-  await cancelNativeIds(Object.keys(stored).filter((id) => !enabledIds.has(id)).map(hashId))
+  const removedIds = Object.keys(stored).filter((id) => !enabledIds.has(id))
+  const cancelError = await cancelNativeIds(removedIds.map(hashId))
+  if (cancelError) {
+    failure = failure ?? cancelError
+    for (const id of removedIds) next[id] = stored[id]
+  }
 
   writeStored(next)
   return { scheduled, permissionGranted: true, webUnsupported: false, error: failure }
@@ -229,10 +250,9 @@ export async function sendTestNotification(tone?: ReminderTone | null): Promise<
   if (!isNative()) return { ok: false, error: 'web_unsupported' }
   const granted = await requestReminderPermission()
   if (!granted) return { ok: false, error: 'permission_denied' }
-  // The test rings on the tone the user is auditioning, which is the only
-  // reliable way to confirm what an alarm will actually sound like.
-  await ensureChannel(tone)
   try {
+    // Channel setup is part of delivery; its failure must reach the UI.
+    await ensureChannel(tone)
     await LocalNotifications.schedule({
       notifications: [
         {
@@ -249,20 +269,22 @@ export async function sendTestNotification(tone?: ReminderTone | null): Promise<
   }
 }
 
-async function cancelNativeIds(ids: number[]): Promise<void> {
-  if (!isNative() || ids.length === 0) return
+async function cancelNativeIds(ids: number[]): Promise<string | null> {
+  if (!isNative() || ids.length === 0) return null
   try {
     await LocalNotifications.cancel({ notifications: ids.map((id) => ({ id })) })
-    } catch {
-      /* nothing pending */
-    }
+    return null
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
   }
+}
 
-  /** Cancel every native reminder (used on clear/reset). */
+/** Cancel every native reminder (used on clear/reset). */
 export async function cancelAllReminders(): Promise<void> {
   if (!isNative()) return
   const stored = readStored()
-  await cancelNativeIds(Object.keys(stored).map(hashId))
+  const error = await cancelNativeIds(Object.keys(stored).map(hashId))
+  if (error) throw new Error(error)
   writeStored({})
 }
 

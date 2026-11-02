@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { generateKeyPairSync } from 'node:crypto'
 // Vite 8 ships `transformWithOxc`, which strips TypeScript without needing
 // esbuild installed separately (esbuild's deprecated path fails here).
 import { transformWithOxc } from 'vite'
@@ -42,6 +43,12 @@ function emptyQuery(result: { data?: unknown; error?: unknown; count?: number } 
   const proxy: unknown = new Proxy(chain, {
     get: (_target, prop: string) => {
       if (prop === 'then') return (resolve: (value: unknown) => void) => resolve(resolved)
+      if (prop === 'maybeSingle') {
+        return async () => ({
+          ...resolved,
+          data: Array.isArray(resolved.data) ? resolved.data[0] ?? null : resolved.data,
+        })
+      }
       // Any PostgREST builder method returns the same queryable chain.
       return () => proxy
     },
@@ -74,12 +81,42 @@ async function loadHandler(): Promise<(req: Request) => Promise<Response>> {
         }),
       },
     },
+    rpc: (name: string, args: Record<string, unknown>) => {
+      rpcCalls.push({ name, args })
+      return Promise.resolve({ error: null })
+    },
     from: (table: string) => ({
       // The handlers use several different query shapes (count-only selects,
       // ordered limits, filtered lists). A proxy answers all of them from one
       // definition instead of a bespoke chain per endpoint.
-      select: () => emptyQuery(),
-      upsert: async () => ({ error: null }),
+      select: () => emptyQuery(
+        table === 'announcements' && existingAnnouncement
+          ? { data: existingAnnouncement }
+          : table === 'push_subscriptions'
+            ? { data: pushRows }
+            : table === 'fcm_push_tokens'
+              ? { data: fcmRows }
+            : table === 'announcement_push_deliveries'
+              ? { data: retryRows, count: retryRows.length }
+            : {},
+      ),
+      upsert: (row: unknown) => {
+        upsertCalls.push({ table, row })
+        return Promise.resolve({ error: null })
+      },
+      update: (values: unknown) => {
+        updateCalls.push({ table, values })
+        if (table === 'announcement_push_deliveries'
+          && (values as { status?: string }).status === 'pending'
+          && retryRows.length) {
+          return emptyQuery({ data: retryRows.shift() })
+        }
+        return emptyQuery()
+      },
+      delete: () => {
+        deleteCalls.push(table)
+        return emptyQuery()
+      },
       insert: (row: unknown) => {
         // Recorded so tests can assert what the handler actually persists.
         insertCalls.push(row)
@@ -94,7 +131,11 @@ async function loadHandler(): Promise<(req: Request) => Promise<Response>> {
     }),
   })
 
-  const env: Record<string, string> = { ADMIN_EMAILS: ADMIN_EMAIL, SUPABASE_URL: 'https://example.supabase.co' }
+  const env: Record<string, string> = {
+    ADMIN_EMAILS: ADMIN_EMAIL,
+    SUPABASE_URL: 'https://example.supabase.co',
+    ...pushEnvironment,
+  }
 
   // The function is TypeScript, so strip types for real (regex stripping broke
   // on interface declarations). esbuild ships with Vite, so no new dependency.
@@ -117,6 +158,7 @@ async function loadHandler(): Promise<(req: Request) => Promise<Response>> {
   const code = js
     .replace(/^[^\n]*require\([^\n]*\n/gm, '')
     .replace(/^exports\.[^\n]*\n/gm, '')
+    .replace(/import\(["']npm:web-push@3\.6\.7["']\)/g, 'Promise.resolve({ default: globalThis.__webpush })')
     .replace('Deno.serve(', 'globalThis.__serve(')
     .replace(/Deno\.env\.get\(([^)]+)\)/g, 'globalThis.__env[$1]')
 
@@ -124,6 +166,7 @@ async function loadHandler(): Promise<(req: Request) => Promise<Response>> {
   const shim = {
     __serve: (fn: (req: Request) => Promise<Response>) => { handler = fn },
     __env: env,
+    __webpush: webPushMock,
     __supabase: {
       createClient: (_url: string, _key: string, opts?: { global?: { headers?: Record<string, string> } }) =>
         opts?.global?.headers ? userClient(opts.global.headers.Authorization ?? '') : adminClient(),
@@ -138,15 +181,34 @@ async function loadHandler(): Promise<(req: Request) => Promise<Response>> {
 
 /** Rows the handler inserted during the CURRENT request (reset per call). */
 const insertCalls: unknown[] = []
+const upsertCalls: unknown[] = []
+const rpcCalls: { name: string; args: Record<string, unknown> }[] = []
 /**
  * Forces inserts to fail. `only` scopes the failure to one table, so tests can
  * prove that a failing AUDIT write does not break the operation it accompanies
  * (a global failure would fail the announcement insert too and prove nothing).
  */
 let insertError: { message: string; code?: string; only?: string } | null = null
+let pushEnvironment: Record<string, string> = {}
+let existingAnnouncement: Record<string, unknown> | null = null
+let pushRows: { id: string; user_id: string; subscription: unknown }[] = []
+let fcmRows: { token_hash: string; user_id: string; device_id?: string; token: string }[] = []
+let retryRows: { user_id: string; subscription_id: string; attempt_count: number; provider?: string }[] = []
+let deleteCalls: string[] = []
+let updateCalls: { table: string; values: unknown }[] = []
+type WebPushMock = {
+  setVapidDetails: (...args: string[]) => void
+  sendNotification: (subscription: unknown, payload: string, options?: unknown) => Promise<{ statusCode: number }>
+}
+let webPushMock: WebPushMock = {
+  setVapidDetails: () => undefined,
+  sendNotification: async () => ({ statusCode: 201 }),
+}
 
 async function call(init: RequestInit, path = '/admin/gate'): Promise<HandlerResult> {
   insertCalls.length = 0
+  upsertCalls.length = 0
+  rpcCalls.length = 0
   const handler = await loadHandler()
   const req = new Request('https://example.supabase.co/functions/v1' + path, init)
   const res = await handler(req)
@@ -156,7 +218,24 @@ async function call(init: RequestInit, path = '/admin/gate'): Promise<HandlerRes
 beforeEach(() => {
   // loadHandler builds a fresh sandbox per call; these capture its side effects.
   insertCalls.length = 0
+  upsertCalls.length = 0
+  rpcCalls.length = 0
   insertError = null
+  pushEnvironment = {}
+  existingAnnouncement = null
+  pushRows = []
+  fcmRows = []
+  retryRows = []
+  deleteCalls = []
+  updateCalls = []
+  webPushMock = {
+    setVapidDetails: () => undefined,
+    sendNotification: async () => ({ statusCode: 201 }),
+  }
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
 describe('CORS preflight', () => {
@@ -309,7 +388,7 @@ describe('Phase 2–4 endpoints enforce the same gate', () => {
    */
   const PRIVILEGED_ACTIONS = [
     'overview', 'users', 'user', 'directory', 'export', 'recipients',
-    'analytics', 'audit', 'audit:log', 'health', 'history', 'send', 'metrics',
+    'analytics', 'audit', 'audit:log', 'health', 'history', 'send', 'push:retry', 'metrics',
   ]
 
   for (const action of PRIVILEGED_ACTIONS) {
@@ -522,11 +601,466 @@ describe('audit write failures stay best-effort', () => {
     const res = await call({
       method: 'POST',
       headers: OWNER,
-      body: JSON.stringify({ action: 'send', title: 'Hello', message: 'Body', audience: 'all' }),
+      body: JSON.stringify({
+        action: 'send',
+        title: 'Hello',
+        message: 'Body',
+        audience: 'all',
+        requestId: '11111111-2222-4333-8444-555555555555',
+      }),
     }, '/admin/send')
     // Surface the real response when this fails, instead of a bare status diff.
     expect(res.status, `send body: ${res.body}`).toBe(200)
     const payload = JSON.parse(res.body)
     expect(payload.ok).toBe(true)
+    expect(payload.push.status).toBe('not_configured')
+  })
+})
+
+describe('browser push subscription and announcement idempotency', () => {
+  const validSubscription = {
+    endpoint: 'https://fcm.googleapis.com/fcm/send/subscription-token',
+    keys: { p256dh: 'public-key', auth: 'auth-secret' },
+  }
+
+  it('only registers a validated subscription for the authenticated account', async () => {
+    pushEnvironment = {
+      VAPID_PUBLIC_KEY: 'public-key',
+      VAPID_PRIVATE_KEY: 'private-key',
+      VAPID_SUBJECT: 'https://example.test/',
+    }
+    const res = await call({
+      method: 'POST',
+      headers: { Authorization: 'Bearer other-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'push:register', subscription: validSubscription }),
+    }, '/admin/push:register')
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ ok: true })
+    expect(upsertCalls).toHaveLength(1)
+    const saved = upsertCalls[0] as { table: string; row: Record<string, unknown> }
+    expect(saved.table).toBe('push_subscriptions')
+    expect(saved.row.user_id).toBe('u-other')
+    expect(saved.row.endpoint).toBe(validSubscription.endpoint)
+    expect(saved.row.id).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('rejects subscription endpoints outside known HTTPS push providers', async () => {
+    pushEnvironment = {
+      VAPID_PUBLIC_KEY: 'public-key',
+      VAPID_PRIVATE_KEY: 'private-key',
+      VAPID_SUBJECT: 'https://example.test/',
+    }
+    const res = await call({
+      method: 'POST',
+      headers: { Authorization: 'Bearer other-token', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action: 'push:register',
+        subscription: { ...validSubscription, endpoint: 'https://attacker.example/push' },
+      }),
+    }, '/admin/push:register')
+    expect(res.status).toBe(400)
+    expect(upsertCalls).toHaveLength(0)
+  })
+
+  it('refuses browser subscription registration until server VAPID secrets are configured', async () => {
+    const res = await call({
+      method: 'POST',
+      headers: { Authorization: 'Bearer other-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'push:register', subscription: validSubscription }),
+    }, '/admin/push:register')
+    expect(res.status).toBe(503)
+    expect(upsertCalls).toHaveLength(0)
+  })
+
+  it('reuses an existing announcement when a send request is retried', async () => {
+    existingAnnouncement = {
+      id: 'existing-announcement',
+      push_status: 'sent',
+      push_attempted: 2,
+      push_accepted: 1,
+      push_failed: 1,
+      push_expired: 0,
+    }
+    const res = await call({
+      method: 'POST',
+      headers: OWNER,
+      body: JSON.stringify({
+        action: 'send',
+        title: 'Hello',
+        message: 'Body',
+        audience: 'all',
+        requestId: '11111111-2222-4333-8444-555555555555',
+      }),
+    }, '/admin/send')
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({
+      duplicate: true,
+      announcementId: 'existing-announcement',
+      push: { status: 'already_processed', originalStatus: 'sent', attempted: 2, accepted: 1, failed: 1 },
+    })
+    expect(insertCalls).toHaveLength(0)
+  })
+
+  it('records provider acceptance without claiming the device displayed the push', async () => {
+    pushEnvironment = {
+      VAPID_PUBLIC_KEY: 'public-key',
+      VAPID_PRIVATE_KEY: 'private-key',
+      VAPID_SUBJECT: 'https://example.test/',
+    }
+    pushRows = [{
+      id: 'subscription-1',
+      user_id: 'u-owner',
+      subscription: validSubscription,
+    }]
+    const vapidCalls: string[][] = []
+    const sendCalls: { payload: string; options: unknown }[] = []
+    webPushMock = {
+      setVapidDetails: (...args) => { vapidCalls.push(args) },
+      sendNotification: async (_subscription, payload, options) => {
+        sendCalls.push({ payload, options })
+        return { statusCode: 201 }
+      },
+    }
+
+    const res = await call({
+      method: 'POST',
+      headers: OWNER,
+      body: JSON.stringify({
+        action: 'send',
+        title: 'Hello',
+        message: 'Body',
+        audience: 'all',
+        requestId: '11111111-2222-4333-8444-555555555555',
+      }),
+    }, '/admin/send')
+
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({
+      ok: true,
+      push: { status: 'sent', attempted: 1, accepted: 1, failed: 0, expired: 0 },
+    })
+    expect(vapidCalls).toEqual([['https://example.test/', 'public-key', 'private-key']])
+    expect(sendCalls).toHaveLength(1)
+    expect(JSON.parse(sendCalls[0].payload)).toMatchObject({
+      title: 'Hello',
+      body: 'Body',
+      url: '#/notifications?announcementId=a',
+      announcementId: 'a',
+    })
+    expect(JSON.parse(res.body).push).not.toHaveProperty('delivered')
+  })
+
+  it('does not claim there are no registrations when one configured provider is missing', async () => {
+    pushEnvironment = {
+      VAPID_PUBLIC_KEY: 'public-key',
+      VAPID_PRIVATE_KEY: 'private-key',
+      VAPID_SUBJECT: 'https://example.test/',
+    }
+    fcmRows = [{ token_hash: 'b'.repeat(64), user_id: 'u-owner', token: 'long-test-fcm-token-123456789' }]
+
+    const res = await call({
+      method: 'POST',
+      headers: OWNER,
+      body: JSON.stringify({
+        action: 'send',
+        title: 'Hello',
+        message: 'Body',
+        audience: 'opted_in',
+        requestId: '11111111-2222-4333-8444-555555555555',
+      }),
+    }, '/admin/send')
+
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body).push).toMatchObject({ status: 'not_configured', attempted: 0 })
+  })
+
+  it('removes expired endpoints after recording the provider response', async () => {
+    pushEnvironment = {
+      VAPID_PUBLIC_KEY: 'public-key',
+      VAPID_PRIVATE_KEY: 'private-key',
+      VAPID_SUBJECT: 'https://example.test/',
+    }
+    pushRows = [{ id: 'subscription-1', user_id: 'u-owner', subscription: validSubscription }]
+    webPushMock = {
+      setVapidDetails: () => undefined,
+      sendNotification: async () => {
+        throw Object.assign(new Error('expired endpoint'), { statusCode: 410 })
+      },
+    }
+
+    const res = await call({
+      method: 'POST',
+      headers: OWNER,
+      body: JSON.stringify({
+        action: 'send',
+        title: 'Hello',
+        message: 'Body',
+        audience: 'all',
+        requestId: '11111111-2222-4333-8444-555555555555',
+      }),
+    }, '/admin/send')
+
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body).push).toMatchObject({
+      status: 'failed',
+      attempted: 1,
+      accepted: 0,
+      expired: 1,
+    })
+    expect(deleteCalls).toContain('push_subscriptions')
+  })
+
+  it('claims and retries a failed subscription without resending accepted rows', async () => {
+    pushEnvironment = {
+      VAPID_PUBLIC_KEY: 'public-key',
+      VAPID_PRIVATE_KEY: 'private-key',
+      VAPID_SUBJECT: 'https://example.test/',
+    }
+    existingAnnouncement = {
+      id: 'existing-announcement',
+      title: 'Hello',
+      body: 'Body',
+      revoked_at: null,
+      push_attempted: 2,
+      push_accepted: 1,
+      push_failed: 1,
+      push_expired: 0,
+    }
+    retryRows = [{ user_id: 'u-owner', subscription_id: 'subscription-1', attempt_count: 1, provider: 'webpush' }]
+    pushRows = [{ id: 'subscription-1', user_id: 'u-owner', subscription: validSubscription }]
+    let sendCount = 0
+    webPushMock = {
+      setVapidDetails: () => undefined,
+      sendNotification: async () => {
+        sendCount += 1
+        return { statusCode: 201 }
+      },
+    }
+
+    const res = await call({
+      method: 'POST',
+      headers: OWNER,
+      body: JSON.stringify({ action: 'push:retry', announcementId: '11111111-2222-4333-8444-555555555555' }),
+    }, '/admin/push:retry')
+
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body).push).toMatchObject({
+      status: 'sent',
+      attempted: 1,
+      accepted: 1,
+      failed: 0,
+      remaining: 0,
+    })
+    expect(sendCount).toBe(1)
+    expect(updateCalls.some((call) => (
+      call.table === 'announcement_push_deliveries'
+      && (call.values as { status?: string }).status === 'pending'
+    ))).toBe(true)
+    expect(rpcCalls).toContainEqual({
+      name: 'record_announcement_push_summary',
+      args: {
+        p_announcement_id: '11111111-2222-4333-8444-555555555555',
+        p_status: 'sent',
+        p_attempted: 1,
+        p_accepted: 1,
+        p_failed: 0,
+        p_expired: 0,
+        p_resolved_failed: 1,
+      },
+    })
+  })
+
+  it('never retries a recalled announcement', async () => {
+    pushEnvironment = {
+      VAPID_PUBLIC_KEY: 'public-key',
+      VAPID_PRIVATE_KEY: 'private-key',
+      VAPID_SUBJECT: 'https://example.test/',
+    }
+    existingAnnouncement = {
+      id: 'existing-announcement',
+      title: 'Hello',
+      body: 'Body',
+      revoked_at: '2026-01-01T00:00:00Z',
+      push_attempted: 1,
+      push_accepted: 0,
+      push_failed: 1,
+      push_expired: 0,
+    }
+    retryRows = [{ user_id: 'u-owner', subscription_id: 'subscription-1', attempt_count: 1 }]
+
+    const res = await call({
+      method: 'POST',
+      headers: OWNER,
+      body: JSON.stringify({ action: 'push:retry', announcementId: '11111111-2222-4333-8444-555555555555' }),
+    }, '/admin/push:retry')
+
+    expect(JSON.parse(res.body).push.status).toBe('recalled')
+    expect(updateCalls).toHaveLength(0)
+  })
+})
+
+describe('authenticated Android FCM registration', () => {
+  const serviceAccount = JSON.stringify({
+    project_id: 'ulife-e4b04',
+    client_email: 'push-sender@ulife-e4b04.iam.gserviceaccount.com',
+    private_key: '-----BEGIN PRIVATE KEY-----\\nZmFrZQ==\\n-----END PRIVATE KEY-----',
+  })
+
+  it('stores a validated FCM token only against the verified user and reports server setup', async () => {
+    pushEnvironment = { FCM_SERVICE_ACCOUNT_JSON: serviceAccount }
+    const res = await call({
+      method: 'POST',
+      headers: { Authorization: 'Bearer other-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'fcm:register', token: 'long-valid-test-fcm-token-123456789', deviceId: 'device-01' }),
+    }, '/admin/fcm:register')
+
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ ok: true, configured: true })
+    const saved = upsertCalls.find((entry) => (entry as { table: string }).table === 'fcm_push_tokens') as { row: Record<string, unknown> }
+    expect(saved.row.user_id).toBe('u-other')
+    expect(saved.row.device_id).toBe('device-01')
+    expect(saved.row.token).toBe('long-valid-test-fcm-token-123456789')
+    expect(saved.row.token_hash).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('rejects malformed registration data without storing a token', async () => {
+    const res = await call({
+      method: 'POST',
+      headers: { Authorization: 'Bearer other-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'fcm:register', token: 'short', deviceId: 'device-01' }),
+    }, '/admin/fcm:register')
+
+    expect(res.status).toBe(400)
+    expect(upsertCalls).toHaveLength(0)
+  })
+
+  it('reports the authenticated account device status without exposing its token', async () => {
+    pushEnvironment = { FCM_SERVICE_ACCOUNT_JSON: serviceAccount }
+    fcmRows = [{
+      token_hash: 'a'.repeat(64),
+      user_id: 'u-other',
+      device_id: 'device-01',
+      token: 'secret-device-token',
+    }]
+    const res = await call({
+      method: 'POST',
+      headers: { Authorization: 'Bearer other-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'fcm:status', deviceId: 'device-01' }),
+    }, '/admin/fcm:status')
+
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ configured: true, registered: true })
+    expect(res.body).not.toContain('secret-device-token')
+  })
+
+  it('deletes the authenticated user device registration', async () => {
+    const res = await call({
+      method: 'POST',
+      headers: { Authorization: 'Bearer other-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'fcm:delete', deviceId: 'device-01' }),
+    }, '/admin/fcm:delete')
+
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ ok: true })
+    expect(deleteCalls).toContain('fcm_push_tokens')
+  })
+
+  it('sends an announcement through FCM and records provider acceptance without exposing the token', async () => {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
+    pushEnvironment = {
+      FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({
+        project_id: 'ulife-e4b04',
+        client_email: 'push-sender@ulife-e4b04.iam.gserviceaccount.com',
+        private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }),
+      }),
+    }
+    const fcmToken = 'long-test-fcm-token-never-returned-to-the-client'
+    fcmRows = [{ token_hash: 'b'.repeat(64), user_id: 'u-owner', token: fcmToken }]
+    const requests: { url: string; body: string }[] = []
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      const body = init?.body ? String(init.body) : ''
+      requests.push({ url, body })
+      if (url === 'https://oauth2.googleapis.com/token') {
+        return new Response(JSON.stringify({ access_token: 'test-access-token', expires_in: 3600 }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ name: 'projects/ulife-e4b04/messages/message-1' }), { status: 200 })
+    })
+
+    const res = await call({
+      method: 'POST',
+      headers: OWNER,
+      body: JSON.stringify({
+        action: 'send',
+        title: 'Hello',
+        message: 'Body',
+        audience: 'opted_in',
+        requestId: '11111111-2222-4333-8444-555555555555',
+      }),
+    }, '/admin/send')
+
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body).push).toMatchObject({ status: 'sent', attempted: 1, accepted: 1, failed: 0 })
+    expect(requests.map((request) => request.url)).toEqual([
+      'https://oauth2.googleapis.com/token',
+      'https://fcm.googleapis.com/v1/projects/ulife-e4b04/messages:send',
+    ])
+    expect(JSON.parse(requests[1].body)).toMatchObject({
+      message: { token: fcmToken, data: { announcementId: 'a' } },
+    })
+    expect(res.body).not.toContain(fcmToken)
+    expect(rpcCalls.some((call) => call.name === 'record_announcement_push_summary')).toBe(true)
+  })
+
+  it('retries only the failed FCM registration and records the resolved failure', async () => {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
+    pushEnvironment = {
+      FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({
+        project_id: 'ulife-e4b04',
+        client_email: 'push-sender@ulife-e4b04.iam.gserviceaccount.com',
+        private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }),
+      }),
+    }
+    const tokenHash = 'c'.repeat(64)
+    fcmRows = [{ token_hash: tokenHash, user_id: 'u-owner', token: 'long-test-fcm-token-for-retry-123456' }]
+    retryRows = [{ user_id: 'u-owner', subscription_id: tokenHash, attempt_count: 1, provider: 'fcm' }]
+    existingAnnouncement = {
+      id: 'existing-announcement',
+      title: 'Hello',
+      body: 'Body',
+      revoked_at: null,
+    }
+    vi.stubGlobal('fetch', async (input: string | URL | Request) => (
+      String(input) === 'https://oauth2.googleapis.com/token'
+        ? new Response(JSON.stringify({ access_token: 'test-access-token', expires_in: 3600 }), { status: 200 })
+        : new Response(JSON.stringify({ name: 'projects/ulife-e4b04/messages/message-2' }), { status: 200 })
+    ))
+
+    const res = await call({
+      method: 'POST',
+      headers: OWNER,
+      body: JSON.stringify({ action: 'push:retry', announcementId: '11111111-2222-4333-8444-555555555555' }),
+    }, '/admin/push:retry')
+
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body).push).toMatchObject({
+      status: 'sent',
+      attempted: 1,
+      accepted: 1,
+      failed: 0,
+      remaining: 0,
+    })
+    expect(rpcCalls).toContainEqual({
+      name: 'record_announcement_push_summary',
+      args: {
+        p_announcement_id: '11111111-2222-4333-8444-555555555555',
+        p_status: 'sent',
+        p_attempted: 1,
+        p_accepted: 1,
+        p_failed: 0,
+        p_expired: 0,
+        p_resolved_failed: 1,
+      },
+    })
   })
 })

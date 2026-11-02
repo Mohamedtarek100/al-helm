@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAdminPreferences } from '../../../services/edge/adminSettings'
 import { useI18n } from '../../../i18n/useI18n'
 import { useToast } from '../../../components/toastContext'
@@ -7,6 +7,7 @@ import {
   getAdminHistory,
   getRecipientCount,
   logAdminAction,
+  retryAnnouncementPush,
   sendAnnouncement,
   type AnnouncementHistoryRow,
   type RecipientCount,
@@ -68,6 +69,7 @@ export function AnnouncementsSection({
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [audience, setAudience] = useState<'all' | 'opted_in'>('all')
+  const [sendRequestId, setSendRequestId] = useState<string | null>(null)
   // `resolvedFor` records which request produced this result, so "loading" is
   // computed rather than written into state from inside the effect.
   const [countState, setCountState] = useState<{
@@ -79,10 +81,12 @@ export function AnnouncementsSection({
   const [countNonce, setCountNonce] = useState(0)
   const [confirming, setConfirming] = useState(false)
   const [sending, setSending] = useState(false)
+  const sendInFlight = useRef(false)
   const [historySearch, setHistorySearch] = useState('')
   const [selected, setSelected] = useState<AnnouncementHistoryRow | null>(null)
   const [recallTarget, setRecallTarget] = useState<AnnouncementHistoryRow | null>(null)
   const [recalling, setRecalling] = useState(false)
+  const [retryingPush, setRetryingPush] = useState(false)
 
   /**
    * Recalls a sent announcement from every recipient's inbox.
@@ -104,6 +108,34 @@ export function AnnouncementsSection({
       notify(error instanceof Error ? error.message : t('acRecallFailed'), 'danger')
     } finally {
       setRecalling(false)
+    }
+  }
+
+  const doRetryPush = async (announcementId: string) => {
+    setRetryingPush(true)
+    try {
+      const { push } = await retryAnnouncementPush(announcementId)
+      if (push.status === 'not_configured') {
+        notify(t('acRetryPushNotConfigured'), 'warning')
+      } else if (push.status === 'recalled') {
+        notify(t('acRetryPushRecalled'), 'warning')
+      } else if (push.status === 'no_retryable_failures') {
+        notify(t('acRetryPushNone'), 'info')
+      } else {
+        notify(t('acRetryPushOutcome', {
+          attempted: push.attempted,
+          accepted: push.accepted,
+          failed: push.failed + push.expired,
+          remaining: push.remaining ?? 0,
+        }), push.failed + push.expired > 0 || (push.remaining ?? 0) > 0 || Boolean(push.error) ? 'warning' : 'success')
+        if (push.error) notify(push.error, 'warning')
+      }
+      setSelected(null)
+      history.retry()
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t('acRetryPushFailed'), 'danger')
+    } finally {
+      setRetryingPush(false)
     }
   }
   const [previewTime] = useState(() => new Date().toLocaleString(en ? 'en-US' : 'ar-EG', { dateStyle: 'medium', timeStyle: 'short' }))
@@ -148,13 +180,40 @@ export function AnnouncementsSection({
   const valid = title.trim().length > 0 && body.trim().length > 0 && !titleError && !bodyError
 
   const doSend = async () => {
+    if (sendInFlight.current) return
+    sendInFlight.current = true
     setConfirming(false)
     setSending(true)
+    const requestId = sendRequestId ?? crypto.randomUUID()
+    setSendRequestId(requestId)
     try {
-      const result = await sendAnnouncement(title.trim(), body.trim(), audience)
-      notify(t('acSendSuccess', { count: result.recipientCount }), 'success')
+      const result = await sendAnnouncement(title.trim(), body.trim(), audience, requestId)
+      if (result.duplicate) {
+        notify(t('acSendDuplicate', { count: result.recipientCount }), 'info')
+      } else if (result.push.status === 'not_configured') {
+        notify(t('acSendInAppOnly', { count: result.recipientCount }), 'warning')
+      } else if (result.push.status === 'no_subscriptions') {
+        notify(t('acSendNoSubscriptions', { count: result.recipientCount }), 'info')
+      } else if (result.push.error && result.push.attempted > 0) {
+        notify(t('acSendPushPersistenceWarning', {
+          attempted: result.push.attempted,
+          accepted: result.push.accepted,
+          failed: result.push.failed + result.push.expired,
+          reason: result.push.error,
+        }), 'warning')
+      } else if (result.push.error) {
+        notify(t('acSendPushUnavailable', { count: result.recipientCount, reason: result.push.error }), 'warning')
+      } else {
+        notify(t('acSendPushOutcome', {
+          count: result.recipientCount,
+          attempted: result.push.attempted,
+          accepted: result.push.accepted,
+          failed: result.push.failed + result.push.expired,
+        }), result.push.failed + result.push.expired > 0 ? 'warning' : 'success')
+      }
       setTitle('')
       setBody('')
+      setSendRequestId(null)
       setTab('history')
       onSent()
       void logAdminAction('announcement_send', result.announcementId, {
@@ -165,6 +224,7 @@ export function AnnouncementsSection({
       notify(error instanceof Error ? error.message : t('acSendFailed'), 'danger')
     } finally {
       setSending(false)
+      sendInFlight.current = false
     }
   }
 
@@ -216,12 +276,49 @@ export function AnnouncementsSection({
       ),
       align: 'end',
     },
+    {
+      key: 'push',
+      header: t('acPushStatus'),
+      render: (row) => {
+        const status = row.pushStatus ?? null
+        const isConfiguredGap = status === null || status === 'not_configured' || status === 'no_subscriptions'
+        const failed = (row.pushFailed ?? 0) + (row.pushExpired ?? 0)
+        const tone = isConfiguredGap
+          ? 'muted'
+          : status === 'sent' && failed === 0
+            ? 'ok'
+            : status === 'partial' || status === 'outcome_persistence_failed'
+              ? 'warn'
+              : 'error'
+        const label = status === null
+          ? t('acPushNotRecorded')
+          : status === 'not_configured'
+            ? t('acPushNotConfigured')
+            : status === 'no_subscriptions'
+              ? t('acPushNoSubscriptions')
+              : status === 'recording_failed'
+                ? t('acPushRecordingFailed')
+                : status === 'outcome_persistence_failed'
+                  ? t('acPushOutcomePersistenceFailed')
+                  : status === 'failed'
+                    ? t('acPushDeliveryFailed')
+              : t('acPushOutcomes', {
+                accepted: row.pushAccepted ?? 0,
+                attempted: row.pushAttempted ?? 0,
+                failed,
+              })
+        return <AdminStatusBadge tone={tone}>{label}</AdminStatusBadge>
+      },
+      hideOnMobile: true,
+    },
   ]
 
   const totalDelivered = history.state.status === 'ready'
     ? history.state.data.history.reduce((sum, row) => sum + row.recipientCount, 0) : 0
   const totalOpened = history.state.status === 'ready'
     ? history.state.data.history.reduce((sum, row) => sum + (row.openedCount ?? 0), 0) : 0
+  const totalPushAccepted = history.state.status === 'ready'
+    ? history.state.data.history.reduce((sum, row) => sum + (row.pushAccepted ?? 0), 0) : 0
 
   return (
     <>
@@ -249,14 +346,20 @@ export function AnnouncementsSection({
       {tab === 'compose' && (
         <div className="ac-grid ac-grid--panels">
           <AdminCard title={t('acAnnounceCompose')}>
+            <p className="alert alert--warning" role="note">
+              {en
+                ? 'This creates in-app inbox entries. Push-provider acceptance is reported separately and does not prove a browser or phone displayed the notification.'
+                : 'ده بيضيف الإعلان لصندوق الإشعارات داخل التطبيق. قبول مزود Push بيتعرض لوحده ومش دليل إن المتصفح أو الموبايل عرض الإشعار.'}
+            </p>
             <div className="ac-form">
               <label className="ac-field">
                 <span className="ac-field__label">{t('adminTitleCol')}</span>
                 <input
                   className={titleError ? 'ac-input ac-input--invalid' : 'ac-input'}
                   value={title}
+                  disabled={sending}
                   maxLength={TITLE_LIMIT + 20}
-                  onChange={(event) => setTitle(event.target.value)}
+                  onChange={(event) => { setTitle(event.target.value); setSendRequestId(null) }}
                   placeholder={t('adminTitlePlaceholder')}
                 />
                 <span className="ac-field__meta">{t('acMessageLength', { used: title.length, max: TITLE_LIMIT })}</span>
@@ -268,8 +371,9 @@ export function AnnouncementsSection({
                   className={bodyError ? 'ac-input ac-input--invalid' : 'ac-input ac-textarea'}
                   rows={7}
                   value={body}
+                  disabled={sending}
                   maxLength={BODY_LIMIT + 50}
-                  onChange={(event) => setBody(event.target.value)}
+                  onChange={(event) => { setBody(event.target.value); setSendRequestId(null) }}
                   placeholder={t('adminMessagePlaceholder')}
                 />
                 <span className="ac-field__meta">{t('acMessageLength', { used: body.length, max: BODY_LIMIT })}</span>
@@ -278,8 +382,9 @@ export function AnnouncementsSection({
               <AdminFilterField label={t('adminAudience')}>
                 <AdminSelect<'all' | 'opted_in'>
                   value={audience}
-                  onChange={setAudience}
+                  onChange={(value) => { setAudience(value); setSendRequestId(null) }}
                   ariaLabel={t('adminAudience')}
+                  disabled={sending}
                   options={[
                     { value: 'all', label: t('adminAudienceAll') },
                     { value: 'opted_in', label: t('adminAudienceOptedIn') },
@@ -358,6 +463,13 @@ export function AnnouncementsSection({
               tone="ok"
               footnote={`${t('acOpenRate')}: ${formatRate(rate(totalOpened, totalDelivered))}`}
             />
+            <AdminStatCard
+              label={t('acPushAccepted')}
+              value={history.state.status === 'ready' ? totalPushAccepted : null}
+              index={3}
+              tone="info"
+              footnote={t('acPushAcceptanceNotDisplay')}
+            />
           </div>
 
           <AdminCard
@@ -425,6 +537,19 @@ export function AnnouncementsSection({
               <div style={{ marginTop: 16 }}>
                 <p className="ac-card__hint" style={{ marginBottom: 6 }}>{t('acBodyLabel')}</p>
                 <div className="ac-quoted">{selected.body}</div>
+              </div>
+            )}
+
+            {(selected.pushFailed ?? 0) > 0 && !selected.revokedAt && (
+              <div style={{ marginTop: 18 }}>
+                <p className="ac-footnote" style={{ marginBottom: 8 }}>{t('acRetryPushHint')}</p>
+                <AdminButton
+                  loading={retryingPush}
+                  disabled={retryingPush || recalling}
+                  onClick={() => { void doRetryPush(selected.id) }}
+                >
+                  {t('acRetryPush')}
+                </AdminButton>
               </div>
             )}
 

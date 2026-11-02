@@ -3,9 +3,10 @@ import type { ReactNode } from 'react'
 import { AnonymousGuestProvider } from '../services/guest'
 import { hasStoredUserContent } from '../services/domain'
 import { getState } from '../services/store'
-import { shouldShowOnboarding } from '../services/onboarding'
+import { getLaunchMode, shouldShowOnboarding } from '../services/onboarding'
 import { supabase } from '../services/persistence/supabase'
 import { useAuthSignal } from '../services/authState'
+import { endGuestSession, startGuestSession } from '../services/guestMode'
 import { WelcomePage } from '../pages/WelcomePage'
 
 /**
@@ -35,11 +36,15 @@ export function LaunchGate({ children }: { children: ReactNode }) {
     let active = true
     const decide = async () => {
       let email: string | null = null
+      let hasSession = false
       if (supabase) {
         const { data } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }))
         email = data.session?.user.email ?? null
+        hasSession = Boolean(data.session)
       }
       if (!active) return
+      if (getLaunchMode() === 'guest' && !hasSession) startGuestSession()
+      else endGuestSession()
       const show = shouldShowOnboarding({
         hasExistingData: hasStoredUserContent(getState()),
         sessionEmail: email,

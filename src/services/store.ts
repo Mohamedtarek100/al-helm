@@ -40,7 +40,6 @@ import { createId, nowIso } from './persistence/repository'
 import { toValidDate } from './date'
 import { endGuestSession, isGuestSession } from './guestMode'
 import { createInitialData, hydrateData } from './domain'
-import { syncReminders } from './reminders'
 import { markSynced, markSyncFailed, markSyncing, reconcileWithStore } from './syncStatus'
 import { cleanSubjectName, findSubjectIncludingArchived, SubjectDuplicateError, subjectNameKey } from './subjects'
 import { isTaskPriority, normalizeTaskPriority } from './taskPriority'
@@ -95,8 +94,8 @@ const persistence = new PersistenceCoordinator(dataAdapter, cloudAdapter())
  * warning ("saved here, not yet in your account") rather than an error, because
  * an error invites a retry — and a retry of a create would duplicate the item.
  */
-export type SaveOutcome = 'cloud' | 'local'
-export type WriteResult = 'cloud' | 'local-only'
+export type SaveOutcome = 'cloud' | 'local' | 'session'
+export type WriteResult = 'cloud' | 'local-only' | 'session-only'
 
 /** Serialises full-snapshot writes so two saves can never interleave. */
 let writeChain: Promise<unknown> = Promise.resolve()
@@ -121,10 +120,8 @@ function localCopyOf(data: AppData): AppData {
  * the user the truth instead of a generic "saved".
  */
 async function persistCloudSnapshot(snapshot: AppData): Promise<SaveOutcome> {
-  // GUEST SESSION: no durable write of any kind. The change is already in the
-  // in-memory snapshot; returning 'local' reports "kept in this session" and the
-  // UI never claims it was saved. Nothing reaches localStorage or Supabase.
-  if (isGuestSession()) return 'local'
+  // Guest edits are held only in memory and must not be reported as durable.
+  if (isGuestSession()) return 'session'
   return enqueueWrite(async () => {
     const generation = accountGeneration
     const cloudActive = persistence.snapshot().mode === 'cloud'
@@ -201,6 +198,7 @@ export async function retryPersistence(): Promise<SaveOutcome> {
     await authenticateCloudUser(current)
   }
   const outcome = await persistCloudSnapshot(state)
+  if (outcome === 'session') throw new Error('Guest-session changes are temporary and cannot be synced.')
   if (outcome === 'local') throw new Error('Cloud sync is not active, so the changes are saved on this device only.')
   return outcome
 }
@@ -241,6 +239,7 @@ async function commitAndPersist(next: AppData): Promise<WriteResult> {
   emit()
   try {
     const outcome = await persistCloudSnapshot(next)
+    if (outcome === 'session') return 'session-only'
     return outcome === 'cloud' ? 'cloud' : 'local-only'
   } catch(error){
     if(persistence.snapshot().mode==='local'){
@@ -407,6 +406,7 @@ async function withCollectionPersist<K extends CollectionKey>(key:K,updater:(ite
  */
 export async function persistCurrent(): Promise<SaveOutcome> {
   const result = await commitAndPersist(structuredClone(state))
+  if (result === 'session-only') return 'session'
   return result === 'cloud' ? 'cloud' : 'local'
 }
 export function activePersistenceMode(): 'local'|'cloud' { return persistence.snapshot().mode }
@@ -483,7 +483,6 @@ export async function updateSettings(patch: Partial<Settings>): Promise<void> {
   if (patch.theme !== undefined) applyTheme(next.theme)
   await commitAndPersist({ ...state, settings:next })
   if (patch.theme === undefined) applyTheme(next.theme)
-  if (patch.reminders) void syncReminders(next.reminders).then((r) => { if (r.error) console.warn('Reminder scheduling issue:', r.error) })
 }
 
 /* ------------------------------------------------------------------ */
@@ -527,7 +526,6 @@ export async function createAlarm(input: NewAlarm): Promise<ReminderPreference> 
   }
   const reminders = [...state.settings.reminders, alarm]
   await commitAndPersist({ ...state, settings: { ...state.settings, reminders, notificationsOptIn: true } })
-  void syncReminders(reminders).catch(() => undefined)
   return alarm
 }
 
@@ -545,7 +543,6 @@ export async function updateAlarm(id: string, patch: Partial<NewAlarm> & { enabl
   }
   const reminders = state.settings.reminders.map((reminder) => reminder.id === id ? next : reminder)
   await commitAndPersist({ ...state, settings: { ...state.settings, reminders, notificationsOptIn: reminders.some((r) => r.enabled) } })
-  void syncReminders(reminders).catch(() => undefined)
 }
 
 /** Deletes an alarm. The native schedule is cancelled by the following sync. */
@@ -553,7 +550,6 @@ export async function deleteAlarm(id: string): Promise<void> {
   const reminders = state.settings.reminders.filter((reminder) => reminder.id !== id)
   if (reminders.length === state.settings.reminders.length) return
   await commitAndPersist({ ...state, settings: { ...state.settings, reminders, notificationsOptIn: reminders.some((r) => r.enabled) } })
-  void syncReminders(reminders).catch(() => undefined)
 }
 
 /* ------------------------------------------------------------------ */
@@ -677,20 +673,25 @@ export async function createTask(input: NewTask): Promise<Task & { writeResult: 
   return { ...item, writeResult: outcome }
 }
 
-export async function updateTask(id: string, patch: Partial<Task>): Promise<void> {
+export async function updateTask(id: string, patch: Partial<Task>): Promise<WriteResult> {
   if ('priority' in patch) assertWritableTask({ priority: patch.priority, title: patch.title ?? 'unchanged' })
-  await withCollectionPersist('tasks',items=>withWritableTasks(items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item)))
+  lastWriteResult = await withCollectionPersist('tasks',items=>withWritableTasks(items.map(item=>item.id===id?{...item,...patch,updatedAt:nowIso()}:item)))
+  return lastWriteResult
 }
 
-export async function setTaskCompleted(id: string, completed: boolean): Promise<void> {
+export async function setTaskCompleted(id: string, completed: boolean): Promise<WriteResult> {
   const completedAt=completed?nowIso():null
-  await withCollectionPersist('tasks',items=>withWritableTasks(items.map(item=>item.id===id?{...item,completed,completedAt,updatedAt:nowIso()}:item)))
+  lastWriteResult = await withCollectionPersist('tasks',items=>withWritableTasks(items.map(item=>item.id===id?{...item,completed,completedAt,updatedAt:nowIso()}:item)))
+  return lastWriteResult
 }
 
-export async function deleteTask(id: string): Promise<void> { await withCollectionPersist('tasks',items=>items.filter(item=>item.id!==id)) }
+export async function deleteTask(id: string): Promise<WriteResult> {
+  lastWriteResult = await withCollectionPersist('tasks',items=>items.filter(item=>item.id!==id))
+  return lastWriteResult
+}
 
 /** Pushes a task's due date forward — used by "أجّليها لبكرة". */
-export async function rescheduleTask(id: string, dueDate: string): Promise<void> { await updateTask(id,{dueDate}) }
+export async function rescheduleTask(id: string, dueDate: string): Promise<WriteResult> { return updateTask(id,{dueDate}) }
 
 /* ------------------------------------------------------------------ */
 /* Focus sessions                                                      */

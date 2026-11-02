@@ -46,17 +46,20 @@ export function AdminSelect<T extends string>({
   onChange,
   options,
   ariaLabel,
+  disabled = false,
 }: {
   value: T
   onChange: (value: T) => void
   options: { value: T; label: string }[]
   ariaLabel?: string
+  disabled?: boolean
 }) {
   return (
     <select
       className="ac-input ac-select"
       value={value}
       aria-label={ariaLabel}
+      disabled={disabled}
       onChange={(event) => onChange(event.target.value as T)}
     >
       {options.map((option) => (

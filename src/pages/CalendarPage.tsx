@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Button, IconButton } from '../components/Button'
 import { Card } from '../components/Card'
 import { ConfirmDialog, Modal } from '../components/Modal'
@@ -29,6 +29,7 @@ export function CalendarPage() {
   const [newTitle, setNewTitle] = useState('')
   const [newSubjectId, setNewSubjectId] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const addingRef = useRef(false)
   const [removeTask, setRemoveTask] = useState<string | null>(null)
   const [addOpen, setAddOpen] = useState(false)
 
@@ -56,20 +57,34 @@ export function CalendarPage() {
   const monthLabel = new Date(cursor.y, cursor.m, 1).toLocaleDateString(language === 'en' ? 'en-US' : 'ar-EG', { month: 'long', year: 'numeric' })
 
   const addTask = async () => {
+    if (addingRef.current) return
     const title = newTitle.trim()
     if (!title) return
+    addingRef.current = true
     setAdding(true)
     try {
-      await createTask({ title, description: '', subjectId: newSubjectId, dueDate: selected, dueTime: '', priority: 'medium', category: 'study', estimatedMinutes: 30 })
+      const task = await createTask({ title, description: '', subjectId: newSubjectId, dueDate: selected, dueTime: '', priority: 'medium', category: 'study', estimatedMinutes: 30 })
       setNewTitle('')
       setNewSubjectId(null)
       setAddOpen(false)
-      notify(t('taskAdded'), 'success')
+      notify(
+        task.writeResult === 'session-only'
+          ? t('taskSessionOnly')
+          : task.writeResult === 'local-only'
+            ? language === 'en' ? 'Saved on this device. Cloud sync will retry when the connection returns.' : 'اتحفظ على الجهاز ده. مزامنة السحابة هتحاول تاني لما الاتصال يرجع.'
+            : t('taskAdded'),
+        task.writeResult === 'cloud' ? 'success' : 'warning',
+      )
     } catch (error) {
       notify(error instanceof Error ? error.message : t('retry'), 'danger')
     } finally {
+      addingRef.current = false
       setAdding(false)
     }
+  }
+
+  const closeAddForm = () => {
+    if (!addingRef.current) setAddOpen(false)
   }
 
   return (
@@ -140,7 +155,17 @@ export function CalendarPage() {
                   aria-label={task.completed ? t('goalCompleted') : t('goalOpen')}
                   aria-pressed={task.completed}
                   onClick={async () => {
-                    try { await setTaskCompleted(task.id, !task.completed) }
+                    try {
+                      const result = await setTaskCompleted(task.id, !task.completed)
+                      notify(
+                        result === 'session-only'
+                          ? t('taskSessionOnly')
+                          : result === 'local-only'
+                            ? language === 'en' ? 'Saved on this device. Cloud sync will retry when the connection returns.' : 'اتحفظ على الجهاز ده. مزامنة السحابة هتحاول تاني لما الاتصال يرجع.'
+                            : task.completed ? (language === 'en' ? 'Task reopened.' : 'رجعت المهمة للقائمة.') : t('taskCompleted'),
+                        result === 'cloud' ? 'success' : 'warning',
+                      )
+                    }
                     catch (error) { notify(error instanceof Error ? error.message : t('retry'), 'danger') }
                   }}
                 >
@@ -156,13 +181,13 @@ export function CalendarPage() {
 
       <Modal
         open={addOpen}
-        onClose={() => setAddOpen(false)}
+        onClose={closeAddForm}
         title={t('calendarAddTask')}
         subtitle={formatDate(selected, { weekday: 'long', day: 'numeric', month: 'long' })}
         variant="sheet"
-        footer={<><Button variant="ghost" onClick={() => setAddOpen(false)}>{t('cancel')}</Button><Button variant="primary" loading={adding} onClick={addTask}>{t('save')}</Button></>}
+        footer={<><Button variant="ghost" disabled={adding} onClick={closeAddForm}>{t('cancel')}</Button><Button variant="primary" type="submit" form="calendar-task-form" loading={adding}>{t('save')}</Button></>}
       >
-        <form className="form-grid" onSubmit={(event) => { event.preventDefault(); void addTask() }}>
+        <form id="calendar-task-form" className="form-grid" onSubmit={(event) => { event.preventDefault(); void addTask() }}>
           <Field label={t('taskTitle')} required className="form-grid__full">
             <TextInput autoFocus value={newTitle} onChange={(event) => setNewTitle(event.target.value)} placeholder={t('calendarAddTask')} />
           </Field>
@@ -181,9 +206,19 @@ export function CalendarPage() {
         cancelLabel={t('cancel')}
         onConfirm={async () => {
           const id = removeTask
-          setRemoveTask(null)
           if (!id) return
-          try { await deleteTask(id) } catch (error) { notify(error instanceof Error ? error.message : t('retry'), 'danger') }
+          try {
+            const result = await deleteTask(id)
+            setRemoveTask(null)
+            notify(
+              result === 'session-only'
+                ? t('taskSessionOnly')
+                : result === 'local-only'
+                  ? language === 'en' ? 'Saved on this device. Cloud sync will retry when the connection returns.' : 'اتحفظ على الجهاز ده. مزامنة السحابة هتحاول تاني لما الاتصال يرجع.'
+                  : t('taskDeleted'),
+              result === 'cloud' ? 'info' : 'warning',
+            )
+          } catch (error) { notify(error instanceof Error ? error.message : t('retry'), 'danger') }
         }}
         onCancel={() => setRemoveTask(null)}
       />
