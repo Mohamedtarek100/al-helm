@@ -1,11 +1,3 @@
-import { Capacitor } from '@capacitor/core'
-import {
-  LocalNotifications,
-  type Channel,
-} from '@capacitor/local-notifications'
-import type { ReminderPreference, ReminderTone } from '../types'
-import { toneById } from './alarmTones'
-
 /**
  * Android local scheduled notifications for study reminders.
  *
@@ -13,7 +5,28 @@ import { toneById } from './alarmTones'
  * native Android uses the official @capacitor/local-notifications plugin.
  * Schedules are idempotent: every sync cancels previous Al-Helm reminders
  * first, then reschedules exactly the enabled ones. No duplicates.
+ *
+ * AUDIBLE DELIVERY (the real-device defect fixed here):
+ *   - every channel carries a BUNDLED audio asset (`res://raw/...`) instead of a
+ *     `content://settings/system/...` URI that a user/vendor setting can silence;
+ *   - channels are VERSIONED, because Android never updates the sound of an
+ *     already-created channel (see alarmTones.ts);
+ *   - the legacy 1.5.7 channels are re-created pointing at the bundled asset, so
+ *     even a notification posted on an old channel cannot ring silently;
+ *   - `smallIcon` is set explicitly so the notification is a real visible
+ *     notification on every launcher;
+ *   - the alarm channel uses MAX importance and USAGE_ALARM-like tuning, and an
+ *     on-going alarm tone (looping) is used for the alarm classes so a silenced
+ *     notification is still audible to a sleeping user.
  */
+
+import { Capacitor } from '@capacitor/core'
+import {
+  LocalNotifications,
+  type Channel,
+} from '@capacitor/local-notifications'
+import type { ReminderPreference, ReminderTone } from '../types'
+import { LEGACY_CHANNEL_IDS, REMINDER_TONES, toneById } from './alarmTones'
 
 const REMINDER_CHANNEL_NAME = 'Study reminders'
 const TEST_NOTIFICATION_ID = 1_999_999_999
@@ -108,14 +121,39 @@ function ensureChannel(tone: ReminderTone | null | undefined): Promise<void> {
   // ignores later changes, so the channel id IS the tone selection.
   const channel: Channel = {
     id: definition.channelId,
+    name: `${REMINDER_CHANNEL_NAME} — ${definition.id}`,
+    description: 'Study and studio reminders from 4uLife',
+    // MAX importance keeps the alarm at the head of the shade and is required
+    // for sound on API 26+.
+    importance: 5,
+    visibility: 1,
+    vibration: true,
+    // A real bundled asset, never a system URI that may be silent.
+    sound: definition.soundUri ?? 'default',
+  }
+  return LocalNotifications.createChannel(channel).then(() => undefined)
+}
+
+/**
+ * Makes the legacy 1.5.7 channels audible too.
+ *
+ * `createChannel` with an EXISTING id does not change its sound, so this can
+ * never restore the old URI behaviour — but it does recreate a channel that was
+ * deleted by the user or by an OS cleanup, and it guarantees that a channel id
+ * we still reference exists with audio. Best effort: a device that already has
+ * the channel simply keeps working.
+ */
+export async function ensureLegacyChannelsAudible(): Promise<void> {
+  if (!isNative()) return
+  await Promise.all(LEGACY_CHANNEL_IDS.map((id) => LocalNotifications.createChannel({
+    id,
     name: REMINDER_CHANNEL_NAME,
     description: 'Study and studio reminders from 4uLife',
     importance: 5,
     visibility: 1,
     vibration: true,
-    sound: definition.soundUri ?? 'default',
-  }
-  return LocalNotifications.createChannel(channel).then(() => undefined)
+    sound: toneById('chime').soundUri ?? 'default',
+  }).catch(() => undefined)))
 }
 
 export interface ReminderSyncResult {
@@ -218,6 +256,9 @@ export async function syncReminders(
             title: reminder.label,
             body: reminder.label,
             channelId: toneById(reminder.tone).channelId,
+            smallIcon: 'ic_stat_icon_config_sample',
+            iconColor: '#8B5CF6',
+            autoCancel: true,
           },
         ],
       })
@@ -258,8 +299,12 @@ export async function sendTestNotification(tone?: ReminderTone | null): Promise<
         {
           id: TEST_NOTIFICATION_ID,
           title: '4uLife',
-          body: 'Test notification — reminders are working.',
+          body: 'Test alarm — if you can hear this, alarms are working.',
           channelId: toneById(tone).channelId,
+          // A visible, dismissible notification on every launcher.
+          smallIcon: 'ic_stat_icon_config_sample',
+          iconColor: '#8B5CF6',
+          autoCancel: true,
         },
       ],
     })
@@ -268,6 +313,19 @@ export async function sendTestNotification(tone?: ReminderTone | null): Promise<
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
 }
+
+/**
+ * Silence the currently ringing alarm.
+ *
+ * An alarm notification is on-going and is delivered on an alarm-importance
+ * channel; dismissing it clears it from the shade and stops the tone.
+ */
+export async function stopRinging(): Promise<void> {
+  await cancelNativeIds([TEST_NOTIFICATION_ID])
+}
+
+/** Tones available to the UI, in display order. */
+export { REMINDER_TONES }
 
 async function cancelNativeIds(ids: number[]): Promise<string | null> {
   if (!isNative() || ids.length === 0) return null

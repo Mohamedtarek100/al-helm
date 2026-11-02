@@ -13,13 +13,19 @@ vi.mock('./persistence/supabase', () => ({ supabase: null, cloudAdapter: () => n
 
 vi.mock('@capacitor/core', () => ({ Capacitor: { isNativePlatform: () => true } }))
 
-const native = vi.hoisted(() => ({ scheduled: [] as Array<{ id: number; title?: string; channelId?: string }>, cancelled: [] as number[] }))
+const native = vi.hoisted(() => ({
+  scheduled: [] as Array<{ id: number; title?: string; channelId?: string }>,
+  cancelled: [] as number[],
+  channels: [] as Array<{ id: string; sound?: string; importance?: number }>,
+}))
 
 vi.mock('@capacitor/local-notifications', () => ({
   LocalNotifications: {
     checkPermissions: async () => ({ display: 'granted' }),
     requestPermissions: async () => ({ display: 'granted' }),
-    createChannel: async () => undefined,
+    createChannel: async (channel: { id: string; sound?: string; importance?: number }) => {
+      native.channels.push({ id: channel.id, sound: channel.sound, importance: channel.importance })
+    },
     schedule: async ({ notifications }: { notifications: Array<{ id: number; title?: string; channelId?: string }> }) => {
       for (const n of notifications) native.scheduled.push({ id: n.id, title: n.title, channelId: n.channelId })
     },
@@ -36,22 +42,40 @@ const { occurrenceFor } = remindersModule.__internals
 
 /**
  * Tone definitions are pure data, so their properties can be asserted directly.
- * These pin the two defects found in review: duplicate URIs (four options, two
- * sounds) and the licensing posture (no bundled audio).
+ *
+ * These pin the REAL-DEVICE defect found in 1.5.7: every tone referenced a
+ * `content://settings/system/...` URI, which a vendor/user setting can resolve
+ * to silence — the alarm posted with no audible sound. The fix is a bundled
+ * asset in the APK plus a versioned channel id (Android never changes a created
+ * channel's sound).
  */
 describe('alarm tone definitions', () => {
   it('gives every selectable tone a distinct sound', () => {
     const uris = toneModule.REMINDER_TONES
       .filter((tone) => tone.soundUri !== null)
       .map((tone) => tone.soundUri)
-    // Four non-default tones must not collapse into two audible results.
-    expect(new Set(uris).size).toBe(uris.length)
+    // Five tones, four distinct assets (default and chime intentionally share
+    // the same pleasant chime) — never two options that sound different only.
+    expect(new Set(uris).size).toBe(4)
   })
 
-  it('uses only OS system sound URIs, so no audio is bundled or licensed', () => {
+  it('points every tone at a bundled raw asset, never a system URI', () => {
     for (const tone of toneModule.REMINDER_TONES) {
-      if (tone.soundUri === null) continue
-      expect(tone.soundUri.startsWith('content://settings/system/')).toBe(true)
+      expect(tone.soundUri).not.toBeNull()
+      expect(tone.soundUri!.startsWith('res://raw/ulife_')).toBe(true)
+    }
+  })
+
+  it('uses a versioned channel id so the channel cannot inherit a silent sound', () => {
+    for (const tone of toneModule.REMINDER_TONES) {
+      expect(tone.channelId.endsWith('-v2')).toBe(true)
+    }
+  })
+
+  it('keeps the legacy 1.5.7 channel ids for repair, not reuse', () => {
+    expect(toneModule.LEGACY_CHANNEL_IDS).toContain('4ulife-reminders-default')
+    for (const legacy of toneModule.LEGACY_CHANNEL_IDS) {
+      expect(toneModule.REMINDER_TONES.some((tone) => tone.channelId === legacy)).toBe(false)
     }
   })
 
@@ -70,6 +94,7 @@ beforeEach(async () => {
   localStorage.clear()
   native.scheduled = []
   native.cancelled = []
+  native.channels = []
   await store.initStore(true)
 })
 
@@ -203,7 +228,7 @@ describe('scheduling a dated alarm', () => {
     const scheduled = native.scheduled.at(-1)
     expect(scheduled?.title).toBe('Tone check')
     // Channel id encodes the tone: Android fixes a channel's sound at creation.
-    expect(scheduled?.channelId).toBe('4ulife-reminders-alarm')
+    expect(scheduled?.channelId).toBe('4ulife-reminders-alarm-v2')
   })
 
   it('creates a channel for EACH tone in use, not just the first', async () => {
@@ -213,8 +238,17 @@ describe('scheduling a dated alarm', () => {
     const channels = new Set(native.scheduled.map((entry) => entry.channelId))
     // Both must exist: a reminder scheduled against a channel that was never
     // created would fall back to the default sound silently.
-    expect(channels.has('4ulife-reminders-chime')).toBe(true)
-    expect(channels.has('4ulife-reminders-bell')).toBe(true)
+    expect(channels.has('4ulife-reminders-chime-v2')).toBe(true)
+    expect(channels.has('4ulife-reminders-bell-v2')).toBe(true)
+  })
+
+  it('creates every channel with a bundled audio asset, never a system URI', async () => {
+    await store.createAlarm({ label: 'Asset check', time: '06:00', tone: 'bell' })
+    await remindersModule.syncReminders(alarms())
+    const tone = toneModule.toneById('bell')
+    expect(native.channels.find((entry) => entry.id === tone.channelId)?.sound).toBe(tone.soundUri)
+    // A MAX-importance channel is required for sound on API 26+.
+    expect(native.channels.find((entry) => entry.id === tone.channelId)?.importance).toBe(5)
   })
 })
 

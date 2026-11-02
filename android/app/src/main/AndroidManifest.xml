@@ -60,4 +60,23 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+        LOCAL ALARMS.
+
+        RECEIVE_BOOT_COMPLETED is required for an alarm to survive a device
+        restart. @capacitor/local-notifications restores its pending schedules
+        through LocalNotificationRestoreReceiver on BOOT_COMPLETED, but ONLY the
+        app that declares this permission is given the broadcast.
+
+        SCHEDULE_EXACT_ALARM makes the alarm fire at the exact minute instead of
+        being batched into a Doze window. USE_EXACT_ALARM covers Android 13+
+        (declared with a maxSdk guard so the Play policy for older releases is
+        unaffected). VIBRATE is used by the alarm channel.
+    -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 </manifest>

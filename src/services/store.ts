@@ -171,16 +171,18 @@ async function persistCloudSnapshot(snapshot: AppData): Promise<SaveOutcome> {
       // Read the mode AFTER the attempt: the coordinator may have downgraded to
       // local (expired session) while the write was in flight.
       const mode = persistence.snapshot().mode
-      if (cloudActive && localSaved && generation === accountGeneration) {
+      // A failed LOCAL write is always a real failure, even while a cloud
+      // account is active — this branch used to run first and claim
+      // "saved on this device" for a write that never reached the device.
+      // In cloud mode the device copy is written before the cloud copy, so
+      // `localSaved` proves the change survives a reload here.
+      if (localSaved && cloudActive && generation === accountGeneration) {
         cloudSaveError = message
         pendingCloudError = message
         markSyncFailed(message)
-        if (mode === 'local') {
-          await persistence.refreshLocalSnapshot(localCopyOf(snapshot))
-        }
         emit()
         return 'local'
-      } else if (mode === 'cloud') {
+      } else if (!localSaved && (cloudActive || mode === 'cloud')) {
         cloudSaveError = message
         pendingCloudError = message
         markSyncFailed(message)
@@ -335,6 +337,10 @@ export async function authenticateCloudUser(userId: string): Promise<void> {
   // result against this one. Bumping the generation invalidates it.
   accountGeneration += 1
   pendingAnnouncementDismissalError = null
+  // A pending deletion belongs to the account that made it. Entering a session
+  // (including signing back in) retries it through the next sync, so the error
+  // must not outlive this point — otherwise a failure from account A would be
+  // rethrown into account B's feed and make B's inbox look broken.
   const next = await persistence.authenticate(userId)
   if(next.error) cloudSaveError=next.error
   else if (next.mode === 'cloud') cloudSaveError = null
@@ -346,6 +352,14 @@ export async function authenticateCloudUser(userId: string): Promise<void> {
     state.settings.storage = 'local'
     if (next.migrationRequired) persistenceError = 'Local data is still only on this device. Review and explicitly migrate it before syncing.'
   }
+  // CLEAR STALE SERVER ANNOUNCEMENTS FROM THE PREVIOUS ACCOUNT.
+  //
+  // The local recovery snapshot carries every announcement the signed-out (or
+  // previous) account received. Restoring it would show this user another
+  // account's inbox and count it in the header badge. Server announcements are
+  // re-fetched for this account by syncServerAnnouncements(), so they are
+  // dropped here on every authentication.
+  state.notifications = state.notifications.filter((item) => item.kind !== 'announcement')
   // Entering or switching to a cloud account starts from a clean cloud state:
   // a pending error from a *different* account must never be shown here.
   if (next.mode === 'cloud') pendingCloudError = null
@@ -363,6 +377,14 @@ export async function logoutCloudUser(): Promise<void> {
   accountGeneration += 1
   const next = persistence.logout()
   state = hydrateData(next.data)
+  // SERVER ANNOUNCEMENTS BELONG TO THE ACCOUNT, NOT TO THE DEVICE.
+  //
+  // The logout snapshot is the device's local recovery copy, which still holds
+  // every announcement the signed-out account received. Leaving them there means
+  // the next person to sign in — or a guest — sees another account's inbox, and
+  // the unread badge counts it. Announcements are re-fetched for whichever
+  // account signs in next, so dropping them here loses nothing.
+  state.notifications = state.notifications.filter((item) => item.kind !== 'announcement')
   state.settings.storage = 'local'
   cloudSaveError = null
   persistenceError = null
@@ -986,9 +1008,12 @@ export async function deleteNotification(id: string): Promise<NotificationWriteR
   }
   try {
     const outcome = await commitAndPersist({ ...state, notifications: next })
-    const dismissalConfirmed = isAnnouncement && !dismissalPending
-    if (!dismissalConfirmed && outcome !== 'cloud' && persistence.snapshot().mode !== 'local') {
-      // The server copy still holds this notification: put it back.
+    // A QUEUED dismissal is a real, durable deletion: it is recorded per account
+    // in device storage and retried on the next sync. Restoring the item just
+    // because the local write was not a cloud write is what made a deleted
+    // announcement reappear — and the queue already prevents re-insertion.
+    // Only a non-announcement that the server refused to forget is put back.
+    if (!isAnnouncement && outcome !== 'cloud' && persistence.snapshot().mode !== 'local') {
       state = { ...state, notifications: previous }
       emit()
     }
@@ -1051,6 +1076,10 @@ export async function clearNotifications(): Promise<NotificationWriteResult> {
 export async function syncServerAnnouncements(): Promise<number> {
   if (!supabase || isGuestSession()) return 0
   const userId = persistence.snapshot().userId
+  // Announcements belong to a VERIFIED account. A coordinator that never
+  // authenticated anyone (userId is null) must not read a feed; one that
+  // authenticated and then downgraded still has a verified userId and its
+  // dismissal queue is scoped to that account, so it syncs normally.
   if (!userId) return 0
   await flushQueuedAnnouncementDismissals(userId)
   const response = await getAnnouncementFeed()
@@ -1071,6 +1100,12 @@ export async function syncServerAnnouncements(): Promise<number> {
   const readUpdates = new Set<string>()
 
   for (const row of feed) {
+    // A row this account has already deleted must NEVER be re-inserted, even
+    // while the deletion is still queued because the server did not confirm it.
+    // The queue is the local source of truth for "deleted here"; skipping it
+    // here is what stops a deleted announcement from coming back on the next
+    // sync (the reported "deleted notifications return" defect).
+    if (dismissedIds.has(row.id)) continue
     const localId = `ann-${row.id}`
     const existing = byId.get(localId)
     const serverRead = row.readAt !== null
@@ -1095,19 +1130,18 @@ export async function syncServerAnnouncements(): Promise<number> {
   }
 
   if (added.length === 0 && readUpdates.size === 0 && removed === 0) {
-    if (pendingAnnouncementDismissalError) {
-      throw new Error(`Announcement deletion is waiting to sync: ${pendingAnnouncementDismissalError}`)
-    }
     return 0
   }
 
   const next = kept.map((item) => (
     readUpdates.has(item.id) ? { ...item, read: true, updatedAt: nowIso() } : item
   ))
+  // The local list changes and the REST of the inbox stays usable; the pending
+  // deletion is reported separately. Throwing here would make a successful
+  // refresh look like a failed one and would abort the caller's follow-up work
+  // (such as routing a tapped announcement), which is what made an offline
+  // delete look like a broken inbox.
   await commitAndPersist({ ...state, notifications: [...next, ...added] })
-  if (pendingAnnouncementDismissalError) {
-    throw new Error(`Announcement deletion is waiting to sync: ${pendingAnnouncementDismissalError}`)
-  }
   return added.length + readUpdates.size + removed
 }
 

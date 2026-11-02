@@ -61,6 +61,8 @@ function recorder() {
   const fills: string[] = []
   const rawFillRect = ctx.fillRect.bind(ctx)
   ctx.fillRect = (): void => { fills.push(String(ctx.fillStyle)); rawFillRect() }
+  // v4 brush strokes may paint feathered deposits, which need a gradient.
+  ;(ctx as unknown as Record<string, unknown>).createRadialGradient = () => ({ addColorStop: () => undefined })
   const canvas = {
     width: CANVAS_W,
     height: CANVAS_H,

@@ -15,9 +15,11 @@
  * it unit-testable and safe to call from effects.
  */
 
+import type { BrushId } from './brushes'
+
 export const CANVAS_W = 900
 export const CANVAS_H = 620
-export const DRAWING_MODEL_VERSION = 3
+export const DRAWING_MODEL_VERSION = 4
 export const DEFAULT_LAYER_ID = 'layer_default'
 
 export type PaperKind = 'white' | 'cream' | 'grid'
@@ -61,12 +63,18 @@ export interface Stroke {
   color: string
   size: number
   eraser: boolean
+  /** v4. Brush preset used to paint this stroke; absent on pre-v4 documents. */
+  brush?: BrushId
+  /** v4. Stroke opacity (0.05–1). Absent means the preset's default. */
+  opacity?: number
 }
 
 export interface DrawingLayer {
   id: string
   name: string
   visible: boolean
+  /** v4. A locked layer refuses new strokes and edits. */
+  locked?: boolean
 }
 
 export interface DrawingDocument {
@@ -167,8 +175,10 @@ function cleanStroke(value: unknown): Stroke | null {
     ...(typeof candidate.layerId === 'string' && candidate.layerId ? { layerId: candidate.layerId } : {}),
     points,
     color: typeof candidate.color === 'string' && candidate.color ? candidate.color : '#34312f',
-    size: Number.isFinite(size) && size > 0 ? Math.min(60, size) : 3,
+    size: Number.isFinite(size) && size > 0 ? Math.min(80, size) : 3,
     eraser: candidate.eraser === true,
+    ...(typeof candidate.brush === 'string' ? { brush: candidate.brush as BrushId } : {}),
+    ...(Number.isFinite(Number(candidate.opacity)) ? { opacity: Math.min(1, Math.max(0.05, Number(candidate.opacity))) } : {}),
   }
 }
 
@@ -198,6 +208,7 @@ export function parseDocument(raw: string | null | undefined): DrawingDocument |
         id: layer.id,
         name: layer.name.trim().slice(0, 60) || 'Layer',
         visible: layer.visible !== false,
+        ...(layer.locked === true ? { locked: true } : {}),
       }))
     : []
   const normalizedLayers = layers.length ? layers : [{ id: DEFAULT_LAYER_ID, name: 'Layer 1', visible: true }]
@@ -435,8 +446,11 @@ function repaintPaperWhereTransparent(ctx: Ctx, paper: PaperKind, width: number,
 /* ------------------------------------------------------------------ */
 
 /**
- * Converts a client (CSS pixel) coordinate into the logical document space,
- * independent of display size and device pixel ratio.
+ * Converts a client (CSS pixel) coordinate into the logical document space.
+ *
+ * The canvas element fills its stage while the paper is letterboxed inside it
+ * at the document ratio, so the mapping must use that inner rectangle — a
+ * plain rect division would offset every stroke from the pointer.
  */
 export function pointFromClient(
   clientX: number,
@@ -446,10 +460,14 @@ export function pointFromClient(
 ): Point {
   const width = rect.width || doc.width
   const height = rect.height || doc.height
-  return {
-    x: ((clientX - rect.left) / width) * doc.width,
-    y: ((clientY - rect.top) / height) * doc.height,
-  }
+  const scale = Math.min(width / doc.width, height / doc.height)
+  const paperW = doc.width * scale
+  const paperH = doc.height * scale
+  const offsetX = (width - paperW) / 2
+  const offsetY = (height - paperH) / 2
+  const x = Math.min(paperW, Math.max(0, clientX - rect.left - offsetX))
+  const y = Math.min(paperH, Math.max(0, clientY - rect.top - offsetY))
+  return { x: x / scale, y: y / scale }
 }
 
 /** Drops points closer than `minDistance` to keep stroke JSON small. */

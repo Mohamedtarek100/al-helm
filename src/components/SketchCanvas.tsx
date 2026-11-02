@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Button, IconButton } from './Button'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from './Card'
 import { ConfirmDialog } from './Modal'
-import { EraserIcon, PencilIcon, RedoIcon, TrashIcon, UndoIcon, DownloadIcon, SaveIcon, SquareIcon, CircleIcon, LineIcon, TypeIcon, SelectIcon, HandIcon, ZoomInIcon, ZoomOutIcon, ResetIcon, ChevronDownIcon, PlusIcon, EyeIcon, EyeOffIcon } from './icons'
 import { createArtwork, updateArtwork, useAppData } from '../services/store'
 import { todayKey } from '../services/date'
 import { useI18n } from '../i18n/useI18n'
@@ -13,9 +11,10 @@ import {
   type DrawingDocument, type PaperKind, type Point, type Shape, type ShapeKind, type Stroke, type TextElement, type Tool,
 } from '../services/drawing'
 import { makeId } from '../services/drawing'
+import { BRUSH_PRESETS, clampSettings, presetById, type BrushId, type BrushSettings } from '../services/brushes'
+import { StudioShell, type StudioSheet } from './studio/StudioShell'
 import { pushRecentColor, parseRecentColors } from '../services/drawingPalette'
 import { STUDIO_PALETTE_FLAT } from '../services/colorWheel'
-import { ColorPicker } from './ColorPicker'
 import {
   DEFAULT_VIEWPORT, deleteElement, elementBounds, hitTest, moveElement, panBy, zoomAt,
   type Bounds, type ElementRef, type Viewport,
@@ -57,13 +56,32 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
 
   const [doc, setDoc] = useState<DrawingDocument>(() => loadDraft(null)?.document ?? emptyDocument())
   const [tool, setTool] = useState<Tool>('pencil')
+  const [brushId, setBrushId] = useState<BrushId>('pencil')
+  /** Per-brush settings, so switching presets never throws away a tuned brush. */
+  const [brushSettings, setBrushSettings] = useState<Record<BrushId, BrushSettings>>(() => (
+    Object.fromEntries(BRUSH_PRESETS.map((preset) => [preset.id, preset.defaults])) as Record<BrushId, BrushSettings>
+  ))
   const [color, setColor] = useState(PALETTE[0])
   const [size, setSize] = useState(3)
-  const [paletteOpen, setPaletteOpen] = useState(false)
-  const [toolbarCollapsed, setToolbarCollapsed] = useState(false)
-  const [layersOpen, setLayersOpen] = useState(true)
+  const activeBrush = presetById(brushId)
+  const activeSettings = brushSettings[brushId]
+  /**
+   * Applies a settings change to the ACTIVE brush and mirrors the size into the
+   * shared `size` state, because the eraser and the shapes read that value.
+   */
+  const patchBrush = useCallback((patch: Partial<BrushSettings>) => {
+    setBrushSettings((current) => ({ ...current, [brushId]: clampSettings({ ...current[brushId], ...patch }) }))
+    if (patch.size !== undefined) setSize(Math.round(clampSettings({ ...activeSettings, ...patch }).size))
+  }, [brushId, activeSettings])
+  const chooseBrush = useCallback((id: BrushId) => {
+    setBrushId(id)
+    // Choosing the eraser preset selects the eraser tool; choosing any paint
+    // brush leaves a non-drawing tool (select/pan/shape) untouched.
+    if (presetById(id).eraser) setTool('eraser')
+    else if (tool === 'eraser') setTool('pencil')
+  }, [tool])
   const [layerToDelete, setLayerToDelete] = useState<string | null>(null)
-  const [shapeKind, setShapeKind] = useState<ShapeKind>('rect')
+  const [shapeKind] = useState<ShapeKind>('rect')
   /** Recently used custom colours, persisted per device (drawingPalette is pure). */
   const [recentColors, setRecentColors] = useState<string[]>(() => {
     try { return parseRecentColors(JSON.parse(localStorage.getItem('alhelm.v1.recentColors') || '[]')) } catch { return [] }
@@ -92,6 +110,24 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   const [savedId, setSavedId] = useState<string | null>(() => loadDraft(null)?.artworkId ?? null)
   const [confirmClear, setConfirmClear] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [lockedNotice, setLockedNotice] = useState<string | null>(null)
+  /** Which bottom-sheet panel is open on a compact screen. */
+  const [sheet, setSheet] = useState<StudioSheet | null>(null)
+  /**
+   * Disabled layer ids.
+   *
+   * `doc.layers` is the PERSISTED structure and must not carry a lock flag
+   * (locking is a session guard against stray touches, not document content),
+   * so these live here and are enforced by the engine on every stroke.
+   */
+  const [lockedLayers, setLockedLayers] = useState<Set<string>>(() => new Set())
+  /** Colours the user explicitly saved for reuse (device-local). */
+  const [savedColors, setSavedColors] = useState<string[]>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('alhelm.v1.savedColors') || '[]')
+      return Array.isArray(raw) ? raw.filter((value): value is string => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)).slice(0, 24) : []
+    } catch { return [] }
+  })
   const [saveState, setSaveState] = useState<SaveState>('saved')
   const [dpr, setDpr] = useState(() => (typeof window === 'undefined' ? 1 : Math.min(3, Math.max(1, window.devicePixelRatio || 1))))
 
@@ -130,7 +166,9 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     // applied only when compositing to the visible canvas, so the saved drawing
     // geometry is never affected by navigation.
     renderInkLayer(layers.ink, document, { live: live ?? null, liveShape: pendingShapeRef.current, pixelRatio: dpr })
-    compositeLayers(canvasRef.current, layers, document.paper, document.width, document.height)
+    // The SAME ratio is passed to the compositor so paper, ink and the visible
+    // canvas share one coordinate space (a mismatch drew ink above the paper).
+    compositeLayers(canvasRef.current, layers, document.paper, document.width, document.height, dpr)
   }, [dpr])
 
   // Apply the viewport to the visible canvas element only (CSS transform), so
@@ -139,7 +177,13 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     const canvas = canvasRef.current
     if (!canvas) return
     canvas.style.transform = `translate(${viewport.offsetX}px, ${viewport.offsetY}px) scale(${viewport.scale})`
-    canvas.style.transformOrigin = '0 0'
+    // The transform is applied to the INNER canvas only; the wrapper keeps the
+    // viewport-filling box, so panning/zooming never moves the stage itself.
+    //
+    // `transform-origin: center` (not `0 0`) keeps zoom anchored on the paper's
+    // centre. With `0 0` the paper slid off the top-left of the stage as soon as
+    // the user zoomed, which looked like the drawing had moved.
+    canvas.style.transformOrigin = 'center center'
     canvas.style.cursor = tool === 'pan' ? 'grab' : tool === 'select' ? 'default' : 'crosshair'
   }, [viewport, tool])
 
@@ -148,6 +192,24 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
 
   // Repaint whenever the document, DPR or paper changes. Never clears state.
   useEffect(() => { paint(null) }, [doc, paint])
+
+  /**
+   * Re-composite whenever the canvas BOX changes.
+   *
+   * `compositeLayers` sizes the backing store from the element's CSS box, but on
+   * the first frames after mount — and after a rotation or a panel opening — the
+   * box is not yet its final size, so the bitmap was painted at the old size and
+   * the paper appeared as a band in the middle of a taller canvas (measured: a
+   * 351×242 paper inside a 351×620 canvas on a phone). A ResizeObserver repaints
+   * at the exact moment the box settles, for every layout, without polling.
+   */
+  useEffect(() => {
+    const node = canvasRef.current
+    if (!node || typeof ResizeObserver !== 'function') return
+    const observer = new ResizeObserver(() => paint(null))
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [paint])
 
   // Repaint while a shape is being dragged so the preview follows the pointer.
   useEffect(() => { paint(null) }, [pendingShape, paint])
@@ -235,6 +297,13 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     const activeLayer = docRef.current.layers?.find((layer) => layer.id === docRef.current.activeLayerId)
       ?? docRef.current.layers?.[0]
     if (activeLayer?.visible === false) return
+    // A locked layer is READ-ONLY in the engine, not only in the panel: this is
+    // what stops a stray palm touch from damaging finished line art.
+    if (activeLayer?.locked === true || (activeLayer && lockedLayers.has(activeLayer.id))) {
+      setLockedNotice(t('studioLayerLocked'))
+      window.setTimeout(() => setLockedNotice(null), 2600)
+      return
+    }
 
     // Text: a tap places a text element; there is nothing to drag.
     if (tool === 'text') {
@@ -276,8 +345,10 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       layerId: activeLayer?.id ?? DEFAULT_LAYER_ID,
       points: [toPoint(event)],
       color,
-      size,
-      eraser: tool === 'eraser',
+      size: Math.max(1, activeSettings.size),
+      eraser: tool === 'eraser' || activeBrush.eraser === true,
+      brush: brushId,
+      opacity: tool === 'eraser' ? 1 : activeSettings.opacity,
     }
     setDrawing(true)
     paint(currentRef.current)
@@ -420,6 +491,25 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     updateDoc(deleteElement(docRef.current, selected))
     setSelected(null)
   }
+  // The selection delete action lives in the top bar; keep it reachable from
+  // the keyboard for desktop users (Delete / Backspace removes the selection).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!selected) return
+      const target = event.target as HTMLElement | null
+      if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) return
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault()
+        deleteSelected()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+    // `deleteSelected` is re-created every render but reads live state through
+    // refs; re-subscribing on `selected` alone is enough and avoids tearing the
+    // listener down on every unrelated render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected])
 
 
 
@@ -480,27 +570,35 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     setSelected(null)
   }
 
+  /** Lock/unlock: a locked layer refuses strokes (enforced in `start`). */
+  const toggleLayerLocked = (id: string) => {
+    setLockedLayers((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   const deleteLayer = () => {
-    const id = layerToDelete
-    setLayerToDelete(null)
-    if (!id) return
+    if (!layerToDelete) return
     const current = docRef.current
     const layers = current.layers ?? []
-    if (layers.length <= 1 || !layers.some((layer) => layer.id === id)) return
-    const fallbackLayerId = layers[0].id
-    const nextLayers = layers.filter((layer) => layer.id !== id)
-    const nextActiveLayerId = current.activeLayerId === id
-      ? (nextLayers.find((layer) => layer.visible) ?? nextLayers[0]).id
-      : current.activeLayerId
-    const belongsToDeletedLayer = (element: { layerId?: string }) => (element.layerId ?? fallbackLayerId) === id
-    updateDoc({
+    if (layers.length <= 1) { setLayerToDelete(null); return }
+    const fallback = layers.find((layer) => layer.id !== layerToDelete)?.id ?? DEFAULT_LAYER_ID
+    // Elements on the removed layer are moved to the surviving layer rather than
+    // deleted: deleting a LAYER must never silently destroy artwork the user can
+    // still see, and an orphaned element would render on no layer at all.
+    const next: DrawingDocument = {
       ...current,
-      layers: nextLayers,
-      activeLayerId: nextActiveLayerId,
-      strokes: current.strokes.filter((element) => !belongsToDeletedLayer(element)),
-      shapes: (current.shapes ?? []).filter((element) => !belongsToDeletedLayer(element)),
-      texts: (current.texts ?? []).filter((element) => !belongsToDeletedLayer(element)),
-    })
+      layers: layers.filter((layer) => layer.id !== layerToDelete),
+      strokes: current.strokes.map((stroke) => (stroke.layerId ?? layers[0].id) === layerToDelete ? { ...stroke, layerId: fallback } : stroke),
+      shapes: (current.shapes ?? []).map((shape) => (shape.layerId ?? layers[0].id) === layerToDelete ? { ...shape, layerId: fallback } : shape),
+      texts: (current.texts ?? []).map((text) => (text.layerId ?? layers[0].id) === layerToDelete ? { ...text, layerId: fallback } : text),
+      activeLayerId: current.activeLayerId === layerToDelete ? fallback : current.activeLayerId,
+    }
+    updateDoc(next)
+    setLayerToDelete(null)
   }
 
   const exportPng = () => {
@@ -722,140 +820,79 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   )
 
   const statusLabel = saveState === 'saving' ? t('sketchSaving') : saveState === 'error' ? t('sketchSaveFailed') : saveState === 'dirty' ? t('sketchUnsaved') : t('sketchSaved')
-  const studioLayers = doc.layers?.length
-    ? doc.layers
-    : [{ id: DEFAULT_LAYER_ID, name: t('sketchLayerNumber', { count: 1 }), visible: true }]
+  const studioLayers = useMemo(() => {
+    const base = doc.layers?.length
+      ? doc.layers
+      : [{ id: DEFAULT_LAYER_ID, name: t('sketchLayerNumber', { count: 1 }), visible: true }]
+    return base.map((layer) => (lockedLayers.has(layer.id) ? { ...layer, locked: true } : layer))
+  }, [doc.layers, lockedLayers, t])
   const activeLayerId = studioLayers.some((layer) => layer.id === doc.activeLayerId)
     ? doc.activeLayerId
     : studioLayers[0].id
 
   return (
-    <div className={`page-stack sketch-studio ${focusMode ? 'sketch-studio--focus' : ''}`} ref={rootRef}>
-      <Card padded={false} className={`sketch-card ${paletteOpen ? 'sketch-card--picker-open' : ''}`}>
-        <div className="sketch-workspace-controls">
-          <Button
-            size="sm"
-            variant="ghost"
-            aria-expanded={!toolbarCollapsed}
-            aria-controls="sketch-toolbar"
-            trailingIcon={<ChevronDownIcon className={toolbarCollapsed ? 'sketch-toggle-icon--collapsed' : ''} size={15} />}
-            onClick={() => setToolbarCollapsed((collapsed) => !collapsed)}
-          >
-            {toolbarCollapsed ? t('sketchExpandTools') : t('sketchCollapseTools')}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            aria-expanded={layersOpen}
-            aria-controls="sketch-layer-panel"
-            onClick={() => setLayersOpen((open) => !open)}
-          >
-            {layersOpen ? t('sketchHideLayers') : t('sketchShowLayers')}
-          </Button>
-        </div>
-        {!toolbarCollapsed && (
-        <div id="sketch-toolbar" className={`sketch-toolbar ${paletteOpen ? 'sketch-toolbar--picker-open' : ''}`} role="toolbar" aria-label={t('canvasTab')}>
-          <div className="sketch-toolbar__group">
-            <IconButton label={t('sketchPencil')} variant={tool === 'pencil' ? 'primary' : 'secondary'} onClick={() => setTool('pencil')}><PencilIcon size={17} /></IconButton>
-            <IconButton label={t('sketchEraser')} variant={tool === 'eraser' ? 'primary' : 'secondary'} onClick={() => setTool('eraser')}><EraserIcon size={17} /></IconButton>
-          </div>
-          <div className="sketch-toolbar__group sketch-palette" role="group" aria-label={t('sketchColor')}>
-            {/* A small always-visible row of the most-used colours, so common
-                picks take one tap without opening the full picker. */}
-            {STUDIO_PALETTE_FLAT.slice(0, 6).map((swatch) => (
-              <button
-                key={swatch}
-                type="button"
-                className={`sketch-swatch ${color === swatch && tool === 'pencil' ? 'sketch-swatch--active' : ''}`}
-                style={{ background: swatch }}
-                aria-label={swatch}
-                aria-pressed={color === swatch && tool === 'pencil'}
-                onClick={() => { setColor(swatch); setTool('pencil') }}
-              />
-            ))}
-            {/* Recent custom colours: newest first, capped by drawPalette. */}
-            {recentColors.map((swatch) => (
-              <button
-                key={'recent-' + swatch}
-                type="button"
-                className={`sketch-swatch sketch-swatch--recent ${color === swatch ? 'sketch-swatch--active' : ''}`}
-                style={{ background: swatch }}
-                aria-label={swatch}
-                aria-pressed={color === swatch}
-                onClick={() => { setColor(swatch); setTool('pencil') }}
-              />
-            ))}
-            {/* The full wheel: opened on demand so it never shrinks the canvas. */}
-            <button
-              type="button"
-              className="sketch-swatch sketch-swatch--wheel"
-              style={{ background: 'conic-gradient(from 90deg, #ff0000, #ff00ff, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)' }}
-              aria-label={t('sketchColorWheel')}
-              aria-expanded={paletteOpen}
-              onClick={() => setPaletteOpen((open) => !open)}
-            >
-              <span className="sketch-swatch__current" style={{ background: color }} aria-hidden="true" />
-            </button>
-          </div>
-
-          <div className="sketch-toolbar__group" role="group" aria-label={t('sketchShape')}>
-            <IconButton label={t('sketchShapeRect')} variant={shapeKind === 'rect' && tool === 'shape' ? 'primary' : 'secondary'} onClick={() => { setShapeKind('rect'); setTool('shape') }}><SquareIcon size={17} /></IconButton>
-            <IconButton label={t('sketchShapeEllipse')} variant={shapeKind === 'ellipse' && tool === 'shape' ? 'primary' : 'secondary'} onClick={() => { setShapeKind('ellipse'); setTool('shape') }}><CircleIcon size={17} /></IconButton>
-            <IconButton label={t('sketchShapeLine')} variant={shapeKind === 'line' && tool === 'shape' ? 'primary' : 'secondary'} onClick={() => { setShapeKind('line'); setTool('shape') }}><LineIcon size={17} /></IconButton>
-            <IconButton label={t('sketchTextTool')} variant={tool === 'text' ? 'primary' : 'secondary'} onClick={() => setTool('text')}><TypeIcon size={17} /></IconButton>
-            <IconButton label={t('sketchSelect')} variant={tool === 'select' ? 'primary' : 'secondary'} onClick={() => setTool('select')}><SelectIcon size={17} /></IconButton>
-            <IconButton label={t('sketchPan')} variant={tool === 'pan' ? 'primary' : 'secondary'} onClick={() => setTool('pan')}><HandIcon size={17} /></IconButton>
-            {tool === 'select' && selected && (
-              <IconButton label={t('sketchDeleteSelected')} variant="danger" onClick={deleteSelected}><TrashIcon size={17} /></IconButton>
-            )}
-          </div>
-
-          <div className="sketch-toolbar__group" role="group" aria-label={t('sketchZoom')}>
-            <IconButton label={t('sketchZoomOut')} size="sm" onClick={() => setViewport((v) => zoomAt(v, centerOfCanvas(), 1 / 1.25, docRef.current.width, docRef.current.height))} disabled={viewport.scale <= 0.5}><ZoomOutIcon size={16} /></IconButton>
-            <span className="t-xs t-muted" style={{ minWidth: 38, textAlign: 'center' }}>{Math.round(viewport.scale * 100)}%</span>
-            <IconButton label={t('sketchZoomIn')} size="sm" onClick={() => setViewport((v) => zoomAt(v, centerOfCanvas(), 1.25, docRef.current.width, docRef.current.height))} disabled={viewport.scale >= 4}><ZoomInIcon size={16} /></IconButton>
-            <IconButton label={t('sketchResetView')} size="sm" onClick={() => { setViewport(DEFAULT_VIEWPORT); setSelected(null) }}><ResetIcon size={16} /></IconButton>
-          </div>
-          <label className="sketch-size">
-            <span className="t-xs t-muted">{t('sketchSize')}</span>
-            <input type="range" min={1} max={30} value={size} aria-label={t('sketchSize')} onChange={(event) => setSize(Number(event.target.value))} />
-            <span className="sketch-size__value">{size}</span>
-          </label>
-          <div className="sketch-toolbar__group">
-            <IconButton label={t('undo')} size="sm" onClick={undo} disabled={undoStack.length === 0}><UndoIcon size={16} /></IconButton>
-            <IconButton label={t('redo')} size="sm" onClick={redoAction} disabled={redoStack.length === 0}><RedoIcon size={16} /></IconButton>
-            <IconButton label={t('clearCanvas')} size="sm" variant="danger" onClick={() => setConfirmClear(true)} disabled={doc.strokes.length === 0 && (doc.shapes?.length ?? 0) === 0 && (doc.texts?.length ?? 0) === 0}><TrashIcon size={16} /></IconButton>
-          </div>
-          <div className="sketch-papers" role="radiogroup" aria-label={t('sketchBackground')}>
-            {(['white', 'cream', 'grid'] as PaperKind[]).map((paper) => (
-              <button
-                key={paper}
-                type="button"
-                role="radio"
-                aria-checked={doc.paper === paper}
-                aria-label={paper === 'white' ? t('sketchBgWhite') : paper === 'cream' ? t('sketchBgCream') : t('sketchBgGrid')}
-                title={paper === 'white' ? t('sketchBgWhite') : paper === 'cream' ? t('sketchBgCream') : t('sketchBgGrid')}
-                className={`sketch-paper ${doc.paper === paper ? 'sketch-paper--active' : ''} ${paper === 'grid' ? 'sketch-paper--grid' : ''}`}
-                style={{ '--paper-swatch': PAPER_SWATCH[paper] } as React.CSSProperties}
-                onClick={() => changePaper(paper)}
-              />
-            ))}
-          </div>
-          {paletteOpen && (
-            <div className="sketch-wheel-panel">
-              <ColorPicker
-                value={color}
-                compact
-                onChange={(hex) => { setColor(hex); setTool('pencil') }}
-                onCommit={rememberColor}
-              />
-            </div>
-          )}
-        </div>
-        )}
-
-        <div className={`sketch-workspace ${layersOpen ? '' : 'sketch-workspace--layers-hidden'}`}>
-          <div className="sketch-surface">
+    <div className="page-stack sketch-studio" ref={rootRef}>
+      <StudioShell
+        title={title}
+        onTitle={(value) => { setTitle(value); markDirty() }}
+        saveState={saveState}
+        statusLabel={statusLabel}
+        onSave={() => { void saveRef.current() }}
+        onExport={exportPng}
+        onUndo={undo}
+        onRedo={redoAction}
+        canUndo={undoStack.length > 0}
+        canRedo={redoStack.length > 0}
+        onClear={() => setConfirmClear(true)}
+        canClear={doc.strokes.length > 0 || (doc.shapes?.length ?? 0) > 0 || (doc.texts?.length ?? 0) > 0}
+        focusMode={focusMode}
+        onToggleFocus={() => { void (focusMode ? exitFocus() : enterFocus()) }}
+        doc={doc}
+        layers={studioLayers}
+        activeLayerId={activeLayerId ?? studioLayers[0].id}
+        onSelectLayer={selectLayer}
+        onAddLayer={addLayer}
+        onDeleteLayer={(id) => setLayerToDelete(id)}
+        onMoveLayer={moveLayer}
+        onToggleLayerVisible={toggleLayerVisibility}
+        onToggleLayerLocked={toggleLayerLocked}
+        onRenameLayer={renameLayer}
+        onOpenNavigator={() => setSheet((current) => (current === 'layers' ? null : 'layers'))}
+        tool={tool}
+        onTool={(next) => setTool(next)}
+        brushId={brushId}
+        onBrush={chooseBrush}
+        brushSettings={activeSettings}
+        onBrushSettings={patchBrush}
+        color={color}
+        onColor={(hex) => { setColor(hex); if (tool !== 'eraser') setTool('pencil') }}
+        onColorCommit={rememberColor}
+        recentColors={recentColors}
+        savedColors={savedColors}
+        onSaveColor={() => {
+          const hex = color.toLowerCase()
+          setSavedColors((current) => {
+            const next = [hex, ...current.filter((value) => value !== hex)].slice(0, 24)
+            try { localStorage.setItem('alhelm.v1.savedColors', JSON.stringify(next)) } catch { /* storage unavailable */ }
+            return next
+          })
+        }}
+        onRemoveSavedColor={(hex) => {
+          setSavedColors((current) => {
+            const next = current.filter((value) => value !== hex)
+            try { localStorage.setItem('alhelm.v1.savedColors', JSON.stringify(next)) } catch { /* storage unavailable */ }
+            return next
+          })
+        }}
+        zoom={viewport.scale}
+        onZoom={(factor) => setViewport((v) => zoomAt(v, centerOfCanvas(), factor, docRef.current.width, docRef.current.height))}
+        onResetView={() => { setViewport(DEFAULT_VIEWPORT); setSelected(null) }}
+        sheet={sheet}
+        onSheet={setSheet}
+        saveError={saveError}
+        lockedNotice={lockedNotice}
+        canvas={(
+          <div className="studio-canvas-wrap">
             <canvas
               ref={canvasRef}
               width={CANVAS_W}
@@ -871,114 +908,30 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
               onContextMenu={(event) => event.preventDefault()}
             />
           </div>
-          {layersOpen && (
-            <aside id="sketch-layer-panel" className="sketch-layer-panel" aria-label={t('sketchLayers')}>
-              <div className="sketch-layer-panel__header">
-                <h2>{t('sketchLayers')}</h2>
-                <IconButton label={t('sketchAddLayer')} size="sm" variant="secondary" onClick={addLayer}>
-                  <PlusIcon size={16} />
-                </IconButton>
-              </div>
-              <div className="sketch-layer-list">
-                {[...studioLayers].reverse().map((layer) => {
-                  const index = studioLayers.findIndex((entry) => entry.id === layer.id)
-                  const active = layer.id === activeLayerId
-                  const elementTotal = doc.strokes.filter((element) => (element.layerId ?? studioLayers[0].id) === layer.id).length
-                    + (doc.shapes ?? []).filter((element) => (element.layerId ?? studioLayers[0].id) === layer.id).length
-                    + (doc.texts ?? []).filter((element) => (element.layerId ?? studioLayers[0].id) === layer.id).length
-                  return (
-                    <div className={`sketch-layer ${active ? 'sketch-layer--active' : ''}`} key={layer.id}>
-                      <button
-                        type="button"
-                        className="sketch-layer__select"
-                        aria-label={layer.name}
-                        aria-pressed={active}
-                        onClick={() => selectLayer(layer.id)}
-                      >
-                        <span className="sketch-layer__swatch" aria-hidden="true" />
-                        <span className="sketch-layer__count">{elementTotal}</span>
-                      </button>
-                      <input
-                        className="input sketch-layer__name"
-                        value={layer.name}
-                        aria-label={t('sketchLayerName')}
-                        maxLength={60}
-                        onChange={(event) => renameLayer(layer.id, event.currentTarget.value)}
-                        onBlur={(event) => {
-                          if (!event.currentTarget.value.trim()) {
-                            renameLayer(layer.id, t('sketchLayerNumber', { count: index + 1 }))
-                          }
-                        }}
-                      />
-                      <div className="sketch-layer__actions">
-                        <IconButton
-                          label={layer.visible ? t('sketchHideLayer') : t('sketchShowLayer')}
-                          size="sm"
-                          variant="quiet"
-                          onClick={() => toggleLayerVisibility(layer.id)}
-                        >
-                          {layer.visible ? <EyeIcon size={15} /> : <EyeOffIcon size={15} />}
-                        </IconButton>
-                        <IconButton
-                          label={t('sketchMoveLayerUp')}
-                          size="sm"
-                          variant="quiet"
-                          className="sketch-layer__move-up"
-                          onClick={() => moveLayer(layer.id, 1)}
-                          disabled={index === studioLayers.length - 1}
-                        >
-                          <ChevronDownIcon size={14} />
-                        </IconButton>
-                        <IconButton
-                          label={t('sketchMoveLayerDown')}
-                          size="sm"
-                          variant="quiet"
-                          onClick={() => moveLayer(layer.id, -1)}
-                          disabled={index === 0}
-                        >
-                          <ChevronDownIcon size={14} />
-                        </IconButton>
-                        <IconButton
-                          label={t('sketchDeleteLayer')}
-                          size="sm"
-                          variant="danger"
-                          onClick={() => setLayerToDelete(layer.id)}
-                          disabled={studioLayers.length <= 1}
-                        >
-                          <TrashIcon size={14} />
-                        </IconButton>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </aside>
-          )}
-        </div>
-
-        <div className="sketch-footer">
-          <input
-            className="input sketch-title-input"
-            value={title}
-            placeholder={t('sketchTitlePlaceholder')}
-            onChange={(event) => { setTitle(event.target.value); markDirty() }}
-            aria-label={t('artTitle')}
-            maxLength={80}
-          />
-          <span className={`save-state save-state--${saveState}`} role="status" aria-live="polite">
-            <i aria-hidden="true" />
-            {statusLabel}
-          </span>
-          <div className="sketch-footer__actions">
-            <Button size="sm" variant="ghost" onClick={() => { void (focusMode ? exitFocus() : enterFocus()) }}>
-              {focusMode ? t('exitFullScreen') : t('fullScreen')}
-            </Button>
-            <Button size="sm" variant="secondary" leadingIcon={<DownloadIcon size={15} />} onClick={exportPng}>{t('sketchExport')}</Button>
-            <Button size="sm" variant="primary" leadingIcon={<SaveIcon size={15} />} loading={saveState === 'saving'} onClick={() => { void saveRef.current() }}>{t('save')}</Button>
+        )}
+      >
+        {/* Settings that are not brushes/colour: paper and the active tool. */}
+        <section className="studio-block">
+          <h3 className="studio-block__title">{t('sketchBackground')}</h3>
+          <div className="sketch-papers" role="radiogroup" aria-label={t('sketchBackground')}>
+            {(['white', 'cream', 'grid'] as PaperKind[]).map((paper) => (
+              <button
+                key={paper}
+                type="button"
+                role="radio"
+                aria-checked={doc.paper === paper}
+                aria-label={paper === 'white' ? t('sketchBgWhite') : paper === 'cream' ? t('sketchBgCream') : t('sketchBgGrid')}
+                title={paper === 'white' ? t('sketchBgWhite') : paper === 'cream' ? t('sketchBgCream') : t('sketchBgGrid')}
+                className={`sketch-paper ${doc.paper === paper ? 'sketch-paper--active' : ''} ${paper === 'grid' ? 'sketch-paper--grid' : ''}`}
+                style={{ '--paper-swatch': PAPER_SWATCH[paper] } as React.CSSProperties}
+                onClick={() => changePaper(paper)}
+              />
+            ))}
           </div>
-        </div>
-        {saveError && <p className="alert alert--danger sketch-save-error" role="alert">{saveError} <span className="t-xs">{t('sketchSaveRetained')}</span></p>}
-      </Card>
+        </section>
+      </StudioShell>
+      {/* The studio no longer needs a reserved placeholder: it is a normal flex
+          child of a viewport-locked page. */}
 
       {recent.length > 0 && (
         <Card>

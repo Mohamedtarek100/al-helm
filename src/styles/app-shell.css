@@ -87,3 +87,119 @@
 }
 @keyframes topbar-dot-in{from{transform:scale(0.4);opacity:0}to{transform:none;opacity:1}}
 @media (prefers-reduced-motion: reduce){.topbar-dot{animation:none}}
+
+/* =====================================================================
+   Studio route: viewport-locked page shell
+   =====================================================================
+   On 915×412 (a phone in landscape) the shared chrome above the canvas —
+   top bar, "Dream Studio" heading, tab strip — is ~390px of a 412px screen.
+   Shrinking type only bought back ~60px; the page still had to be scrolled
+   before any drawing area was reachable, which is the defect the owner
+   reported.
+
+   On this ONE route the shell is locked to the viewport instead: the header
+   stops being sticky-with-flow-height, the main region scrolls internally, and
+   the studio measures itself against the remaining space. Every other route
+   keeps its normal document scrolling.
+   ===================================================================== */
+
+.app-frame:has(.studio) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The header keeps its height but no longer adds to the document height. */
+.app-frame:has(.studio) .app-topbar {
+  flex: 0 0 auto;
+}
+
+.app-frame:has(.studio) .app-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The main column becomes the scroll container, so the page can never be
+   scrolled past the canvas. */
+.app-frame:has(.studio) .app-main {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* The studio page fills that column exactly; its own internal flex layout
+   decides how the remaining height is shared between bar, canvas and rail. */
+.app-page:has(> .studio) {
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
+/* On a phone the bottom navigation is fixed, so the studio must end above it. */
+@media (max-width: 820px) {
+  .app-frame:has(.studio) .app-main {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* ---------------------------------------------------------------------
+   CORRECTED SELECTORS.
+   ---------------------------------------------------------------------
+   The first block above used `.app-body` / `.app-main`, but the shell renders
+   `.app-frame > .app-body > .main-content` (see AppShell.tsx). A selector that
+   matches nothing silently does the opposite of what it claims, which is why the
+   canvas was still below the fold. These are the real classes.
+   --------------------------------------------------------------------- */
+
+.app-body:has(.studio) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.main-content:has(.studio) {
+  min-height: 0;
+  /* The studio page is viewport-locked, so the column must not scroll. */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* Flex children default to `min-width: auto`, so the studio's intrinsic width
+     (its tool columns plus a 900px canvas) made the page 795px wide inside a
+     390px screen — the panel tabs were pushed off-screen, not merely hidden.
+     `min-width: 0` lets the column be as narrow as the viewport. */
+  min-width: 0;
+}
+
+.main-content:has(.studio) > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* The studio page is the flex child that fills the column. */
+.main-content:has(.studio) > .app-page.studio-page--canvas {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+/* On a phone the fixed bottom navigation overlays the page; the studio ends
+   above it and respects the Android gesture-bar inset. */
+@media (max-width: 820px) {
+  .main-content:has(.studio) {
+    padding-bottom: 0;
+  }
+
+  .app-page.studio-page--canvas {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  }
+}
+
+/* A short landscape screen has no room for the mobile navigation bar over a
+   drawing surface; it is replaced by the back affordance in the app header. */
+@media (orientation: landscape) and (max-height: 560px) {
+  .app-frame:has(.studio) .mobile-nav {
+    display: none;
+  }
+
+  .app-page.studio-page--canvas {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
