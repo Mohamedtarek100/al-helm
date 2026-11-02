@@ -70,11 +70,16 @@ Evidence for every `[x]` is in `IMPLEMENTATION_REPORT.md`.
 - [x] Push status reported honestly (in-app is never described as delivered push).
 - [!] Remote FCM delivery: needs the service-account JSON in Supabase Edge Function secrets, then a real delivery test.
 
-## 7. Release
+## 7. Release — 1.5.9 shipped
 
-- [x] Version configuration inspected (no version bump applied yet).
-- [!] Android release build + signing: no keystore credentials in this checkout.
-- [!] Publication to `al-helm-app`: **not performed** — blocked by the device-audio and signing gates.
+- [x] Confirmed production defect fixed: empty `due_time` is now `NULL` (SQLSTATE 22007 was failing the whole snapshot).
+- [x] Recovery: device-only records preserved across cloud restore (server always wins on shared ids).
+- [x] 914 tests pass, including 15 new regression tests; both fixes proven load-bearing by reverting them.
+- [x] Production Postgres proof (rolled back): `''` → ERROR 22007, `NULL` → accepted, `14:30` verbatim, 0 rows left behind, unauthenticated write → 42501.
+- [x] APK: 1.5.9 / versionCode 15, `com.alhelm.studyplanner`, signature identical to 1.5.7.
+- [x] Published: release `v1.5.9`, site + APK live, downloaded APK checksum matches the manifest.
+- [!] **Physical-device cold-restart verification (Tests A/B/C) — no device attached.**
+- [!] Remote FCM/Web Push — server secrets absent (`FCM_SERVICE_ACCOUNT_JSON`, `VAPID_*`).
 
 Stopped publication because these release gates are unmet:
 

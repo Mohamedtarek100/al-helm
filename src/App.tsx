@@ -45,10 +45,26 @@ function App() {
   return (
       <ToastProvider>
       <ErrorBoundary>
+      {/*
+        THE LOCK WRAPS THE ENTIRE ROUTER.
+
+        It used to be a LAYOUT ROUTE (`<Route element={<LockGate><AppShell/></LockGate>}>`),
+        which put it INSIDE the router. That had two consequences:
+
+          - every navigation remounted the gate, so its in-memory
+            `sessionLocked` flag could be lost, and
+          - a route entry reached any other way was not guaranteed to pass
+            through a locked state at all. Verified in the running app: loading
+            with a PIN configured but deep-linking to `#/tasks` showed NO lock
+            screen, and the Tasks page was fully interactive.
+
+        Above the router there is exactly one gate, mounted for the whole
+        session, and no route — direct link, deep link, back/forward, or
+        programmatic — can render without passing it.
+      */}
+      <LockGate>
       <Routes>
-        {/* The lock is an overlay inside the shell, so unlocking returns to the
-            exact screen instead of remounting the route. */}
-        <Route element={<LockGate><AppShell /></LockGate>}>
+        <Route element={<AppShell />}>
           <Route index element={<HomePage />} />
           <Route path="schedule" element={<SchedulePage />} />
           <Route path="calendar" element={<CalendarPage />} />
@@ -64,6 +80,7 @@ function App() {
           <Route path="*" element={<HomePage />} />
         </Route>
       </Routes>
+      </LockGate>
       </ErrorBoundary>
       </ToastProvider>
   )

@@ -1,6 +1,13 @@
 import type { AppData } from '../../types'
 import type { DataAdapter } from './adapter'
 import { createInitialData, hydrateData, needsTaskNormalization } from '../domain'
+import { applyPendingToSnapshot, pendingQueue } from './pendingQueue'
+
+/**
+ * Legacy-only bound for records written before the durable queue existed.
+ * New pending work is queued explicitly and is NOT subject to any age limit.
+ */
+const LEGACY_PENDING_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 
 export type PersistenceMode = 'local' | 'cloud'
 export type PersistenceStatus = 'ready' | 'saving' | 'error'
@@ -74,13 +81,16 @@ function sameRecordContent(left:AppData,right:AppData):boolean {
 const MERGEABLE_KEYS = ['tasks', 'subjects', 'sessions', 'focusSessions', 'journal', 'goals', 'artworks', 'letters', 'exams'] as const
 
 /**
- * How long a device-only record may still claim to exist after its last edit.
+ * HOW PENDING WORK IS HANDLED NOW
  *
- * Without a bound, a device restored from an old backup would re-upload records
- * the user deleted on another device months ago. Seven days is long enough to
- * cover a genuine offline edit and short enough to avoid resurrecting history.
+ * The 7-day age bound was a heuristic, and it lost real work: a customer offline
+ * for longer had their edits silently dropped on reconnect, and offline
+ * DELETIONS had no representation at all. Replaced by the durable per-account
+ * queue in `pendingQueue.ts`, which records INTENT (upsert/delete) instead of
+ * guessing from timestamps.
+ *
+ * `MERGEABLE_KEYS` is still the set of collections a pending operation may name.
  */
-const PENDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 /**
  * Merges device-only records into the server snapshot.
@@ -96,11 +106,41 @@ const PENDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
  *      array passed in is populated (or emptied) in place so the caller can
  *      report how many records are waiting to sync.
  */
-function mergePendingIntoRemote(remote: AppData, local: AppData, pendings: { id: string; updatedAt: string }[]): AppData {
-  const cutoff = Date.now() - PENDING_MAX_AGE_MS
+function mergePendingIntoRemote(remote: AppData, local: AppData, pendings: { id: string; updatedAt: string }[], userId: string | null): AppData {
   const result: AppData = { ...remote }
   // Replaced wholesale below; kept only so TypeScript sees every key initialised.
   const collected: { id: string; updatedAt: string }[] = []
+
+  // THE DURABLE QUEUE IS THE AUTHORITY when the account has recorded intent.
+  //
+  // It stores upserts AND tombstones per account, so an offline deletion cannot
+  // be resurrected by an older snapshot, and an edit made months ago still
+  // replays. The timestamp heuristic below is kept ONLY as a fallback for data
+  // written by versions before the queue existed (1.5.9 and earlier), so an
+  // upgrade never loses work that was pending on that old format.
+  const queue = userId ? pendingQueue(userId) : null
+  const localRowsForQueue: Record<string, { id: string }[]> = {}
+  for (const key of MERGEABLE_KEYS) {
+    localRowsForQueue[key] = (local[key] as unknown as { id: string }[]) ?? []
+  }
+
+  let base: AppData = result
+  if (queue && queue.size() > 0) {
+    const applied = applyPendingToSnapshot(
+      result as unknown as Record<string, unknown>,
+      queue,
+      MERGEABLE_KEYS as unknown as readonly string[],
+      localRowsForQueue,
+    )
+    base = applied.snapshot as unknown as AppData
+    for (const op of queue.all()) {
+      if (op.kind === 'upsert') collected.push({ id: op.id, updatedAt: op.updatedAt })
+    }
+    Object.assign(result, base)
+    pendings.length = 0
+    pendings.push(...collected)
+    return result
+  }
 
   for (const key of MERGEABLE_KEYS) {
     const remoteRows = remote[key] as unknown as { id: string; updatedAt?: string }[]
@@ -110,10 +150,11 @@ function mergePendingIntoRemote(remote: AppData, local: AppData, pendings: { id:
     const remoteIds = new Set(remoteRows.map((row) => row.id))
     const deviceOnly = localRows.filter((row) => {
       if (remoteIds.has(row.id)) return false
-      // Keep only recent device-only work; older records are treated as gone.
+      // Legacy fallback only: records written before the durable queue existed.
+      // Bounded so a restored backup from long ago cannot resurrect history.
       const stamp = row.updatedAt ?? ''
       const updated = Date.parse(stamp)
-      return Number.isFinite(updated) && updated >= cutoff
+      return Number.isFinite(updated) && updated >= Date.now() - LEGACY_PENDING_MAX_AGE_MS
     })
     if (deviceOnly.length === 0) continue
 
@@ -286,7 +327,7 @@ export class PersistenceCoordinator {
       // long-stale device cannot resurrect records deleted elsewhere), lets the
       // SERVER win for records that exist on both sides, and never duplicates an
       // id. Nothing about the server data is mutated here.
-      const merged = mergePendingIntoRemote(hydrateData(remote), this.localSnapshot, this.pendingUploads)
+      const merged = mergePendingIntoRemote(hydrateData(remote), this.localSnapshot, this.pendingUploads, userId)
       this.state = { data:merged, mode:'cloud', status:'ready', error:null, userId, migrationRequired:false }
       return this.state
     } catch (error) {

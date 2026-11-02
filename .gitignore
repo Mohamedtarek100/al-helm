@@ -37,9 +37,18 @@ node_modules/.tmp
 
 # Android release signing (kept outside repo)
 android/keystore.properties
+!android/keystore.properties.example
 *.jks
 *.keystore
 
+# Firebase config carries a real API key. It must never be committed; the
+# documented setup step is to place it locally (docs/ANDROID_SIGNING_AND_RELEASE.md).
+android/app/google-services.json
+**/google-services.json
+!**/google-services.json.example
+
+# Supabase / service-role credentials must never enter the repo.
+*service-account*.json
 supabase/.temp/
 dbdata.sql
 

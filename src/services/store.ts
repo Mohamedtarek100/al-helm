@@ -36,6 +36,7 @@ import type {
 import { dataAdapter } from './persistence/adapter'
 import { cloudAdapter, supabase } from './persistence/supabase'
 import { PersistenceCoordinator } from './persistence/coordinator'
+import { pendingQueue } from './persistence/pendingQueue'
 import { createId, nowIso } from './persistence/repository'
 import { toValidDate } from './date'
 import { endGuestSession, isGuestSession } from './guestMode'
@@ -106,6 +107,107 @@ function enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
   return run
 }
 
+/**
+ * Collections whose local changes are queued for retry when the cloud write
+ * fails. Mirrors `MERGEABLE_KEYS` in the coordinator.
+ */
+const PENDING_COLLECTIONS = ['tasks', 'subjects', 'sessions', 'focusSessions', 'journal', 'goals', 'artworks', 'letters', 'exams'] as const
+
+/**
+ * Records, per record id, the intent of a write the server did not accept.
+ *
+ * WHY A DIFF: every mutation in this file goes through `commitAndPersist` or
+ * `persistCloudSnapshot`, which receive the WHOLE next snapshot. Comparing that
+ * snapshot with the last snapshot the server confirmed tells us exactly which
+ * records changed and how — so one implementation covers tasks, subjects,
+ * sessions, artworks and every other collection, instead of each action having
+ * to remember to queue itself.
+ *
+ * A record that exists in the new snapshot is an `upsert`; a record that was
+ * present before and is gone now is a `delete` (tombstone), so an offline
+ * deletion can never be resurrected by an older device snapshot.
+ */
+function recordPendingIntent(next: AppData): void {
+  const userId = persistence.snapshot().userId
+  if (!userId) return
+  const queue = pendingQueue(userId)
+  // THE BASELINE IS THE SERVER COPY, NOT "WHATEVER WAS LAST LOADED".
+  //
+  // With a null baseline every record looked new, so the first save queued the
+  // entire dataset — and the next successful save then cleared it all again.
+  // When there is no known server snapshot yet, fall back to the coordinator's
+  // last confirmed copy, and failing that to an empty baseline (everything is
+  // treated as pending, which is correct: nothing is known to be uploaded).
+  // The baseline must be what was last WRITTEN TO THIS DEVICE, not only what the
+  // server confirmed. Diffing against the server copy alone misses records added
+  // earlier in the same session (they were local-only), so a later delete or edit
+  // recorded no intent at all. `lastWrittenSnapshot` advances on every write;
+  // `lastServerConfirmedSnapshot` still governs when the queue can be CLEARED.
+  const previous = lastWrittenSnapshot ?? lastServerConfirmedSnapshot ?? emptyServerBaseline
+  for (const collection of PENDING_COLLECTIONS) {
+    const before = previous ? (previous[collection] as unknown as { id: string; updatedAt?: string }[]) : []
+    const after = (next[collection] as unknown as { id: string; updatedAt?: string }[]) ?? []
+    const beforeIds = new Set(before.map((row) => row.id))
+    const afterIds = new Set(after.map((row) => row.id))
+
+    for (const row of after) {
+      if (!beforeIds.has(row.id)) {
+        queue.recordUpsert(collection, row.id, row.updatedAt ?? nowIso())
+        continue
+      }
+      const previousRow = before.find((entry) => entry.id === row.id)
+      if (JSON.stringify(previousRow) !== JSON.stringify(row)) {
+        queue.recordUpsert(collection, row.id, row.updatedAt ?? nowIso())
+      }
+    }
+    for (const id of beforeIds) {
+      if (!afterIds.has(id)) queue.recordDelete(collection, id)
+    }
+  }
+  emit()
+}
+
+/**
+ * The last snapshot the SERVER accepted, used as the baseline for `recordPendingIntent`.
+ * Only held in cloud mode; in local/guest mode there is nothing to diff against.
+ */
+let lastServerConfirmedSnapshot: AppData | null = null
+/**
+ * The snapshot as last written to the DEVICE. Used as the diff baseline for
+ * pending intent, so a change relative to the previous local state is detected
+ * even when the server copy is older or absent.
+ */
+let lastWrittenSnapshot: AppData | null = null
+
+/**
+ * Baseline used before the first confirmed server snapshot is known: every
+ * collection empty. Anything present locally is therefore pending, which is the
+ * honest answer — the server has not accepted it yet.
+ */
+const emptyServerBaseline: AppData = { ...createInitialData(), tasks: [], subjects: [], sessions: [], focusSessions: [], journal: [], goals: [], artworks: [], letters: [], exams: [] } as AppData
+
+/**
+ * Clears queued intent that the server has now confirmed.
+ *
+ * Called ONLY from the success branch of a cloud write, so a pending operation
+ * is never dropped on a failed or unconfirmed request. An upsert is cleared when
+ * the record is present in the confirmed snapshot with the same content; a
+ * tombstone is cleared when the record is absent from it.
+ */
+function clearConfirmedPending(confirmed: AppData): void {
+  const userId = persistence.snapshot().userId
+  if (!userId) return
+  const queue = pendingQueue(userId)
+  const done: { collection: string; id: string; kind: 'upsert' | 'delete' }[] = []
+  for (const op of queue.all()) {
+    const rows = (confirmed[op.collection as keyof AppData] as unknown as { id: string }[] | undefined) ?? []
+    const present = rows.some((row) => row.id === op.id)
+    if (op.kind === 'upsert' && present) done.push({ collection: op.collection, id: op.id, kind: 'upsert' })
+    if (op.kind === 'delete' && !present) done.push({ collection: op.collection, id: op.id, kind: 'delete' })
+  }
+  if (done.length) queue.confirm(done)
+}
+
 function localCopyOf(data: AppData): AppData {
   return { ...data, settings: { ...data.settings, storage: 'local' } }
 }
@@ -161,10 +263,31 @@ async function persistCloudSnapshot(snapshot: AppData): Promise<SaveOutcome> {
         throw new Error('The signed-in account changed while saving. The change was kept on this device.')
       }
       if (!cloudActive) localSaved = true
+      // Every write advances the device baseline for the SAME account only; a
+      // write that completed after the account changed must not become the
+      // baseline for the new account.
+      if (generation === accountGeneration) lastWrittenSnapshot = structuredClone(snapshot)
       persistenceError = null
       cloudSaveError = null
       pendingCloudError = null
-      if (cloudActive) { markSynced(); reconcileWithStore() }
+      if (cloudActive) {
+        markSynced()
+        reconcileWithStore()
+        // The server accepted this exact snapshot: it becomes the diff baseline
+        // and anything queued for it can be cleared, because the queue is only
+        // ever a record of what the server has NOT confirmed.
+        lastServerConfirmedSnapshot = structuredClone(snapshot)
+        clearConfirmedPending(snapshot)
+      } else if (persistence.snapshot().userId) {
+        // A SIGNED-IN VIRTUAL-LOCAL MODE WRITE.
+        //
+        // The coordinator stays in local mode for an account whose server copy
+        // is empty (that is what enables the explicit migration path), and it
+        // also downgrades to local when a session expires. In both cases the
+        // device now holds work the ACCOUNT does not have, so it must be queued
+        // — otherwise it would be lost the moment the account syncs.
+        recordPendingIntent(snapshot)
+      }
       return cloudActive ? 'cloud' : 'local'
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Persistence failed.'
@@ -176,16 +299,37 @@ async function persistCloudSnapshot(snapshot: AppData): Promise<SaveOutcome> {
       // "saved on this device" for a write that never reached the device.
       // In cloud mode the device copy is written before the cloud copy, so
       // `localSaved` proves the change survives a reload here.
+      // A write that belongs to a PREVIOUS account must not touch this account's
+      // error state or pending queue at all. `generation` moved, so the result is
+      // not attributable to whoever is signed in now.
+      if (generation !== accountGeneration) {
+        emit()
+        throw error
+      }
       if (localSaved && cloudActive && generation === accountGeneration) {
         cloudSaveError = message
         pendingCloudError = message
         markSyncFailed(message)
+        // The device copy exists but the ACCOUNT is behind: queue the intent so it
+        // is replayed however long the customer stays offline. This is the
+        // ordinary offline case, and it returned early here WITHOUT recording
+        // anything — verified by a probe: mode=cloud, write failed, queue=0.
+        recordPendingIntent(snapshot)
         emit()
         return 'local'
-      } else if (!localSaved && (cloudActive || mode === 'cloud')) {
+      } else if (cloudActive || mode === 'cloud') {
         cloudSaveError = message
         pendingCloudError = message
         markSyncFailed(message)
+        // Record INTENT so this device's work is replayed no matter how long the
+        // customer stays offline. Cleared only once the server confirms it.
+        //
+        // This runs whether or not the DEVICE copy succeeded: when the device
+        // write worked and the CLOUD write failed, `localSaved` is true and the
+        // old `!localSaved` guard skipped this branch entirely — so the exact
+        // case the queue exists for (edit saved locally, rejected by the server)
+        // recorded nothing. Verified by a probe: mode=cloud, write failed, queue=0.
+        if (localSaved) recordPendingIntent(snapshot)
       } else {
         persistenceError = message
       }

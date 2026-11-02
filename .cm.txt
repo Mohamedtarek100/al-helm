@@ -1,0 +1,55 @@
+security(lock): close app-lock bypass and make pending sync durable
+
+P0 SECURITY — the app lock could be bypassed
+  AppLockScreen.forgetPin() called clearLockRecord() on a single confirmation
+  press and LockGate then unlocked the app. Nothing proved ownership, so anyone
+  holding a locked device could read a guest's local data (tasks, subjects,
+  drawings — all in localStorage). Verified in the running app before the fix.
+
+  The lock is now removed only through a recovery ceremony that produces a
+  single-use, 10-minute, record-bound token:
+    - account: the account password is re-authenticated through Supabase and the
+      resulting session must match the user that owns the device;
+    - guest:   the one-time recovery key issued when the lock is created
+               (20 chars, only its hash stored).
+  Escalating delay after repeated failures, capped so a legitimate owner is
+  never permanently locked out. Recovery never deletes customer data.
+
+  Further holes closed:
+    - the gate moved ABOVE the router, so no route, deep link or back navigation
+      can skip it;
+    - when locked, protected screens are no longer rendered at all (previously
+      they stayed mounted under an overlay);
+    - lock state is observed continuously. A PIN enabled in Settings was
+      invisible to the gate until the next reload — verified: reload locked,
+      hash navigation to #/tasks stayed fully interactive.
+
+RELIABILITY — durable pending synchronisation
+  Replaces the 7-day age heuristic, which silently dropped work from anyone
+  offline for longer and could not represent an offline deletion at all.
+
+  pendingQueue.ts records per-account INTENT: an upsert for a changed record and
+  a tombstone for a deletion. The store diffs each snapshot against the last one
+  written to this device, so every collection (tasks, subjects, sessions,
+  artworks, …) is covered without each action having to remember to queue.
+  Entries are cleared only after the server confirms them. Merge rules: server
+  wins for shared ids, tombstones remove server rows, pending upserts absent
+  from the server are re-added, ids are never duplicated, and each account has
+  its own queue so pending work cannot cross accounts.
+
+Tests: 952 passing, including
+  - appLockRecovery.test.ts (14): one-click removal, token forgery, expiry,
+    replay, wrong-record tokens, guest ceremony, no data deleted;
+  - pendingQueue.test.ts (15): durable intent, tombstones, idempotent replay,
+    count bound, conflict and account-isolation rules;
+  - pendingSync.integration.test.ts (9): the REAL store feeds the queue on a
+    failed write, survives a new session, and clears only on confirmation.
+
+Browser security suite: 8/8 attacks blocked, correct PIN still unlocks.
+
+Docs: PROJECT_MASTER_CONTEXT.md (canonical), AGENTS.md,
+docs/{ARCHITECTURE,PRODUCTION_OPERATIONS,ANDROID_SIGNING_AND_RELEASE,
+CUSTOMER_LAUNCH_CHECKLIST}.md, CHANGELOG.md, keystore.properties.example,
+.gitignore now also protects google-services.json and service-account JSON.
+
+Release: 1.5.10 / versionCode 16, same permanent signing key.
