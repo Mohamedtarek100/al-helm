@@ -4,7 +4,7 @@ import { Card } from './Card'
 import { Field, Select, TextInput } from './Field'
 import { useI18n } from '../i18n/useI18n'
 import { useToast } from './toastContext'
-import { disableLock, getLockSettings, isValidPin, setPin, MAX_PIN_LENGTH, MIN_PIN_LENGTH } from '../services/appLock'
+import { disableLock, getLockSettings, isValidPin, issueGuestRecoveryKey, setPin, MAX_PIN_LENGTH, MIN_PIN_LENGTH } from '../services/appLock'
 import { checkBiometricSupport } from '../services/biometric'
 import { resetLaunchMode, useLaunchMode } from '../services/onboarding'
 
@@ -30,6 +30,8 @@ export function AppLockSettings() {
   const launchMode = useLaunchMode()
   const [error, setError] = useState('')
   const [welcomeReset, setWelcomeReset] = useState(false)
+  /** The one-time guest recovery key, shown once immediately after enabling. */
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null)
 
   useEffect(() => {
     void checkBiometricSupport().then((result) => setBiometricSupported(result.available))
@@ -47,11 +49,18 @@ export function AppLockSettings() {
     }
     setBusy(true)
     try {
+      const firstEnable = !settings.enabled
       await setPin(newPin, {
         currentPin: settings.enabled ? currentPin : undefined,
         biometricEnabled: biometricSupported ? biometric : false,
         idleMinutes,
       })
+      // A one-time recovery key is created with the lock. Without it a guest has
+      // no way to prove ownership, and the lock would be unrecoverable — which is
+      // exactly what made the old "just remove the lock" button attractive.
+      if (firstEnable) {
+        setRecoveryKey(await issueGuestRecoveryKey())
+      }
       setSettings(getLockSettings())
       setCurrentPin(''); setNewPin(''); setConfirmPin('')
       notify(en ? 'App lock enabled.' : 'قفل التطبيق اتفعّل.', 'success')
@@ -145,6 +154,21 @@ export function AppLockSettings() {
           ? (en ? 'The welcome screen will appear on the next launch.' : 'شاشة الترحيب هتظهر في التشغيل الجاي.')
           : (en ? 'Show the welcome choice again' : 'إظهار شاشة الترحيب تاني')}
       </Button>
+
+      {recoveryKey && (
+        <div className="alert alert--warning" role="alert">
+          <strong>{en ? 'Save your recovery key now' : 'احفظي مفتاح الاسترجاع دلوقتي'}</strong>
+          <p className="t-sm" style={{ margin: '6px 0' }}>
+            {en
+              ? 'This key is shown only once. If you forget your PIN, it is the only way to prove the device is yours and reopen the app. Your data is never deleted by recovery.'
+              : 'المفتاح ده ظاهر مرة واحدة بس. لو نسيتِ الرمز، هو الطريقة الوحيدة لإثبات إن الجهاز بتاعك وفتح التطبيق. الاسترجاع عمره ما بيمسح بياناتك.'}
+          </p>
+          <code className="app-lock__recovery-key" style={{ fontSize: '1.05rem', letterSpacing: '2px', userSelect: 'all' }}>{recoveryKey}</code>
+          <p className="t-xs t-muted" style={{ marginTop: 6 }}>
+            {en ? 'Write it down and keep it somewhere safe — never share it.' : 'اكتبيه واحفظيه في مكان آمن — وماتشاركيهوش مع حد.'}
+          </p>
+        </div>
+      )}
     </Card>
   )
 }
