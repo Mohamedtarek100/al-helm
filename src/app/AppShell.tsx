@@ -1,7 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { BellIcon, CogIcon, HomeIcon, CalendarIcon, CheckSquareIcon, MenuIcon, CloseIcon, PaletteIcon, TimerIcon, TrendIcon, SunIcon, MoonIcon, MonitorIcon } from '../components/icons'
-import { useCollection, updateSettings, useSettings } from '../services/store'
+import { useCollection, updateSettings, useSettings, syncServerAnnouncements } from '../services/store'
 import { useAdminGate } from '../services/edge/adminGate'
 import { UpdateBanner } from '../components/UpdateBanner'
 import { SyncIndicator } from '../components/SyncIndicator'
@@ -71,6 +71,31 @@ export function AppShell() {
   const tasks = useCollection('tasks')
   const unread = notifications.filter((item) => !item.read).length
   const openTasks = tasks.filter((item) => !item.completed).length
+
+  /**
+   * Pull server announcements for the header badge.
+   *
+   * The badge previously only reflected notifications created IN THIS SESSION,
+   * because the server feed was fetched solely by the notifications page. An
+   * announcement sent while the app was closed therefore produced no bell dot
+   * until the user opened the very page the badge was supposed to lead them to.
+   * Syncing on mount, on focus and every two minutes fixes the count without
+   * pretending this is realtime. Failure is silent here: the notifications page
+   * reports the problem where the user can act on it.
+   */
+  useEffect(() => {
+    const sync = () => { void syncServerAnnouncements().catch(() => undefined) }
+    sync()
+    const timer = window.setInterval(sync, 120_000)
+    const onFocus = () => { if (document.visibilityState === 'visible') sync() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [])
   const [menuOpen, setMenuOpen] = useState(false)
   const adminGate = useAdminGate()
   // Only a server-confirmed answer adds the entry; loading/error/denied show

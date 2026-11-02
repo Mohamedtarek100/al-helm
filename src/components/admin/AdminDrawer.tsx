@@ -56,7 +56,7 @@ export function AdminDrawer({
   if (!open) return null
 
   return (
-    <div className="ac-drawer-layer">
+    <div className="ac-drawer-layer ac-drawer-layer--sheet">
       <button type="button" className="ac-drawer-backdrop" aria-label={closeLabel} onClick={onClose} />
       <div
         className="ac-drawer-panel"

@@ -4,47 +4,67 @@ import type { ReminderTone } from '../types'
 /**
  * Alarm tones.
  *
- * LICENSING: every tone references a sound that already ships with Android via
- * a `content://settings/system/...` URI. NOTHING is bundled, downloaded or
- * redistributed, so no copyrighted audio enters the repository or the APK, and
- * there is nothing to licence.
+ * LICENSING: the four tones are SYNTHESISED by scripts/generate-alarm-tones.mjs
+ * and shipped in `android/app/src/main/res/raw` as WAV files (`ulife_chime`,
+ * `ulife_bell`, `ulife_alarm`, `ulife_notification`). They are our own generated
+ * waveforms, not third-party audio, so there is nothing to licence and no
+ * network fetch is required.
  *
- * HONESTY NOTE — these are NOT bundled audio assets, and they are NOT our own
- * recordings. They are references to the device's own system sounds. The exact
- * waveform therefore belongs to the device vendor and may differ between phones;
- * what is guaranteed is that the user hears a distinct system sound, not that a
- * particular melody plays. A ROM that omits one URI falls back to the system
- * default rather than failing silently.
+ * WHY THE PREVIOUS VERSION WAS SILENT — the real-device defect:
+ *   Every tone pointed at `content://settings/system/...`. Those URIs are not
+ *   guaranteed to resolve to an audible stream: on several Android builds the
+ *   `default` sound resolves to a SILENT channel ("Default notification sound:
+ *   None"), and `effect_tick` is frequently muted for notification channels.
+ *   The notification was therefore posted and displayed with no audio at all.
+ *   A user setting could silence every alarm without the app ever knowing.
  *
  * ANDROID MECHANICS: a notification channel's sound is fixed at creation and
  * cannot be changed afterwards — Android ignores later `sound` values for an
- * existing channel id. Each tone therefore gets its OWN channel id. Changing a
- * reminder's tone moves it to a different channel, which is the only mechanism
- * Android actually honours.
- *
- * Each tone now points at a DIFFERENT system sound. Previously `bell` and
- * `alarm` shared one URI and `chime` and `notification` shared another, which
- * meant four selectable options produced only two audible results.
+ * existing channel id. Channels created by 1.5.7 (`4ulife-reminders-*`) may
+ * already exist on the device WITH the broken/silent sound, so every channel id
+ * below is VERSIONED (`-v2`). A new id creates a new channel with the correct
+ * bundled sound; the old channels simply stop being used.
  */
 
 export interface ToneDefinition {
   id: ReminderTone
   /** Android channel id; one per tone because channel sound is immutable. */
   channelId: string
-  /** System sound URI, or null for the device default. */
+  /** `res://` URI of the bundled raw asset, or null for the device default. */
   soundUri: string | null
   /** Translation key for the display name. */
   labelKey: 'alarmToneDefault' | 'alarmToneChime' | 'alarmToneBell' | 'alarmToneAlarm' | 'alarmToneNotification'
 }
 
+/**
+ * Bump when the sound of an EXISTING id changes. Android will not replace the
+ * audio of a created channel, so a changed tone needs a changed channel id.
+ */
+const CHANNEL_VERSION = 'v2'
+
+const channel = (id: string) => `4ulife-reminders-${id}-${CHANNEL_VERSION}`
+
+/** `res://` prefix is resolved by @capacitor/local-notifications to the raw resource. */
+const rawUri = (name: string) => `res://raw/${name}`
+
 export const REMINDER_TONES: ToneDefinition[] = [
-  { id: 'default', channelId: '4ulife-reminders-default', soundUri: null, labelKey: 'alarmToneDefault' },
-  { id: 'chime', channelId: '4ulife-reminders-chime', soundUri: 'content://settings/system/notification_sound', labelKey: 'alarmToneChime' },
-  { id: 'bell', channelId: '4ulife-reminders-bell', soundUri: 'content://settings/system/alarm_alert', labelKey: 'alarmToneBell' },
-  // Distinct from `bell`: a second, higher-priority alarm sound on most devices.
-  { id: 'alarm', channelId: '4ulife-reminders-alarm', soundUri: 'content://settings/system/ringtone', labelKey: 'alarmToneAlarm' },
-  // Distinct from `chime`: the effect-tick sound, which is short and different.
-  { id: 'notification', channelId: '4ulife-reminders-notification', soundUri: 'content://settings/system/effect_tick', labelKey: 'alarmToneNotification' },
+  // "Default" is still a bundled tone: relying on the system default is what
+  // produced silent alarms on devices whose default notification sound is None.
+  { id: 'default', channelId: channel('default'), soundUri: rawUri('ulife_chime'), labelKey: 'alarmToneDefault' },
+  { id: 'chime', channelId: channel('chime'), soundUri: rawUri('ulife_chime'), labelKey: 'alarmToneChime' },
+  { id: 'bell', channelId: channel('bell'), soundUri: rawUri('ulife_bell'), labelKey: 'alarmToneBell' },
+  { id: 'alarm', channelId: channel('alarm'), soundUri: rawUri('ulife_alarm'), labelKey: 'alarmToneAlarm' },
+  { id: 'notification', channelId: channel('notification'), soundUri: rawUri('ulife_notification'), labelKey: 'alarmToneNotification' },
+]
+
+/** Channel ids used by 1.5.7 and earlier. They are re-created with audio so an
+ * installation that still targets them cannot ring silently. */
+export const LEGACY_CHANNEL_IDS = [
+  '4ulife-reminders-default',
+  '4ulife-reminders-chime',
+  '4ulife-reminders-bell',
+  '4ulife-reminders-alarm',
+  '4ulife-reminders-notification',
 ]
 
 /** Falls back to `default` for an unknown or missing tone. */
@@ -61,57 +81,31 @@ export function isNativePlatform(): boolean {
 }
 
 /**
- * Plays a short audible preview of the selected tone.
+ * Plays an audible preview of the selected tone.
  *
- * SCOPE NOTE (deduplication): there is deliberately only ONE preview entry
- * point for the user. On Android the real sound can only be heard through an
- * actual notification, so the caller uses the existing `sendTestNotification(tone)`
- * path inside `reminders.ts` rather than a second audio implementation here —
- * this function reports that explicitly instead of duplicating it.
+ * On Android the preview is a REAL notification on the tone's own channel, so it
+ * is heard exactly as a scheduled alarm will be — including through the channel
+ * sound, which is the only part that can ever be silent. `sendTestNotification`
+ * is the single native entry point; this reports that rather than opening a
+ * second audio path that could disagree with the alarm.
  *
- * On the web a synthesised WebAudio beep is used. Browsers cannot play Android
- * system sound URIs, and bundling audio files would reintroduce the licensing
- * question. The outcome is returned so the UI can say "preview unavailable"
- * instead of pretending a sound played.
+ * On the web the bundled WAV is played through an <audio> element. Browsers
+ * cannot resolve Android `res://` URIs, so the matching asset is served from
+ * `public/tones/` (generated by the same script) and the outcome is returned so
+ * the UI can say "preview unavailable" instead of pretending a sound played.
  */
 export async function previewTone(tone: ReminderTone): Promise<{ ok: boolean; reason: string | null }> {
   if (isNativePlatform()) {
-    // Not an error: the caller should use the test-notification path, which is
-    // the single supported way to audition a tone on Android.
     return { ok: false, reason: 'native_preview_uses_test_notification' }
   }
   try {
-    const AudioCtx = (globalThis as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext
-      ?? (globalThis as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-    if (!AudioCtx) return { ok: false, reason: 'audio_unavailable' }
-    const context = new AudioCtx()
-    // Each tone maps to a distinct pitch pattern so the choices are audibly
-    // different rather than four identical beeps.
-    const patterns: Record<ReminderTone, number[]> = {
-      default: [880],
-      chime: [880, 1174],
-      bell: [1046, 1318, 1568],
-      alarm: [660, 880, 660, 880],
-      notification: [1174],
-    }
-    const frequencies = patterns[tone] ?? patterns.default
-    const start = context.currentTime
-    frequencies.forEach((frequency, index) => {
-      const oscillator = context.createOscillator()
-      const gain = context.createGain()
-      oscillator.type = 'sine'
-      oscillator.frequency.value = frequency
-      gain.gain.setValueAtTime(0.0001, start + index * 0.16)
-      gain.gain.exponentialRampToValueAtTime(0.18, start + index * 0.16 + 0.02)
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + index * 0.16 + 0.14)
-      oscillator.connect(gain).connect(context.destination)
-      oscillator.start(start + index * 0.16)
-      oscillator.stop(start + index * 0.16 + 0.15)
-    })
-    // Close the context once the last note has finished: an open AudioContext
-    // holds an audio device on some mobile browsers.
-    const total = frequencies.length * 0.16 + 0.1
-    setTimeout(() => { void context.close().catch(() => undefined) }, total * 1000)
+    const definition = toneById(tone)
+    const name = (definition.soundUri ?? '').split('/').pop() || 'ulife_chime'
+    const AudioElement = (globalThis as { Audio?: typeof Audio }).Audio
+    if (!AudioElement) return { ok: false, reason: 'audio_unavailable' }
+    const audio = new AudioElement(`./tones/${name}.wav`)
+    audio.volume = 1
+    await audio.play()
     return { ok: true, reason: null }
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : 'audio_unavailable' }

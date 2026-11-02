@@ -174,12 +174,15 @@ export function NotificationsPage() {
     void syncServerAnnouncements()
       .then(async () => {
         if (!active || !announcementId) return
-        await markAnnouncementReadEverywhere(announcementId)
-        if (active) {
-          const next = new URLSearchParams(searchParams)
-          next.delete('announcementId')
-          setSearchParams(next, { replace: true })
-        }
+        // The announcement was opened from a push/OS notification: it is READ by
+        // definition, so never throw the open away on a failed mark-read. The
+        // badge must clear exactly once, not once per render. If the server call
+        // fails the local state is still updated, and the failure is reported.
+        await markAnnouncementReadEverywhere(announcementId).catch(() => undefined)
+        if (!active) return
+        const next = new URLSearchParams(searchParams)
+        next.delete('announcementId')
+        setSearchParams(next, { replace: true })
       })
       .catch((error) => {
         if (!active) return
@@ -188,6 +191,30 @@ export function NotificationsPage() {
       })
     return () => { active = false }
   }, [announcementId, notify, searchParams, setSearchParams, t])
+
+  /**
+   * Poll the inbox while it is open.
+   *
+   * Push delivery and the inbox are separate mechanisms: an announcement can be
+   * written to the delivery table while this app was in the background, and
+   * nothing on the device would know. A 45s poll (plus the focus/visibility
+   * refresh below) is what makes the list and the header badge converge without
+   * claiming realtime, which this stack does not provide.
+   */
+  useEffect(() => {
+    let active = true
+    const refresh = () => { if (active) void syncServerAnnouncements().catch(() => undefined) }
+    const timer = window.setInterval(refresh, 45_000)
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh() }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [])
 
   const sorted = useMemo(() => [...items].sort((a, b) => b.at.localeCompare(a.at)), [items])
   const unread = sorted.filter((item) => !item.read).length

@@ -21,9 +21,10 @@
 
 import {
   CANVAS_H, CANVAS_W, DEFAULT_LAYER_ID, PAPER_BACKGROUND,
-  drawShape, drawStrokePath, drawText,
+  drawShape, drawText,
   type DrawingDocument, type DrawingLayer, type PaperKind, type Shape, type Stroke,
 } from './drawing'
+import { paintBrushStroke, settingsOf } from './brushes'
 
 /**
  * Paints the paper only. Kept separate from ink so an eraser can never touch it.
@@ -67,9 +68,25 @@ export function paintInkStroke(ctx: CanvasRenderingContext2D, stroke: Stroke): v
     ctx.strokeStyle = stroke.color
     ctx.fillStyle = stroke.color
   }
-  drawStrokePath(ctx, stroke)
+  // The brush engine applies the preset's size/opacity/flow/hardness/spacing.
+  // A stroke with no `brush` (every document written before v4) resolves to the
+  // pencil preset, whose defaults reproduce the old hard round line exactly.
+  //
+  // THE ERASER IS FORCED TO FULL STRENGTH. Its settings are only ever exposed
+  // to the user as size, and a partial-alpha eraser would leave a translucent
+  // ghost of the stroke it was meant to remove — the eraser contract is
+  // "remove", not "fade".
+  const effective = stroke.eraser
+    ? { ...settingsOf({ ...stroke, brush: stroke.brush ?? 'eraser' }), opacity: 1, flow: 1 }
+    : settingsOf({ ...stroke, brush: stroke.brush ?? 'pencil' })
+  // The eraser's colour is an opaque-alpha MASK, not paint: it must be the
+  // engine's fixed mask value regardless of any colour stored on the stroke.
+  paintBrushStroke(ctx, stroke.eraser ? { ...stroke, color: ERASER_MASK } : stroke, effective)
   ctx.restore()
 }
+
+/** The eraser's only colour: fully opaque black, consumed by destination-out. */
+export const ERASER_MASK = 'rgba(0,0,0,1)'
 
 export interface InkLayers {
   paper: HTMLCanvasElement
@@ -177,8 +194,14 @@ export function renderInkLayer(
 
 /**
  * Composites paper + ink onto the visible canvas.
- * The ink layer is drawn with `source-over`, so erased areas simply show the
- * paper underneath — never a transparent hole, never a coloured patch.
+ *
+ * The visible canvas' backing store is document × device pixel ratio — the SAME
+ * size as the ink layer, so paper and ink share one coordinate space.
+ *
+ * The ELEMENT is what fills the stage: CSS sizes it (max-width/max-height plus
+ * the document aspect ratio), so the bitmap is scaled to fit without ever being
+ * stretched. Doing the letterboxing HERE instead put paper and ink at different
+ * scales, which is how the artwork came to be drawn above its own page.
  */
 export function compositeLayers(
   target: HTMLCanvasElement | null,
@@ -186,7 +209,11 @@ export function compositeLayers(
   paper: PaperKind,
   docWidth = CANVAS_W,
   docHeight = CANVAS_H,
+  /** Backing-store pixel ratio. Must be the SAME ratio `renderInkLayer` used. */
+  pixelRatio = Math.min(3, Math.max(1, (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1)),
 ): void {
+  void paper
+  void pixelRatio
   if (!target) return
   const ctx = target.getContext('2d')
   if (!ctx) return
@@ -208,17 +235,42 @@ export function compositeLayers(
     paperCtx.setTransform(1, 0, 0, 1, 0, 0)
   }
 
-  if (target.width !== layers.ink.width || target.height !== layers.ink.height) {
-    target.width = layers.ink.width
-    target.height = layers.ink.height
-  }
+  // The BACKING STORE follows the element's CSS box × DPR. The element is sized
+  // by CSS to the document's aspect ratio (`aspect-ratio: 900/620`), so the
+  // bitmap fills it EXACTLY — no letterboxing, no dark bands.
+  //
+  // The box is read here rather than trusted from a previous paint: during the
+  // first frames after a layout change, `getBoundingClientRect()` still reports
+  // the old box, which is how the paper ended up drawn 242px tall inside a
+  // 620px element. A zero/absent rect (tests, SSR) falls back to the document
+  // size so the function stays pure and usable outside a browser.
+  const boxRect = typeof target.getBoundingClientRect === 'function' ? target.getBoundingClientRect() : null
+  const boxW = boxRect && boxRect.width > 1 ? boxRect.width : 0
+  const boxH = boxRect && boxRect.height > 1 ? boxRect.height : 0
+  const desiredW = boxW ? Math.round(boxW * pixelRatio) : Math.max(1, Math.round(docWidth * pixelRatio))
+  const desiredH = boxH ? Math.round(boxH * pixelRatio) : Math.max(1, Math.round(docHeight * pixelRatio))
+  if (target.width !== desiredW) target.width = desiredW
+  if (target.height !== desiredH) target.height = desiredH
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.globalAlpha = 1
   ctx.globalCompositeOperation = 'source-over'
   ctx.clearRect(0, 0, target.width, target.height)
-  ctx.drawImage(layers.paper, 0, 0)
-  ctx.drawImage(layers.ink, 0, 0)
+  // The element already has the document ratio, so the bitmap fills it. Drawing
+  // at `min()` scale with centring offsets was what left the paper as a band in
+  // the middle of the canvas.
+  ctx.drawImage(layers.paper, 0, 0, target.width, target.height)
+  ctx.drawImage(layers.ink, 0, 0, target.width, target.height)
+  canvasFit = { offsetX: 0, offsetY: 0, scale: target.width / docWidth }
 }
+
+/**
+ * Geometry of the paper inside the visible canvas, in backing-store pixels.
+ *
+ * Written by `compositeLayers` and read by pointer handling so a stroke lands
+ * where the user touched, even when the paper is letterboxed inside a canvas
+ * that fills a differently-shaped stage.
+ */
+export let canvasFit: { offsetX: number; offsetY: number; scale: number } | null = null
 
 /** Samples the visible colour at a document-space point (eyedropper). */
 export function sampleColor(target: HTMLCanvasElement | null, x: number, y: number, ratio = 1): string | null {

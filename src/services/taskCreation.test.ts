@@ -156,6 +156,29 @@ describe('task creation reporting', () => {
     }
   })
 
+  it('reports a real failure when the DEVICE write fails while cloud mode is active', async () => {
+    // REGRESSION — the "tasks are not saved" report.
+    //
+    // `persistCloudSnapshot` writes the device copy first, then the cloud copy.
+    // Its catch block used to run the "localSaved" branch whenever cloud mode
+    // was active, so a DEVICE write failure (quota, private mode, a locked
+    // profile) returned 'local' — "saved on this device" — for a task that
+    // existed only in memory, and the next reload lost it with no error ever
+    // shown. A failed device write must always be an error.
+    expect(store.activePersistenceMode()).toBe('cloud')
+    const adapter = await import('./persistence/adapter')
+    const mutable = adapter.dataAdapter as unknown as { save: (data: unknown) => Promise<void> }
+    const originalSave = mutable.save
+    mutable.save = async () => { throw new Error('device storage full') }
+    try {
+      await expect(store.createTask(taskInput('Device write fails'))).rejects.toThrow(/device storage full/)
+      // Nothing durable exists, so nothing must remain in the list either.
+      expect(store.getState().tasks.filter((t) => t.title === 'Device write fails')).toHaveLength(0)
+    } finally {
+      mutable.save = originalSave
+    }
+  })
+
   it('persists task details with a subject, category, priority, and selected due date', async () => {
     const input = {
       ...taskInput('Practice algebra'),

@@ -85,6 +85,10 @@ beforeEach(async () => {
   cloud.dismissedIds = []
   await store.initStore(true)
   await store.authenticateCloudUser('user-1')
+  // The cloud coordinator deliberately stays in LOCAL mode when the account is
+  // brand new (that is what enables the explicit local→cloud migration path).
+  // Announcements belong to a verified account, not to a mode; a real sync only
+  // requires an authenticated userId, which authenticateCloudUser establishes.
 })
 
 describe('creating and reading notifications', () => {

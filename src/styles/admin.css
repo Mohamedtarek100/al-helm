@@ -491,10 +491,16 @@
 .ac-drawer-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  /* Below the panel it dims, so the actual dialog is never washed out. */
+  z-index: 0;
   background: rgba(3, 6, 14, 0.7);
   border: 0;
+  cursor: default;
 }
+
+.ac-drawer-panel { z-index: 1; }
+
+.ac-confirm { z-index: 1; }
 
 .ac-drawer {
   position: fixed;
@@ -846,7 +852,21 @@
 
 /* ---- Drawer / detail panel ---------------------------------------- */
 
-.ac-drawer-layer { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end; }
+/*
+ * The layer MUST be a flex/grid container so the panel is a LAYOUT child.
+ *
+ * ROOT CAUSE of the "admin page goes extremely dark" defect:
+ * `.ac-drawer-backdrop` is `position: fixed; inset: 0` with no static position.
+ * When the layer was a plain block, the backdrop was block-level, so it sat ON
+ * TOP of the panel in normal flow, and the centred `.ac-confirm` was pushed
+ * BENEATH the 70%-opaque backdrop — the dialog rendered but was dimmed and
+ * partially unclickable. Flex layout removes the backdrop from the flow
+ * entirely; it is also explicitly ordered behind the panel.
+ */
+.ac-drawer-layer { position: fixed; inset: 0; z-index: 60; display: flex; isolation: isolate; }
+
+.ac-drawer-layer--sheet { justify-content: flex-end; }
+.ac-drawer-layer--confirm { justify-content: center; align-items: center; padding: 16px; }
 
 .ac-drawer-panel {
   position: relative;
@@ -957,9 +977,13 @@
 /* Confirmation dialog, centred and above the drawer layer. */
 .ac-confirm {
   position: relative;
-  align-self: center;
-  margin: auto;
   width: min(420px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  opacity: 1;
+  filter: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   padding: 22px;
   border-radius: var(--ac-radius-lg);
   background: linear-gradient(180deg, var(--ac-surface-2), var(--ac-surface));

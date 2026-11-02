@@ -21,13 +21,15 @@ function recorder() {
   const ops: Array<{ kind: string; composite: string; style?: string }> = []
   let composite = 'source-over'
   let style = ''
+  let alpha = 1
   const state: string[] = []
   const ctx = {
     canvas: { width: 900, height: 620 },
     lineWidth: 1,
     lineCap: 'butt',
     lineJoin: 'miter',
-    globalAlpha: 1,
+    get globalAlpha() { return alpha },
+    set globalAlpha(value: number) { alpha = value },
     fillStyle: '',
     get globalCompositeOperation() { return composite },
     set globalCompositeOperation(v: string) { composite = v },
@@ -52,17 +54,23 @@ function recorder() {
     // Shapes/text are drawn with the same composite contract as ink, so they are
     // recorded through stroke()/fill() and inherit every existing assertion.
     fillText(text: string) { ops.push({ kind: 'text', composite, style: `${style}:${text}` }) },
+    // v4 brush strokes may paint feathered deposits (soft brush), which need a
+    // gradient; it must not affect the composite contract these tests pin.
+    createRadialGradient() { return { addColorStop() {} } },
   }
   return { ctx: ctx as unknown as CanvasRenderingContext2D, ops }
 }
 
 const pen = (color = '#34312f'): Stroke => ({
-  points: [{ x: 10, y: 10 }, { x: 200, y: 10 }],
+  // Long enough to exceed one brush spacing step at size 8 (0.18 × 8 = 1.44px),
+  // so every preset paints through its normal path rather than the
+  // shorter-than-one-step fallback.
+  points: [{ x: 10, y: 10 }, { x: 60, y: 10 }, { x: 120, y: 10 }, { x: 200, y: 10 }],
   color,
   size: 8,
   eraser: false,
 })
-const eraser = (): Stroke => ({ points: [{ x: 10, y: 10 }, { x: 200, y: 10 }], color: '#000', size: 20, eraser: true })
+const eraser = (): Stroke => ({ points: [{ x: 10, y: 10 }, { x: 60, y: 10 }, { x: 120, y: 10 }, { x: 200, y: 10 }], color: '#000', size: 20, eraser: true })
 
 describe('v3 shapes and text live on the ink layer', () => {
   const shape = (kind: 'rect' | 'ellipse' | 'line') => ({

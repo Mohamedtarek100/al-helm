@@ -584,7 +584,7 @@ export function AnnouncementsSection({
       </AdminDrawer>
 
       {confirming && (
-        <div className="ac-drawer-layer">
+        <div className="ac-drawer-layer ac-drawer-layer--confirm">
           <button type="button" className="ac-drawer-backdrop" aria-label={t('adminCancel')} onClick={() => setConfirming(false)} />
           <div className="ac-confirm" role="alertdialog" aria-modal="true" aria-labelledby="ac-confirm-title">
             <h2 className="ac-drawer-panel__title" id="ac-confirm-title">{t('acSendTitle')}</h2>
