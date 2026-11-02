@@ -100,6 +100,30 @@ describe('drawing document: creation & serialisation', () => {
     }
   })
 
+  it('upgrades a flat legacy document to one visible layer without changing its strokes', () => {
+    const original = doc([stroke([[10, 10], [20, 20]])])
+    const parsed = parseDocument(JSON.stringify(original))!
+    expect(parsed.layers).toEqual([{ id: 'layer_default', name: 'Layer 1', visible: true }])
+    expect(parsed.activeLayerId).toBe('layer_default')
+    expect(parsed.strokes).toEqual(original.strokes)
+  })
+
+  it('round-trips layer membership, visibility, and the active layer', () => {
+    const layered: DrawingDocument = {
+      ...emptyDocument(),
+      layers: [
+        { id: 'background', name: 'Background', visible: false },
+        { id: 'details', name: 'Details', visible: true },
+      ],
+      activeLayerId: 'details',
+      strokes: [stroke([[10, 10], [20, 20]], { layerId: 'details' })],
+    }
+    const parsed = parseDocument(serializeDocument(layered))!
+    expect(parsed.layers).toEqual(layered.layers)
+    expect(parsed.activeLayerId).toBe('details')
+    expect(parsed.strokes[0].layerId).toBe('details')
+  })
+
   it('returns null for unparseable or structurally invalid input', () => {
     expect(parseDocument(null)).toBeNull()
     expect(parseDocument('')).toBeNull()

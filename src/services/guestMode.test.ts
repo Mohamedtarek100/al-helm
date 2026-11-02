@@ -4,9 +4,8 @@ import { __resetGuestSessionForTests, endGuestSession, isGuestSession, startGues
 /**
  * Guest session isolation.
  *
- * Requirement: guest data must never reach durable storage or the cloud. The
- * store consults `isGuestSession()` before ANY write, so these tests pin the
- * flag contract that makes that guarantee enforceable.
+ * Guest data is durable on this device, never synced without authentication,
+ * and remains available after a reload.
  */
 
 beforeEach(() => {
@@ -39,9 +38,9 @@ describe('guest flag lifecycle', () => {
   })
 })
 
-describe('no guest data reaches storage', () => {
-  it('writing during a guest session leaves localStorage untouched', async () => {
-    const { initStore, createTask, getState } = await import('./store')
+describe('guest data persistence', () => {
+  it('saves guest edits locally and restores them after a reload', async () => {
+    const { initStore, createTask, getState, activePersistenceMode } = await import('./store')
     await initStore(true)
     startGuestSession()
 
@@ -56,14 +55,21 @@ describe('no guest data reaches storage', () => {
       estimatedMinutes: 30,
     })
 
-    // Held in memory for this session only…
     expect(getState().tasks.map((t) => t.title)).toContain('Guest task')
-    expect(task.writeResult).toBe('session-only')
-    // …and never written anywhere durable.
-    expect(localStorage.getItem('alhelm.v1.tasks')).toBeNull()
+    expect(task.writeResult).toBe('local-only')
+    expect(activePersistenceMode()).toBe('local')
+    expect(JSON.parse(localStorage.getItem('alhelm.v1.tasks') || '[]')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ title: 'Guest task' })]),
+    )
+
+    // Simulate a fresh app process and the launch gate restoring guest mode.
+    __resetGuestSessionForTests()
+    await initStore(true)
+    startGuestSession()
+    expect(getState().tasks.map((t) => t.title)).toContain('Guest task')
   })
 
-  it('a normal (non-guest) session still persists', async () => {
+  it('a non-guest local session still persists', async () => {
     const { initStore, createTask } = await import('./store')
     await initStore(true)
     endGuestSession()

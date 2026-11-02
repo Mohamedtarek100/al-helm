@@ -43,7 +43,7 @@ import { createInitialData, hydrateData } from './domain'
 import { markSynced, markSyncFailed, markSyncing, reconcileWithStore } from './syncStatus'
 import { cleanSubjectName, findSubjectIncludingArchived, SubjectDuplicateError, subjectNameKey } from './subjects'
 import { isTaskPriority, normalizeTaskPriority } from './taskPriority'
-import { getAnnouncementFeed, markAnnouncementRead, type AnnouncementFeedRow } from './edge/admin'
+import { dismissAnnouncements, getAnnouncementFeed, markAnnouncementRead, type AnnouncementFeedRow } from './edge/admin'
 
 export type CollectionItem<K extends CollectionKey> = AppData[K][number]
 
@@ -78,6 +78,7 @@ let cloudSaveError: string | null = null
  * cloud write failed. Cleared only by a cloud write the server confirmed.
  */
 let pendingCloudError: string | null = null
+let pendingAnnouncementDismissalError: string | null = null
 /**
  * Incremented whenever the active account changes. A save captures the value
  * when it starts and refuses to record a result if it moved underneath it, so
@@ -94,8 +95,8 @@ const persistence = new PersistenceCoordinator(dataAdapter, cloudAdapter())
  * warning ("saved here, not yet in your account") rather than an error, because
  * an error invites a retry — and a retry of a create would duplicate the item.
  */
-export type SaveOutcome = 'cloud' | 'local' | 'session'
-export type WriteResult = 'cloud' | 'local-only' | 'session-only'
+export type SaveOutcome = 'cloud' | 'local'
+export type WriteResult = 'cloud' | 'local-only'
 
 /** Serialises full-snapshot writes so two saves can never interleave. */
 let writeChain: Promise<unknown> = Promise.resolve()
@@ -120,12 +121,20 @@ function localCopyOf(data: AppData): AppData {
  * the user the truth instead of a generic "saved".
  */
 async function persistCloudSnapshot(snapshot: AppData): Promise<SaveOutcome> {
-  // Guest edits are held only in memory and must not be reported as durable.
-  if (isGuestSession()) return 'session'
   return enqueueWrite(async () => {
     const generation = accountGeneration
     const cloudActive = persistence.snapshot().mode === 'cloud'
+    if (isGuestSession()) {
+      if (cloudActive) throw new Error('Guest mode cannot write to an authenticated cloud account.')
+      const localSnapshot = localCopyOf(snapshot)
+      await dataAdapter.save(localSnapshot)
+      await persistence.refreshLocalSnapshot(localSnapshot)
+      persistenceError = null
+      emit()
+      return 'local'
+    }
     if (cloudActive) markSyncing()
+    let localSaved = false
     try {
       if (cloudActive) {
         // Keep the coordinator's snapshot aligned before persisting: persist()
@@ -139,8 +148,9 @@ async function persistCloudSnapshot(snapshot: AppData): Promise<SaveOutcome> {
         if (generation !== accountGeneration) {
           throw new Error('The signed-in account changed before this save started. The change was kept on this device.')
         }
-        await persistence.refreshCloudSnapshot(snapshot)
         await dataAdapter.save(localCopyOf(snapshot))
+        localSaved = true
+        await persistence.refreshCloudSnapshot(snapshot)
       }
       await persistence.persist(snapshot)
       // The write completed, but if the account changed while it was in flight
@@ -150,6 +160,7 @@ async function persistCloudSnapshot(snapshot: AppData): Promise<SaveOutcome> {
       if (generation !== accountGeneration) {
         throw new Error('The signed-in account changed while saving. The change was kept on this device.')
       }
+      if (!cloudActive) localSaved = true
       persistenceError = null
       cloudSaveError = null
       pendingCloudError = null
@@ -160,7 +171,16 @@ async function persistCloudSnapshot(snapshot: AppData): Promise<SaveOutcome> {
       // Read the mode AFTER the attempt: the coordinator may have downgraded to
       // local (expired session) while the write was in flight.
       const mode = persistence.snapshot().mode
-      if (mode === 'cloud') {
+      if (cloudActive && localSaved && generation === accountGeneration) {
+        cloudSaveError = message
+        pendingCloudError = message
+        markSyncFailed(message)
+        if (mode === 'local') {
+          await persistence.refreshLocalSnapshot(localCopyOf(snapshot))
+        }
+        emit()
+        return 'local'
+      } else if (mode === 'cloud') {
         cloudSaveError = message
         pendingCloudError = message
         markSyncFailed(message)
@@ -180,6 +200,7 @@ export function getPersistenceError(): string | null { return cloudSaveError ?? 
  * indicator must never claim "synced" while this is set.
  */
 export function getPendingCloudError(): string | null { return pendingCloudError }
+export function getPendingAnnouncementDismissalError(): string | null { return pendingAnnouncementDismissalError }
 
 /**
  * Retries the failed cloud write, and reports success only once it is stored.
@@ -191,14 +212,13 @@ export function getPendingCloudError(): string | null { return pendingCloudError
  */
 export async function retryPersistence(): Promise<SaveOutcome> {
   const pendingUserId = persistence.snapshot().userId
+  const current = await currentSessionUserId()
+  if (!current) throw new Error('Sign in again to send the unsynced changes to your account.')
+  if (pendingUserId && current !== pendingUserId) throw new Error('A different account is signed in; sign in as the original account to sync these changes.')
   if (persistence.snapshot().mode !== 'cloud') {
-    const current = await currentSessionUserId()
-    if (!current) throw new Error('Sign in again to send the unsynced changes to your account.')
-    if (pendingUserId && current !== pendingUserId) throw new Error('A different account is signed in; sign in as the original account to sync these changes.')
     await authenticateCloudUser(current)
   }
   const outcome = await persistCloudSnapshot(state)
-  if (outcome === 'session') throw new Error('Guest-session changes are temporary and cannot be synced.')
   if (outcome === 'local') throw new Error('Cloud sync is not active, so the changes are saved on this device only.')
   return outcome
 }
@@ -234,33 +254,28 @@ function commit(next:AppData):void{state=next;emit();schedulePersist()}
  */
 async function commitAndPersist(next: AppData): Promise<WriteResult> {
   const previous=state
+  const generation=accountGeneration
   if(saveTimer){clearTimeout(saveTimer);saveTimer=null}
   state=next
   emit()
   try {
     const outcome = await persistCloudSnapshot(next)
-    if (outcome === 'session') return 'session-only'
     return outcome === 'cloud' ? 'cloud' : 'local-only'
   } catch(error){
-    if(persistence.snapshot().mode==='local'){
-      // LOCAL FAILURE: nothing was stored, so roll the UI back and rethrow.
+    if (generation === accountGeneration) {
       state=previous
-      await persistence.refreshLocalSnapshot(previous).catch(()=>undefined)
-      emit()
-      throw error
+      if(persistence.snapshot().mode==='local') await persistence.refreshLocalSnapshot(previous).catch(()=>undefined)
+      else await persistence.refreshCloudSnapshot(previous).catch(()=>undefined)
     }
-    // CLOUD FAILURE with a healthy local mode: the edit is already in memory
-    // AND on this device. Throwing here is what produced a "could not save"
-    // message for an item the user could see, and led to duplicate creates on
-    // retry. Report it as local-only instead; `pendingCloudError` still records
-    // that the account is behind, so the sync indicator stays truthful.
-    return 'local-only'
+    emit()
+    throw error
   }
 }
 
 export async function initStore(force = false): Promise<void> {
   if (hydrated && !force) return
   hydrated = true
+  pendingAnnouncementDismissalError = null
   // A pending debounced write from the PREVIOUS session must not fire after
   // this restore: it would serialise the old in-memory snapshot over the data
   // we are about to load. Cancelling it here is what makes a reload actually
@@ -319,6 +334,7 @@ export async function authenticateCloudUser(userId: string): Promise<void> {
   // Any in-flight save belongs to the previous account and must not record its
   // result against this one. Bumping the generation invalidates it.
   accountGeneration += 1
+  pendingAnnouncementDismissalError = null
   const next = await persistence.authenticate(userId)
   if(next.error) cloudSaveError=next.error
   else if (next.mode === 'cloud') cloudSaveError = null
@@ -352,6 +368,7 @@ export async function logoutCloudUser(): Promise<void> {
   persistenceError = null
   // Nothing is pending against an account we are no longer signed in to.
   pendingCloudError = null
+  pendingAnnouncementDismissalError = null
   applyTheme(state.settings.theme)
   emit()
 }
@@ -406,7 +423,6 @@ async function withCollectionPersist<K extends CollectionKey>(key:K,updater:(ite
  */
 export async function persistCurrent(): Promise<SaveOutcome> {
   const result = await commitAndPersist(structuredClone(state))
-  if (result === 'session-only') return 'session'
   return result === 'cloud' ? 'cloud' : 'local'
 }
 export function activePersistenceMode(): 'local'|'cloud' { return persistence.snapshot().mode }
@@ -829,6 +845,58 @@ export type NewNotification = {
   href?: string
 }
 
+export type NotificationWriteResult = WriteResult | 'local-pending'
+
+function announcementDismissalKey(userId: string): string {
+  return `alhelm.v1.announcementDismissals.${userId}`
+}
+
+function getQueuedAnnouncementDismissals(userId: string): string[] {
+  const raw = window.localStorage.getItem(announcementDismissalKey(userId))
+  if (!raw) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error('Pending announcement deletions could not be read from this device.')
+  }
+  if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== 'string')) {
+    throw new Error('Pending announcement deletions on this device are invalid.')
+  }
+  return [...new Set(parsed as string[])]
+}
+
+function queueAnnouncementDismissals(userId: string, ids: string[]): void {
+  const pending = new Set(getQueuedAnnouncementDismissals(userId))
+  for (const id of ids) pending.add(id)
+  window.localStorage.setItem(announcementDismissalKey(userId), JSON.stringify([...pending]))
+}
+
+function removeQueuedAnnouncementDismissals(userId: string, ids: string[]): void {
+  const removed = new Set(ids)
+  const pending = getQueuedAnnouncementDismissals(userId).filter((id) => !removed.has(id))
+  if (pending.length) window.localStorage.setItem(announcementDismissalKey(userId), JSON.stringify(pending))
+  else window.localStorage.removeItem(announcementDismissalKey(userId))
+}
+
+async function flushQueuedAnnouncementDismissals(userId: string): Promise<boolean> {
+  const pending = getQueuedAnnouncementDismissals(userId)
+  let lastError: unknown = null
+  for (let offset = 0; offset < pending.length; offset += 100) {
+    const batch = pending.slice(offset, offset + 100)
+    try {
+      await dismissAnnouncements(batch)
+      removeQueuedAnnouncementDismissals(userId, batch)
+    } catch (error) {
+      lastError = error
+    }
+  }
+  pendingAnnouncementDismissalError = lastError instanceof Error
+    ? lastError.message
+    : lastError ? 'Announcement deletion could not be synced.' : null
+  return lastError === null
+}
+
 /**
  * Adds an in-app notification.
  *
@@ -903,18 +971,28 @@ export async function markAllNotificationsRead(): Promise<WriteResult> {
  * cloud write and we are not in local mode (in local mode a failure throws and
  * the caller gets a real error).
  */
-export async function deleteNotification(id: string): Promise<WriteResult> {
+export async function deleteNotification(id: string): Promise<NotificationWriteResult> {
   const previous = state.notifications
   const next = previous.filter((item) => item.id !== id)
   if (next.length === previous.length) return 'local-only'
+  const item = previous.find((notification) => notification.id === id)
+  const isAnnouncement = item?.kind === 'announcement' && item.id.startsWith('ann-')
+  let dismissalPending = false
+  if (isAnnouncement) {
+    const userId = persistence.snapshot().userId
+    if (!userId) throw new Error('Sign in to delete this account announcement.')
+    queueAnnouncementDismissals(userId, [item.id.slice(4)])
+    dismissalPending = !(await flushQueuedAnnouncementDismissals(userId))
+  }
   try {
     const outcome = await commitAndPersist({ ...state, notifications: next })
-    if (outcome !== 'cloud' && persistence.snapshot().mode !== 'local') {
+    const dismissalConfirmed = isAnnouncement && !dismissalPending
+    if (!dismissalConfirmed && outcome !== 'cloud' && persistence.snapshot().mode !== 'local') {
       // The server copy still holds this notification: put it back.
       state = { ...state, notifications: previous }
       emit()
     }
-    return outcome
+    return dismissalPending ? 'local-pending' : outcome
   } catch (error) {
     state = { ...state, notifications: previous }
     emit()
@@ -930,8 +1008,19 @@ export async function deleteNotification(id: string): Promise<WriteResult> {
  * announcement was received. Locally-mirrored announcement entries are cleared
  * from the list like any other item.
  */
-export async function clearNotifications(): Promise<WriteResult> {
-  return commitAndPersist({ ...state, notifications: [] })
+export async function clearNotifications(): Promise<NotificationWriteResult> {
+  const announcementIds = state.notifications
+    .filter((item) => item.kind === 'announcement' && item.id.startsWith('ann-'))
+    .map((item) => item.id.slice(4))
+  let dismissalPending = false
+  if (announcementIds.length) {
+    const userId = persistence.snapshot().userId
+    if (!userId) throw new Error('Sign in to clear account announcements.')
+    queueAnnouncementDismissals(userId, announcementIds)
+    dismissalPending = !(await flushQueuedAnnouncementDismissals(userId))
+  }
+  const outcome = await commitAndPersist({ ...state, notifications: [] })
+  return dismissalPending ? 'local-pending' : outcome
 }
 
 /* ------------------------------------------------------------------ */
@@ -960,16 +1049,24 @@ export async function clearNotifications(): Promise<WriteResult> {
  *   "the user un-read this", because that action does not exist.
  */
 export async function syncServerAnnouncements(): Promise<number> {
-  if (!supabase) return 0
-  let feed: AnnouncementFeedRow[]
-  try {
-    feed = (await getAnnouncementFeed()).feed
-  } catch {
-    return 0 // not signed in / backend unreachable — local data stays authoritative
-  }
-  if (feed.length === 0) return 0
+  if (!supabase || isGuestSession()) return 0
+  const userId = persistence.snapshot().userId
+  if (!userId) return 0
+  await flushQueuedAnnouncementDismissals(userId)
+  const response = await getAnnouncementFeed()
+  const feed: AnnouncementFeedRow[] = response.feed
+  const dismissedIds = new Set([
+    ...(response.dismissedIds ?? []),
+    ...getQueuedAnnouncementDismissals(userId),
+  ])
 
-  const byId = new Map(state.notifications.map((item) => [item.id, item]))
+  const kept = state.notifications.filter((item) => (
+    item.kind !== 'announcement'
+    || !item.id.startsWith('ann-')
+    || !dismissedIds.has(item.id.slice(4))
+  ))
+  const removed = state.notifications.length - kept.length
+  const byId = new Map(kept.map((item) => [item.id, item]))
   const added: AppNotification[] = []
   const readUpdates = new Set<string>()
 
@@ -997,13 +1094,21 @@ export async function syncServerAnnouncements(): Promise<number> {
     if (serverRead && !existing.read) readUpdates.add(localId)
   }
 
-  if (added.length === 0 && readUpdates.size === 0) return 0
+  if (added.length === 0 && readUpdates.size === 0 && removed === 0) {
+    if (pendingAnnouncementDismissalError) {
+      throw new Error(`Announcement deletion is waiting to sync: ${pendingAnnouncementDismissalError}`)
+    }
+    return 0
+  }
 
-  const next = state.notifications.map((item) => (
+  const next = kept.map((item) => (
     readUpdates.has(item.id) ? { ...item, read: true, updatedAt: nowIso() } : item
   ))
   await commitAndPersist({ ...state, notifications: [...next, ...added] })
-  return added.length + readUpdates.size
+  if (pendingAnnouncementDismissalError) {
+    throw new Error(`Announcement deletion is waiting to sync: ${pendingAnnouncementDismissalError}`)
+  }
+  return added.length + readUpdates.size + removed
 }
 
 /** Mark an announcement read in both local state and on the server. */

@@ -18,6 +18,7 @@ const taskStore = vi.hoisted(() => ({
 vi.mock('../services/store', () => ({
   useAppData: () => ({ tasks: taskStore.tasks, subjects: [] }),
   useSettings: () => ({ language: 'en' }),
+  getPendingCloudError: () => null,
   createTask: taskStore.createTask,
   updateTask: taskStore.updateTask,
   deleteTask: taskStore.deleteTask,
@@ -163,19 +164,19 @@ describe('TasksPage task creation', () => {
     expect(await screen.findByRole('heading', { name: 'Saved offline' })).toBeTruthy()
   })
 
-  it('does not claim a temporary guest task was saved durably', async () => {
+  it('reports a guest task as saved on this device only', async () => {
     taskStore.createTask.mockImplementationOnce(async (input: NewTask) => {
-      const task = savedTask(input, 'task-session-only', 'session-only')
+      const task = savedTask(input, 'task-guest-local', 'local-only')
       taskStore.tasks.push(task)
       return task
     })
     renderPage()
     const dialog = openTaskForm()
-    fireEvent.change(within(dialog).getByLabelText(/Task title/), { target: { value: 'Temporary guest task' } })
+    fireEvent.change(within(dialog).getByLabelText(/Task title/), { target: { value: 'Guest task saved locally' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'New task' }))
 
-    expect(await screen.findByText(/This task is temporary/)).toBeTruthy()
-    expect(await screen.findByRole('heading', { name: 'Temporary guest task' })).toBeTruthy()
+    expect(await screen.findByText(/Saved on this device/)).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Guest task saved locally' })).toBeTruthy()
   })
 
   it('clears filters so the newly created task cannot be hidden', async () => {

@@ -31,6 +31,7 @@ describe('pending migration set', () => {
     // 013 adds idempotent announcement requests and private push outcomes.
     // 014 stores FCM device registrations server-side only.
     // 015 removes unsafe inherited announcement table privileges.
+    // 016 records cross-device dismissal tombstones for announcements.
     expect(files.map((f) => f.slice(0, 12))).toEqual([
       '202610190001',
       '202610190002',
@@ -46,6 +47,7 @@ describe('pending migration set', () => {
       '202611021400',
       '202611031400',
       '202611031500',
+      '202611041200',
     ])
   })
 

@@ -344,9 +344,26 @@ export interface AnnouncementFeedRow {
   readAt: string | null
 }
 
+export interface AnnouncementFeed {
+  feed: AnnouncementFeedRow[]
+  dismissedIds?: string[]
+}
+
 /** Signed-in user: their own received announcements. */
-export function getAnnouncementFeed(): Promise<{ feed: AnnouncementFeedRow[] }> {
-  return adminFetch<{ feed: AnnouncementFeedRow[] }>('feed')
+export function getAnnouncementFeed(): Promise<AnnouncementFeed> {
+  return adminFetch<AnnouncementFeed>('feed')
+}
+
+/** Dismisses only the caller's own announcement delivery rows. */
+export async function dismissAnnouncements(announcementIds: string[]): Promise<{ ok: true; dismissed: number }> {
+  let dismissed = 0
+  for (let offset = 0; offset < announcementIds.length; offset += 100) {
+    const result = await adminFetch<{ ok: true; dismissed: number }>('dismiss', {
+      announcementIds: announcementIds.slice(offset, offset + 100),
+    })
+    dismissed += result.dismissed
+  }
+  return { ok: true, dismissed }
 }
 
 /** Mark one of the user's own announcements as read. */

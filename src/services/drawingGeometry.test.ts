@@ -86,6 +86,18 @@ describe('hit testing', () => {
     expect(hitTest(erased, { x: 50, y: 0 })).toBeNull()
   })
 
+  it('does not select elements on hidden layers', () => {
+    const layered: DrawingDocument = {
+      ...emptyDocument(),
+      layers: [
+        { id: 'hidden', name: 'Hidden', visible: false },
+        { id: 'visible', name: 'Visible', visible: true },
+      ],
+      strokes: [{ ...stroke([[10, 10], [110, 10]]), layerId: 'hidden' }],
+    }
+    expect(hitTest(layered, { x: 60, y: 10 })).toBeNull()
+  })
+
   it('tolerates a near miss within the hit tolerance', () => {
     expect(hitTest(doc(), { x: 60, y: 18 })).not.toBeNull()
     expect(hitTest(doc(), { x: 60, y: 40 })).toBeNull()

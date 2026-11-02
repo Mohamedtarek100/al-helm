@@ -136,6 +136,20 @@ export const ChevronDownIcon = (p: IconProps) => (
   </Svg>
 )
 
+export const EyeIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2.5 12s3.2-6 9.5-6 9.5 6 9.5 6-3.2 6-9.5 6-9.5-6-9.5-6Z" />
+    <circle cx="12" cy="12" r="2.5" />
+  </Svg>
+)
+
+export const EyeOffIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m3 3 18 18M10.6 6.2A9.8 9.8 0 0 1 12 6c6.3 0 9.5 6 9.5 6a16.2 16.2 0 0 1-3.1 3.8M6.2 6.2C3.8 7.7 2.5 12 2.5 12s3.2 6 9.5 6c.8 0 1.6-.1 2.3-.3" />
+    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+  </Svg>
+)
+
 /* ---- Actions ------------------------------------------------------- */
 
 export const PlusIcon = (p: IconProps) => (

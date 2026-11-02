@@ -1594,6 +1594,27 @@
   font-size: var(--t-xs);
 }
 
+.color-picker__rgb {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 6px;
+}
+
+.color-picker__rgb summary { cursor: pointer; }
+
+.color-picker__rgb-row {
+  display: grid;
+  grid-template-columns: 56px minmax(80px, 1fr) 30px;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-3);
+  font-size: var(--t-xs);
+}
+
+.color-picker__rgb-row input { accent-color: var(--clay); }
+.color-picker__rgb-row output { text-align: end; font-variant-numeric: tabular-nums; }
+
 .sketch-studio .sketch-toolbar {
   position: relative;
   z-index: 4;
@@ -1881,4 +1902,131 @@
 @media (orientation: landscape) and (max-height: 520px) {
   .sketch-toolbar { max-height: 26dvh; }
   .sketch-surface .sketch-canvas { max-height: calc(100dvh - 150px); }
+}
+
+.sketch-workspace-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+}
+
+.sketch-toggle-icon--collapsed { transform: rotate(-90deg); }
+
+.sketch-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 248px;
+  min-height: min(68dvh, 760px);
+}
+
+.sketch-workspace--layers-hidden { grid-template-columns: minmax(0, 1fr); }
+
+.sketch-workspace .sketch-surface {
+  min-width: 0;
+  min-height: 100%;
+}
+
+.sketch-layer-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: min(68dvh, 760px);
+  border-inline-start: 1px solid var(--line);
+  background: var(--paper-2);
+}
+
+.sketch-layer-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sketch-layer-panel__header h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-sm);
+  font-weight: 800;
+}
+
+.sketch-layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.sketch-layer {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 7px;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--paper-3);
+}
+
+.sketch-layer--active {
+  border-color: var(--clay);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.sketch-layer__select {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.sketch-layer__swatch {
+  width: 16px;
+  height: 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: repeating-linear-gradient(135deg, var(--paper-2) 0 3px, var(--paper-3) 3px 6px);
+}
+
+.sketch-layer__count {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sketch-layer__name {
+  min-width: 0;
+  height: 32px;
+  padding-inline: 8px;
+  font-size: var(--t-xs);
+}
+
+.sketch-layer__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.sketch-layer__move-up svg { transform: rotate(180deg); }
+
+@media (max-width: 820px) {
+  .sketch-workspace { grid-template-columns: minmax(0, 1fr); }
+  .sketch-layer-panel {
+    max-height: 260px;
+    border-inline-start: 0;
+    border-top: 1px solid var(--line);
+  }
+  .sketch-workspace .sketch-surface { min-height: 320px; }
+  .sketch-layer-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 }

@@ -84,9 +84,8 @@
   flex-direction: column;
   gap: var(--ac-space-3);
   padding: var(--ac-space-4) var(--ac-space-3);
-  background: linear-gradient(180deg, rgba(17, 24, 48, 0.92), rgba(11, 16, 32, 0.86));
+  background: linear-gradient(180deg, rgba(17, 24, 48, 0.98), rgba(11, 16, 32, 0.96));
   border-inline-end: 1px solid var(--ac-border);
-  backdrop-filter: blur(14px);
   position: sticky;
   top: 0;
   height: 100dvh;
@@ -238,9 +237,8 @@
   align-items: center;
   gap: var(--ac-space-3);
   padding: 12px clamp(14px, 3vw, 28px);
-  background: rgba(7, 11, 22, 0.78);
+  background: rgba(7, 11, 22, 0.96);
   border-bottom: 1px solid var(--ac-border);
-  backdrop-filter: blur(16px);
 }
 
 .ac-topbar__section {
@@ -495,7 +493,6 @@
   inset: 0;
   z-index: 40;
   background: rgba(3, 6, 14, 0.7);
-  backdrop-filter: blur(2px);
   border: 0;
 }
 

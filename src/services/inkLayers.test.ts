@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { paintInkStroke, paintPaper } from './inkLayers'
-import { drawShape, drawText } from './drawing'
+import { describe, expect, it, vi } from 'vitest'
+import { paintInkStroke, paintPaper, renderInkLayer } from './inkLayers'
+import { drawShape, drawText, emptyDocument } from './drawing'
 import type { Stroke } from './drawing'
 
 /**
@@ -137,6 +137,73 @@ describe('ink layer contract', () => {
     const strokes = ops.filter((o) => o.kind === 'stroke')
     expect(strokes[0].composite).toBe('destination-out')
     expect(strokes[1].composite).toBe('source-over')
+  })
+
+  it('isolates eraser strokes to their own visible drawing layer', () => {
+    const makeCanvas = () => {
+      const ops: string[] = []
+      let composite = 'source-over'
+      let style = ''
+      const stack: string[] = []
+      const ctx = {
+        globalAlpha: 1,
+        get globalCompositeOperation() { return composite },
+        set globalCompositeOperation(value: string) { composite = value },
+        get strokeStyle() { return style },
+        set strokeStyle(value: string) { style = value },
+        fillStyle: '',
+        lineWidth: 1,
+        lineCap: 'butt',
+        lineJoin: 'miter',
+        save() { stack.push(composite) },
+        restore() { composite = stack.pop() ?? 'source-over' },
+        setTransform() {},
+        clearRect() { ops.push('clear') },
+        beginPath() {},
+        moveTo() {},
+        lineTo() {},
+        quadraticCurveTo() {},
+        arc() {},
+        fill() {},
+        stroke() { ops.push(`stroke:${composite}:${style}`) },
+        drawImage() { ops.push('composite') },
+      }
+      return {
+        canvas: {
+          width: 900,
+          height: 620,
+          getContext: () => ctx,
+        } as unknown as HTMLCanvasElement,
+        ops,
+      }
+    }
+
+    const target = makeCanvas()
+    const work = makeCanvas()
+    vi.stubGlobal('document', { createElement: () => work.canvas })
+    try {
+      const doc = {
+        ...emptyDocument(),
+        layers: [
+          { id: 'bottom', name: 'Bottom', visible: true },
+          { id: 'top', name: 'Top', visible: true },
+        ],
+        activeLayerId: 'top',
+        strokes: [
+          { ...pen('#b66b52'), layerId: 'bottom' },
+          { ...eraser(), layerId: 'top' },
+        ],
+      }
+      renderInkLayer(target.canvas, doc)
+      const bottomStroke = work.ops.findIndex((op) => op === 'stroke:source-over:#b66b52')
+      const topEraser = work.ops.findIndex((op) => op === 'stroke:destination-out:rgba(0,0,0,1)')
+      expect(bottomStroke).toBeGreaterThan(-1)
+      expect(topEraser).toBeGreaterThan(bottomStroke)
+      expect(work.ops.slice(bottomStroke + 1, topEraser)).toContain('clear')
+      expect(target.ops.filter((op) => op === 'composite')).toHaveLength(2)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 
