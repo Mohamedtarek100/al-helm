@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Card } from '../components/Card'
 import { EmptyState } from '../components/Display'
 import { Button, IconButton } from '../components/Button'
@@ -17,6 +18,8 @@ import { PageFrame, PageHeading } from './PageFrame'
 import { useToast } from '../components/toastContext'
 import { useI18n } from '../i18n/useI18n'
 import type { TranslationKey } from '../i18n/translations'
+import { disableWebPush, enableWebPush, getWebPushStatus, WebPushError, type WebPushStatus } from '../services/webPush'
+import { AndroidPushError, disableAndroidPush, enableAndroidPush, getAndroidPushStatus, type AndroidPushStatus } from '../services/androidPush'
 
 /**
  * Notification center.
@@ -49,14 +52,141 @@ export function NotificationsPage() {
   const items = useCollection('notifications')
   const { notify } = useToast()
   const { t, locale } = useI18n()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const announcementId = searchParams.get('announcementId')
   const [busy, setBusy] = useState<Set<string>>(() => new Set())
   const [clearing, setClearing] = useState(false)
+  const [pushStatus, setPushStatus] = useState<WebPushStatus | null>(null)
+  const [pushStatusError, setPushStatusError] = useState(false)
+  const [pushBusy, setPushBusy] = useState(false)
+  const [androidPushStatus, setAndroidPushStatus] = useState<AndroidPushStatus | null>(null)
+  const [androidPushStatusError, setAndroidPushStatusError] = useState(false)
+  const [androidPushBusy, setAndroidPushBusy] = useState(false)
 
-  // Pull server announcements once on open. A failure is silent by design: the
-  // user's own notifications must still render if the network is down.
   useEffect(() => {
-    void syncServerAnnouncements().catch(() => undefined)
-  }, [])
+    let active = true
+    void getWebPushStatus()
+      .then((status) => {
+        if (!active) return
+        setPushStatus(status)
+        setPushStatusError(false)
+      })
+      .catch((error: unknown) => {
+        if (!active) return
+        setPushStatusError(true)
+        notify(error instanceof Error ? error.message : t('webPushFailed'), 'warning')
+      })
+    return () => { active = false }
+  }, [notify, t])
+
+  useEffect(() => {
+    let active = true
+    void getAndroidPushStatus()
+      .then((status) => {
+        if (!active) return
+        setAndroidPushStatus(status)
+        setAndroidPushStatusError(false)
+      })
+      .catch((error: unknown) => {
+        if (!active) return
+        setAndroidPushStatusError(true)
+        notify(error instanceof Error ? error.message : t('androidPushFailed'), 'warning')
+      })
+    return () => { active = false }
+  }, [notify, t])
+
+  useEffect(() => {
+    const handleRefreshError = () => notify(t('androidPushRotationFailed'), 'warning')
+    window.addEventListener('alhelm:android-push-error', handleRefreshError)
+    return () => window.removeEventListener('alhelm:android-push-error', handleRefreshError)
+  }, [notify, t])
+
+  const toggleWebPush = async () => {
+    if (!pushStatus || pushBusy) return
+    setPushBusy(true)
+    try {
+      try {
+        if (pushStatus.subscribed) {
+          await disableWebPush()
+          notify(t('webPushDisabled'), 'success')
+          setPushStatus((current) => current ? { ...current, subscribed: false } : current)
+        } else {
+          await enableWebPush()
+          notify(t('webPushEnabled'), 'success')
+          setPushStatus((current) => current ? { ...current, subscribed: true } : current)
+        }
+      } catch (error) {
+        const message = error instanceof WebPushError
+          ? t(`webPushError_${error.code}` as TranslationKey)
+          : error instanceof Error ? error.message : t('webPushFailed')
+        notify(message, 'danger')
+        return
+      }
+      setPushStatus(await getWebPushStatus())
+      setPushStatusError(false)
+    } catch (error) {
+      setPushStatusError(true)
+      notify(error instanceof Error ? error.message : t('webPushFailed'), 'warning')
+    } finally {
+      setPushBusy(false)
+    }
+  }
+
+  const toggleAndroidPush = async () => {
+    if (!androidPushStatus || androidPushBusy) return
+    setAndroidPushBusy(true)
+    try {
+      if (androidPushStatus.registered) {
+        await disableAndroidPush()
+        notify(t('androidPushDisabled'), 'success')
+      } else {
+        if (!androidPushStatus.configured) {
+          notify(t('androidPushNotConfigured'), 'warning')
+          return
+        }
+        const result = await enableAndroidPush()
+        notify(result.configured ? t('androidPushEnabled') : t('androidPushNotConfigured'), result.configured ? 'success' : 'warning')
+      }
+      setAndroidPushStatus(await getAndroidPushStatus())
+      setAndroidPushStatusError(false)
+    } catch (error) {
+      try {
+        setAndroidPushStatus(await getAndroidPushStatus())
+        setAndroidPushStatusError(false)
+      } catch (statusError) {
+        setAndroidPushStatusError(true)
+        notify(statusError instanceof Error ? statusError.message : t('androidPushFailed'), 'warning')
+      }
+      const message = error instanceof AndroidPushError
+        ? t(`androidPushError_${error.code}` as TranslationKey)
+        : error instanceof Error ? error.message : t('androidPushFailed')
+      notify(message, 'danger')
+    } finally {
+      setAndroidPushBusy(false)
+    }
+  }
+
+  // Keep the local inbox available offline, but do not hide a failed refresh:
+  // otherwise users may mistake a sync problem for an undelivered announcement.
+  useEffect(() => {
+    let active = true
+    void syncServerAnnouncements()
+      .then(async () => {
+        if (!active || !announcementId) return
+        await markAnnouncementReadEverywhere(announcementId)
+        if (active) {
+          const next = new URLSearchParams(searchParams)
+          next.delete('announcementId')
+          setSearchParams(next, { replace: true })
+        }
+      })
+      .catch((error) => {
+        if (!active) return
+        const detail = error instanceof Error ? error.message : t('retry')
+        notify(`${announcementId ? t('notifReadFailed') : t('notifSyncFailed')}: ${detail}`, 'warning')
+      })
+    return () => { active = false }
+  }, [announcementId, notify, searchParams, setSearchParams, t])
 
   const sorted = useMemo(() => [...items].sort((a, b) => b.at.localeCompare(a.at)), [items])
   const unread = sorted.filter((item) => !item.read).length
@@ -94,14 +224,9 @@ export function NotificationsPage() {
   })
 
   const remove = (id: string) => withBusy(id, async () => {
-    try {
-      await deleteNotification(id)
-      notify(t('notifDeleted'), 'info')
-    } catch {
-      // The store restores the item; reporting a deletion here would be a lie.
-      notify(t('notifDeleteFailed'), 'danger')
-      throw new Error(t('notifDeleteFailed'))
-    }
+    await deleteNotification(id)
+    notify(t('notifDeleted'), 'info')
+    reportCloudGate()
   })
 
   const markAll = async () => {
@@ -119,6 +244,7 @@ export function NotificationsPage() {
     try {
       await clearNotifications()
       notify(t('notificationsCleared'), 'info')
+      reportCloudGate()
     } catch (error) {
       notify(error instanceof Error ? error.message : t('retry'), 'danger')
     } finally {
@@ -142,6 +268,75 @@ export function NotificationsPage() {
           ) : null
         }
       />
+
+      <Card>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <div>
+            <b>{t('webPushTitle')}</b>
+            <p className="muted" role="status" style={{ margin: '6px 0 0' }}>
+              {!pushStatus
+                ? pushStatusError ? t('webPushFailed') : t('webPushChecking')
+                : !pushStatus.supported
+                  ? t('webPushError_unsupported')
+                  : !pushStatus.configured
+                    ? t('webPushError_not_configured')
+                    : !pushStatus.authenticated
+                      ? t('webPushError_sign_in_required')
+                      : pushStatus.permission === 'denied'
+                        ? t('webPushError_permission_denied')
+                        : pushStatus.subscribed ? t('webPushEnabled') : t('webPushDisabled')}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant={pushStatus?.subscribed ? 'secondary' : 'primary'}
+            loading={pushBusy}
+            disabled={
+              !pushStatus?.supported
+              || !pushStatus.authenticated
+              || (!pushStatus.configured && !pushStatus.subscribed)
+              || pushBusy
+            }
+            onClick={() => { void toggleWebPush() }}
+          >
+            {pushStatus?.subscribed ? t('webPushDisable') : t('webPushEnable')}
+          </Button>
+        </div>
+      </Card>
+
+      {androidPushStatus?.supported && (
+        <Card>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+            <div>
+              <b>{t('androidPushTitle')}</b>
+              <p className="muted" role="status" style={{ margin: '6px 0 0' }}>
+                {androidPushStatusError
+                  ? t('androidPushFailed')
+                  : !androidPushStatus.authenticated
+                    ? t('androidPushSignInRequired')
+                    : !androidPushStatus.configured
+                      ? t('androidPushNotConfigured')
+                      : androidPushStatus.permission === 'denied'
+                        ? t('androidPushPermissionDenied')
+                        : androidPushStatus.registered ? t('androidPushEnabled') : t('androidPushDisabled')}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant={androidPushStatus.registered ? 'secondary' : 'primary'}
+              loading={androidPushBusy}
+              disabled={
+                !androidPushStatus.authenticated
+                || (!androidPushStatus.configured && !androidPushStatus.registered)
+                || androidPushBusy
+              }
+              onClick={() => { void toggleAndroidPush() }}
+            >
+              {androidPushStatus.registered ? t('androidPushDisable') : t('androidPushEnable')}
+            </Button>
+          </div>
+        </Card>
+      )}
 
       <Card>
         {sorted.length === 0 ? (

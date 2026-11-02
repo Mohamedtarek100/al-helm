@@ -21,6 +21,8 @@ const report = (checks: Array<{ id: string; ok: boolean }>) => ({
     ownerEmail: 'owner@example.com',
     serviceRoleConfigured: true,
     anonKeyConfigured: true,
+    webPushConfigured: false,
+    fcmConfigured: false,
   },
 })
 

@@ -28,6 +28,9 @@ describe('pending migration set', () => {
     // 010 adds the append-only owner audit log used by Phases 2–4.
     // 011 revokes EXECUTE on the SECURITY DEFINER trigger function (Security
     //     Advisor finding); it is additive and does not touch signup.
+    // 013 adds idempotent announcement requests and private push outcomes.
+    // 014 stores FCM device registrations server-side only.
+    // 015 removes unsafe inherited announcement table privileges.
     expect(files.map((f) => f.slice(0, 12))).toEqual([
       '202610190001',
       '202610190002',
@@ -40,6 +43,9 @@ describe('pending migration set', () => {
       '202610311300',
       '202611011200',
       '202611011300',
+      '202611021400',
+      '202611031400',
+      '202611031500',
     ])
   })
 
@@ -120,6 +126,33 @@ describe('pending migration set', () => {
     expect(dropAt).toBeGreaterThan(verifyAt)
     // And it must be quoted as a comment block, not executed by this migration.
     expect(sql.slice(dropAt - 400, dropAt)).toMatch(/--/)
+  })
+
+  it('013 makes push summary counter updates atomic and service-role-only', () => {
+    const sql = read(files.find((f) => f.startsWith('202611021400')) as string)
+    expect(sql).toMatch(/create or replace function public\.record_announcement_push_summary/i)
+    expect(sql).toMatch(/push_attempted\s*=\s*coalesce\(push_attempted, 0\)\s*\+\s*p_attempted/i)
+    expect(sql).toMatch(/push_accepted\s*=\s*coalesce\(push_accepted, 0\)\s*\+\s*p_accepted/i)
+    expect(sql).toMatch(/revoke all on function public\.record_announcement_push_summary[\s\S]*from public, anon, authenticated/i)
+    expect(sql).toMatch(/grant execute on function public\.record_announcement_push_summary[\s\S]*to service_role/i)
+  })
+
+  it('014 keeps Android FCM tokens server-only', () => {
+    const sql = read(files.find((f) => f.startsWith('202611031400')) as string)
+    expect(sql).toMatch(/create table if not exists public\.fcm_push_tokens/i)
+    expect(sql).toMatch(/token_hash text primary key/i)
+    expect(sql).toMatch(/alter table public\.fcm_push_tokens enable row level security/i)
+    expect(sql).toMatch(/revoke all on table public\.fcm_push_tokens from public, anon, authenticated/i)
+    expect(sql).toMatch(/grant select, insert, update, delete on public\.fcm_push_tokens to service_role/i)
+  })
+
+  it('015 revokes bypass-RLS privileges but preserves required feed and server grants', () => {
+    const sql = read(files.find((f) => f.startsWith('202611031500')) as string)
+    expect(sql).toMatch(/revoke all on table public\.announcements from public, anon, authenticated, service_role/i)
+    expect(sql).toMatch(/grant select, insert, update, delete on public\.announcements to service_role/i)
+    expect(sql).toMatch(/revoke all on table public\.announcement_delivery from public, anon, authenticated, service_role/i)
+    expect(sql).toMatch(/grant select, update on public\.announcement_delivery to authenticated/i)
+    expect(sql).toMatch(/grant select, insert, update, delete on public\.announcement_delivery to service_role/i)
   })
 
   it('does not contain the superseded 008 verifier', () => {

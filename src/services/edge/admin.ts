@@ -71,6 +71,7 @@ export interface AdminUserDetail {
   providers: string[]
   emailConfirmed: boolean
   pushSubscriptions: number
+  fcmDevices: number
   pushOptIn: boolean
   announcementsDelivered: number
   announcementsOpened: number
@@ -119,6 +120,11 @@ export interface AnnouncementHistoryRow {
   createdAt: string
   recipientCount: number
   openedCount?: number
+  pushStatus?: string | null
+  pushAttempted?: number
+  pushAccepted?: number
+  pushFailed?: number
+  pushExpired?: number
   /** Set when the owner recalled this announcement. */
   revokedAt?: string | null
 }
@@ -127,6 +133,17 @@ export interface SendResult {
   ok: boolean
   announcementId: string
   recipientCount: number
+  duplicate?: boolean
+  push: {
+    status: 'not_configured' | 'no_subscriptions' | 'no_retryable_failures' | 'recalled' | 'sent' | 'partial' | 'failed' | 'recording_failed' | 'outcome_persistence_failed' | 'already_processed'
+    attempted: number
+    accepted: number
+    failed: number
+    expired: number
+    remaining?: number
+    originalStatus?: string | null
+    error?: string
+  }
 }
 
 export interface RecipientCount {
@@ -161,6 +178,8 @@ export interface HealthReport {
     ownerEmail: string | null
     serviceRoleConfigured: boolean
     anonKeyConfigured: boolean
+    webPushConfigured: boolean
+    fcmConfigured: boolean
   }
 }
 
@@ -254,8 +273,13 @@ export function sendAnnouncement(
   title: string,
   message: string,
   audience: 'all' | 'opted_in',
+  requestId: string,
 ): Promise<SendResult> {
-  return adminFetch<SendResult>('send', { title, message, audience })
+  return adminFetch<SendResult>('send', { title, message, audience, requestId })
+}
+
+export function retryAnnouncementPush(announcementId: string): Promise<{ ok: true; announcementId: string; push: SendResult['push'] }> {
+  return adminFetch<{ ok: true; announcementId: string; push: SendResult['push'] }>('push:retry', { announcementId })
 }
 
 export function getAdminHistory(): Promise<{ history: AnnouncementHistoryRow[] }> {

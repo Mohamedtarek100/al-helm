@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { useI18n } from '../i18n/useI18n'
 import type { TranslationKey } from '../i18n/translations'
 import {
@@ -28,7 +28,7 @@ import {
  * announces the selected hex.
  */
 
-const WHEEL_MIME = 'conic-gradient(from 90deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)'
+const WHEEL_MIME = 'conic-gradient(from 90deg, #ff0000, #ff00ff, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)'
 
 export function ColorPicker({
   value,
@@ -46,14 +46,25 @@ export function ColorPicker({
   const { t } = useI18n()
   const wheelRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
+  const gestureStartRef = useRef<{ h: number; s: number; v: number } | null>(null)
+  const hexInputRef = useRef<HTMLInputElement>(null)
   const [hsv, setHsv] = useState(() => hexToHsv(value) ?? { h: 0, s: 0, v: 0 })
+  const hsvRef = useRef(hsv)
+  const [hexError, setHexError] = useState(false)
 
-  // The wheel derives its own HSV from the incoming value so an external change
-  // (palette click, reopen) moves the handle without a state-syncing effect.
-  const current = hexToHsv(value) ?? hsv
+  const current = hsv
+
+  useEffect(() => {
+    const parsed = hexToHsv(value)
+    if (parsed) hsvRef.current = parsed
+    if (hexInputRef.current && document.activeElement !== hexInputRef.current) {
+      hexInputRef.current.value = value
+    }
+  }, [value])
 
   const apply = useCallback((next: { h: number; s: number; v: number }, commit: boolean) => {
     const hex = hsvToHex(next)
+    hsvRef.current = next
     setHsv(next)
     onChange(hex)
     if (commit) onCommit?.(hex)
@@ -64,13 +75,14 @@ export function ColorPicker({
     if (!element) return
     const rect = element.getBoundingClientRect()
     const point = clientToWheelPoint(clientX, clientY, rect)
-    const next = pointToHsv(point, current.v)
+    const next = pointToHsv(point, hsvRef.current.v)
     apply(next, commit)
-  }, [apply, current.v])
+  }, [apply])
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault()
     draggingRef.current = true
+    gestureStartRef.current = hsvRef.current
     try { event.currentTarget.setPointerCapture(event.pointerId) } catch { /* older webviews */ }
     pickAt(event.clientX, event.clientY, false)
   }
@@ -84,10 +96,20 @@ export function ColorPicker({
   const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return
     draggingRef.current = false
+    gestureStartRef.current = null
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* already released */ }
     // Commit once per gesture, so "recent colours" records what was chosen
     // rather than every pixel the pointer crossed.
-    onCommit?.(hsvToHex(current))
+    onCommit?.(hsvToHex(hsvRef.current))
+  }
+
+  const cancelDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return
+    draggingRef.current = false
+    const origin = gestureStartRef.current
+    gestureStartRef.current = null
+    if (origin) apply(origin, false)
+    try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* already released */ }
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
@@ -115,7 +137,7 @@ export function ColorPicker({
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
-          onPointerCancel={endDrag}
+          onPointerCancel={cancelDrag}
         >
           {/* Hue ring (conic) + saturation falloff (radial) underneath a real
               saturation disc, so the visible colour matches what is picked. */}
@@ -178,12 +200,38 @@ export function ColorPicker({
         ))}
         <label className="color-picker__group color-picker__custom">
           <span className="color-picker__label">{t('sketchCustomColor')}</span>
-          <input
-            type="color"
-            value={value}
-            aria-label={t('sketchCustomColor')}
-            onChange={(event) => { onChange(event.target.value); onCommit?.(event.target.value) }}
-          />
+          <div className="color-picker__custom-controls">
+            <input
+              type="color"
+              value={value}
+              aria-label={t('sketchCustomColor')}
+              onChange={(event) => { onChange(event.target.value); onCommit?.(event.target.value) }}
+            />
+            <input
+              ref={hexInputRef}
+              className="input color-picker__hex-input"
+              type="text"
+              defaultValue={value}
+              placeholder="#RRGGBB"
+              maxLength={7}
+              aria-label={t('sketchHexColor')}
+              aria-invalid={hexError}
+              onChange={(event) => {
+                const next = event.currentTarget.value
+                setHexError(false)
+                if (/^#?[0-9a-f]{6}$/i.test(next.trim())) {
+                  const normalized = `#${next.trim().replace(/^#/, '').toLowerCase()}`
+                  onChange(normalized)
+                  onCommit?.(normalized)
+                }
+              }}
+              onBlur={(event) => {
+                if (/^#?[0-9a-f]{6}$/i.test(event.currentTarget.value.trim())) return
+                setHexError(true)
+              }}
+            />
+          </div>
+          {hexError && <span className="color-picker__hex-error" role="alert">{t('sketchInvalidHex')}</span>}
         </label>
       </div>
     </div>

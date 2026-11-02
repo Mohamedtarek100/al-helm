@@ -15,6 +15,8 @@ const state = vi.hoisted(() => ({
   permission: 'granted' as 'granted' | 'denied' | 'prompt',
   requestResult: 'granted' as 'granted' | 'denied',
   scheduleThrows: null as string | null,
+  channelThrows: null as string | null,
+  cancelThrows: null as string | null,
   scheduled: [] as Array<{ id: number; title?: string; at?: string }>,
   cancelled: [] as number[],
   channels: [] as string[],
@@ -33,12 +35,16 @@ vi.mock('@capacitor/local-notifications', () => ({
       state.permission = state.requestResult
       return { display: state.requestResult }
     },
-    createChannel: async (channel: { id: string }) => { state.channels.push(channel.id) },
+    createChannel: async (channel: { id: string }) => {
+      if (state.channelThrows) throw new Error(state.channelThrows)
+      state.channels.push(channel.id)
+    },
     schedule: async (input: { notifications: ScheduleArg[] }) => {
       if (state.scheduleThrows) throw new Error(state.scheduleThrows)
       for (const n of input.notifications) state.scheduled.push({ id: n.id, title: n.title, at: n.schedule?.at?.toISOString() })
     },
     cancel: async ({ notifications }: { notifications: Array<{ id: number }> }) => {
+      if (state.cancelThrows) throw new Error(state.cancelThrows)
       for (const n of notifications) state.cancelled.push(n.id)
     },
   },
@@ -56,6 +62,8 @@ beforeEach(() => {
   state.permission = 'granted'
   state.requestResult = 'granted'
   state.scheduleThrows = null
+  state.channelThrows = null
+  state.cancelThrows = null
   state.scheduled = []
   state.cancelled = []
   state.channels = []
@@ -144,6 +152,18 @@ describe('scheduling, cancel-before-reschedule and duplicates', () => {
     expect(state.scheduled.map((n) => n.id)).toEqual([hashId('rem_morning')])
   })
 
+  it('reschedules when the saved title or tone changes', async () => {
+    await syncReminders([{ ...reminder('rem_morning', '07:30'), tone: 'default' }])
+    state.scheduled = []
+    state.cancelled = []
+
+    const result = await syncReminders([{ ...reminder('rem_morning', '07:30'), label: 'New title', tone: 'bell' }])
+
+    expect(result).toMatchObject({ scheduled: 1, error: null })
+    expect(state.cancelled).toEqual([hashId('rem_morning')])
+    expect(state.scheduled[0]).toMatchObject({ id: hashId('rem_morning'), title: 'New title' })
+  })
+
   it('cancels reminders that were removed entirely', async () => {
     await syncReminders([reminder('a', '07:00'), reminder('b', '08:00')])
     state.cancelled = []
@@ -186,6 +206,39 @@ describe('honest failure reporting', () => {
     const result = await syncReminders([reminder('bad', '25:99')])
     expect(result.scheduled).toBe(0)
     expect(result.error).toContain('invalid time')
+    expect(state.scheduled).toHaveLength(0)
+  })
+
+  it('reports an invalid or past one-time date instead of claiming it was scheduled', async () => {
+    const result = await syncReminders([{
+      ...reminder('expired', '09:30'),
+      date: '2000-02-31',
+    }])
+
+    expect(result.scheduled).toBe(0)
+    expect(result.error).toContain('invalid or past date')
+    expect(state.scheduled).toHaveLength(0)
+  })
+
+  it('reports channel creation failure and does not schedule an alarm', async () => {
+    state.channelThrows = 'notification channel permission denied'
+
+    const result = await syncReminders([reminder('channel-failure', '07:30')])
+
+    expect(result.scheduled).toBe(0)
+    expect(result.error).toContain('notification channel permission denied')
+    expect(state.scheduled).toHaveLength(0)
+  })
+
+  it('reports cancellation failure and does not create a duplicate schedule', async () => {
+    await syncReminders([reminder('cancel-failure', '07:30')])
+    state.scheduled = []
+    state.cancelThrows = 'cancel rejected'
+
+    const result = await syncReminders([reminder('cancel-failure', '08:00')])
+
+    expect(result.error).toContain('cancel rejected')
+    expect(result.scheduled).toBe(0)
     expect(state.scheduled).toHaveLength(0)
   })
 })

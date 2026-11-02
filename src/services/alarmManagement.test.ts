@@ -199,8 +199,7 @@ describe('scheduling a dated alarm', () => {
 
   it('records the selected tone on the native schedule', async () => {
     await store.createAlarm({ label: 'Tone check', time: '09:00', tone: 'alarm' })
-    // The sync runs asynchronously after the write.
-    await new Promise((resolve) => setTimeout(resolve, 30))
+    await remindersModule.syncReminders(alarms())
     const scheduled = native.scheduled.at(-1)
     expect(scheduled?.title).toBe('Tone check')
     // Channel id encodes the tone: Android fixes a channel's sound at creation.
@@ -210,7 +209,7 @@ describe('scheduling a dated alarm', () => {
   it('creates a channel for EACH tone in use, not just the first', async () => {
     await store.createAlarm({ label: 'Chime alarm', time: '06:00', tone: 'chime' })
     await store.createAlarm({ label: 'Bell alarm', time: '06:15', tone: 'bell' })
-    await new Promise((resolve) => setTimeout(resolve, 40))
+    await remindersModule.syncReminders(alarms())
     const channels = new Set(native.scheduled.map((entry) => entry.channelId))
     // Both must exist: a reminder scheduled against a channel that was never
     // created would fall back to the default sound silently.

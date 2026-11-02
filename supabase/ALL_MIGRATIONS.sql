@@ -998,7 +998,7 @@ create table if not exists public.admin_audit_log (
 );
 
 -- Newest-first listing is the only read pattern.
-create index if not exists admin_audit_log_created_at_idx
+create index if not exists idx_admin_audit_log_created_at
   on public.admin_audit_log (created_at desc);
 
 alter table public.admin_audit_log enable row level security;
@@ -1183,7 +1183,7 @@ revoke execute on function public.handle_new_user() from anon, authenticated;
 --
 -- ── ROLLBACK ─────────────────────────────────────────────────────────────
 --   alter table public.announcement_delivery drop column if exists revoked_at;
---   drop index if exists public.announcement_delivery_revoked_idx;
+--   drop index if exists public.idx_announcement_delivery_active;
 --   (Drops only the recall marker; delivery history is untouched.)
 
 alter table public.announcement_delivery
@@ -1196,7 +1196,7 @@ alter table public.announcements
 
 -- The recipient feed filters on `revoked_at is null`; this keeps that cheap on
 -- large delivery tables without affecting anything else.
-create index if not exists announcement_delivery_revoked_idx
+create index if not exists idx_announcement_delivery_active
   on public.announcement_delivery (announcement_id)
   where revoked_at is null;
 
@@ -1209,3 +1209,143 @@ comment on column public.announcement_delivery.revoked_at is
   'Set when the owner recalls the announcement. Non-null rows are hidden from the recipient feed; the row is retained so delivery counts stay truthful.';
 comment on column public.announcements.revoked_at is
   'Set when the owner recalls an announcement that may have undelivered rows.';
+
+-- ============================================================
+-- Migration: 20261102140013_announcement_web_push.sql
+-- ============================================================
+
+-- Add idempotent announcement requests and private Web Push outcome tracking.
+-- These changes are additive; existing announcements and user subscriptions are preserved.
+
+alter table public.announcements
+  add column if not exists request_id uuid;
+
+alter table public.announcements
+  add column if not exists push_status text,
+  add column if not exists push_attempted integer not null default 0,
+  add column if not exists push_accepted integer not null default 0,
+  add column if not exists push_failed integer not null default 0,
+  add column if not exists push_expired integer not null default 0;
+
+create unique index if not exists announcements_request_id_uidx
+  on public.announcements (request_id)
+  where request_id is not null;
+
+create table if not exists public.announcement_push_deliveries (
+  announcement_id uuid not null references public.announcements(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  subscription_id text not null,
+  provider text not null check (provider in ('webpush', 'fcm')),
+  status text not null check (status in ('pending', 'accepted', 'failed', 'expired')),
+  attempt_count integer not null default 0 check (attempt_count >= 0),
+  provider_status integer,
+  error_code text,
+  attempted_at timestamptz,
+  accepted_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (announcement_id, provider, user_id, subscription_id)
+);
+
+create index if not exists announcement_push_deliveries_status_idx
+  on public.announcement_push_deliveries (announcement_id, status);
+
+alter table public.announcement_push_deliveries enable row level security;
+revoke all on public.announcement_push_deliveries from anon, authenticated;
+grant select, insert, update, delete on public.announcement_push_deliveries to service_role;
+
+create or replace function public.record_announcement_push_summary(
+  p_announcement_id uuid,
+  p_status text,
+  p_attempted integer,
+  p_accepted integer,
+  p_failed integer,
+  p_expired integer,
+  p_resolved_failed integer
+)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+begin
+  if p_status is null or p_status not in (
+    'not_configured',
+    'no_subscriptions',
+    'sent',
+    'partial',
+    'failed',
+    'recording_failed',
+    'outcome_persistence_failed'
+  ) or p_attempted < 0 or p_accepted < 0 or p_failed < 0
+    or p_expired < 0 or p_resolved_failed < 0 then
+    raise exception 'Invalid push summary input.';
+  end if;
+
+  update public.announcements
+  set push_attempted = coalesce(push_attempted, 0) + p_attempted,
+      push_accepted = coalesce(push_accepted, 0) + p_accepted,
+      push_failed = greatest(0, coalesce(push_failed, 0) - p_resolved_failed + p_failed),
+      push_expired = coalesce(push_expired, 0) + p_expired,
+      push_status = case
+        when p_status in ('not_configured', 'no_subscriptions', 'recording_failed', 'outcome_persistence_failed') then p_status
+        when greatest(0, coalesce(push_failed, 0) - p_resolved_failed + p_failed)
+          + coalesce(push_expired, 0) + p_expired > 0 then
+            case
+              when coalesce(push_accepted, 0) + p_accepted > 0 then 'partial'
+              else 'failed'
+            end
+        when coalesce(push_accepted, 0) + p_accepted > 0 then 'sent'
+        else p_status
+      end
+  where id = p_announcement_id;
+
+  if not found then
+    raise exception 'Announcement not found.';
+  end if;
+end;
+$$;
+
+revoke all on function public.record_announcement_push_summary(uuid, text, integer, integer, integer, integer, integer)
+  from public, anon, authenticated;
+grant execute on function public.record_announcement_push_summary(uuid, text, integer, integer, integer, integer, integer)
+  to service_role;
+
+-- ============================================================
+-- Migration: 20261103140014_fcm_push_tokens.sql
+-- ============================================================
+
+-- Store authenticated Android FCM registrations separately from browser
+-- Web Push subscriptions. Raw device tokens are never available to clients.
+
+create table if not exists public.fcm_push_tokens (
+  token_hash text primary key check (token_hash ~ '^[0-9a-f]{64}$'),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  device_id text not null check (length(device_id) between 1 and 128),
+  token text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, device_id)
+);
+
+create index if not exists fcm_push_tokens_user_id_idx
+  on public.fcm_push_tokens (user_id);
+
+alter table public.fcm_push_tokens enable row level security;
+revoke all on table public.fcm_push_tokens from public, anon, authenticated;
+grant select, insert, update, delete on public.fcm_push_tokens to service_role;
+
+-- ============================================================
+-- Migration: 20261103150015_harden_announcement_privileges.sql
+-- ============================================================
+
+-- Remove inherited table-level privileges that bypass RLS, while preserving
+-- the authenticated recipient feed and the server-side admin operations.
+
+revoke all on table public.announcements from public, anon, authenticated, service_role;
+grant select on public.announcements to authenticated;
+grant select, insert, update, delete on public.announcements to service_role;
+
+revoke all on table public.announcement_delivery from public, anon, authenticated, service_role;
+grant select, update on public.announcement_delivery to authenticated;
+grant select, insert, update, delete on public.announcement_delivery to service_role;

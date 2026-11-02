@@ -60,25 +60,48 @@ self.addEventListener('fetch', (event) => {
   )
 })
 
-// Phase 2 placeholder: real push handling lands with the Supabase backend.
 self.addEventListener('push', (event) => {
-  if (!event.data) return
-  let payload = { title: 'الحُلم', body: 'فاكرة مذاكرتك النهاردة؟' }
+  let payload = {}
   try {
-    payload = { ...payload, ...event.data.json() }
+    const data = event.data?.json()
+    if (data && typeof data === 'object' && !Array.isArray(data)) payload = data
   } catch {
-    /* keep defaults */
+    payload = {}
   }
+  const title = typeof payload.title === 'string' ? payload.title.slice(0, 120) : '4uLife'
+  const body = typeof payload.body === 'string' ? payload.body.slice(0, 2000) : ''
+  const announcementId = typeof payload.announcementId === 'string' ? payload.announcementId : ''
+  const url = typeof payload.url === 'string' ? payload.url : '#/notifications'
   event.waitUntil(
-    self.registration.showNotification(payload.title, {
-      body: payload.body,
+    self.registration.showNotification(title, {
+      body,
       icon: './icons/icon-192.png',
       badge: './icons/icon-192.png',
+      tag: announcementId ? `announcement-${announcementId}` : '4ulife-update',
+      data: { url },
     }),
   )
 })
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  event.waitUntil(self.clients.openWindow(`${self.registration.scope}#/notifications`))
+  event.waitUntil((async () => {
+    const scope = new URL(self.registration.scope)
+    let target = new URL('#/notifications', scope)
+    try {
+      const requested = new URL(event.notification.data?.url ?? '#/notifications', scope)
+      if (requested.origin === scope.origin && requested.href.startsWith(scope.href)) target = requested
+    } catch {
+      // Keep the in-scope notifications route for malformed payload URLs.
+    }
+
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    for (const client of clients) {
+      if (!client.url.startsWith(scope.href)) continue
+      if (typeof client.navigate === 'function') await client.navigate(target.href)
+      await client.focus()
+      return
+    }
+    await self.clients.openWindow(target.href)
+  })())
 })

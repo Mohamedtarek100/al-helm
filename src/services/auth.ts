@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Capacitor } from '@capacitor/core'
 import { supabase } from './persistence/supabase'
 import { ANDROID_AUTH_CALLBACK } from './nativeAuth'
+import { clearAndroidPushBeforeSignOut } from './androidPush'
 
 /**
  * Authentication service.
@@ -114,6 +115,9 @@ export async function requestPasswordReset(email: string) {
 
 export async function signOut() {
   if (!supabase) return
+  if (Capacitor.getPlatform() === 'android') {
+    await clearAndroidPushBeforeSignOut()
+  }
   const { error } = await supabase.auth.signOut()
   if (error) throw error
 }

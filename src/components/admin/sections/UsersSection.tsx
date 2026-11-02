@@ -323,6 +323,7 @@ export function UsersSection({ userId, pageSize }: { userId: string | null; page
                 },
                 { label: t('acFilterPush'), value: detailUser.pushOptIn ? t('acFilterOptedIn') : t('acFilterNotOptedIn') },
                 { label: en ? 'Push subscriptions' : 'اشتراكات الإشعارات', value: String(detailUser.pushSubscriptions) },
+                { label: t('adminFcmDevices'), value: String(detailUser.fcmDevices) },
                 { label: en ? 'Providers' : 'مزودو الدخول', value: detailUser.providers.length ? detailUser.providers.join(', ') : '—' },
                 { label: en ? 'Email verified' : 'البريد موثّق', value: detailUser.emailConfirmed ? t('adminYes') : t('adminNo') },
                 { label: t('acDetailDelivered'), value: String(detailUser.announcementsDelivered) },

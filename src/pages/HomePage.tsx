@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Button } from '../components/Button'
+import { useToast } from '../components/toastContext'
 import { Card, CardHeader } from '../components/Card'
 import { EmptyState, ProgressBar } from '../components/Display'
 import { CheckIcon, CheckSquareIcon, ClockIcon, MonitorIcon, MoonIcon, PaletteIcon, PlusIcon, SparkIcon, SunIcon, TargetIcon, TimerIcon } from '../components/icons'
@@ -32,6 +33,7 @@ export function HomePage() {
   const settings = useSettings()
   const themeIcon = settings.theme === 'dark' ? <MoonIcon size={18} /> : settings.theme === 'system' ? <MonitorIcon size={18} /> : <SunIcon size={18} />
   const data = useAppData()
+  const { notify } = useToast()
   const { t, language, formatDate, formatNumber } = useI18n()
   const [{ date, hour, todayDate }] = useState(() => {
     const now = new Date()
@@ -92,7 +94,27 @@ export function HomePage() {
           <Card>
             <CardHeader title={t('tasksToday')} subtitle={todaysTasks.length ? `${formatNumber(todaysTasks.length)} ${language === 'en' ? 'tasks are waiting' : 'مهام لسه مستنياكي'}` : t('completedOf')} icon={<CheckSquareIcon size={19} />} action={<Link className="text-link" to="/tasks">{t('tasks')} →</Link>} />
             {todaysTasks.length ? <div>{todaysTasks.slice(0,5).map((task) => <div key={task.id} className="task-row">
-              <button className="task-check" aria-label={`${language === 'en' ? 'Complete' : 'إتمام'} ${task.title}`} onClick={() => setTaskCompleted(task.id,true)}><CheckIcon size={15} /></button>
+              <button
+                className="task-check"
+                aria-label={`${language === 'en' ? 'Complete' : 'إتمام'} ${task.title}`}
+                onClick={async () => {
+                  try {
+                    const result = await setTaskCompleted(task.id, true)
+                    notify(
+                      result === 'session-only'
+                        ? t('taskSessionOnly')
+                        : result === 'local-only'
+                          ? language === 'en' ? 'Saved on this device. Cloud sync will retry when the connection returns.' : 'اتحفظ على الجهاز ده. مزامنة السحابة هتحاول تاني لما الاتصال يرجع.'
+                          : t('taskCompleted'),
+                      result === 'cloud' ? 'success' : 'warning',
+                    )
+                  } catch (error) {
+                    notify(error instanceof Error ? error.message : t('retry'), 'danger')
+                  }
+                }}
+              >
+                <CheckIcon size={15} />
+              </button>
               <div className="task-row__body"><p className="task-row__title">{task.title}</p><p className="task-row__meta">{task.dueTime ? formatTime(task.dueTime, language==='en'?'en-US':'ar-EG') : t('today')} · {formatMinutes(task.estimatedMinutes, language==='en'?'en-US':'ar-EG')}</p></div>
               <span className={`priority-dot priority-dot--${task.priority}`} title={task.priority === 'high' ? (language === 'en' ? 'High priority' : 'مهمة') : task.priority === 'medium' ? (language === 'en' ? 'Medium priority' : 'متوسطة') : (language === 'en' ? 'Low priority' : 'هادية')} />
             </div>)}</div> : <EmptyState compact icon={<SparkIcon size={24} />} title={t('noTasks')} message={t('noTasksBody')} action={<Link className="text-link" to="/tasks">{t('addFirstTask')}</Link>} />}

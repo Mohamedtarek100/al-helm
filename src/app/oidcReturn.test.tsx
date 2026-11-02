@@ -5,7 +5,7 @@ import { I18nProvider } from '../i18n/I18nProvider'
 import { LaunchGate } from './LaunchGate'
 import { WelcomePage } from '../pages/WelcomePage'
 import { __resetAuthSignalForTests, getAuthSignal, markAuthFailed, markAuthenticated, markAuthenticating } from '../services/authState'
-import { __resetLaunchModeForTests } from '../services/onboarding'
+import { __resetLaunchModeForTests, setLaunchMode } from '../services/onboarding'
 import { __resetGuestSessionForTests, isGuestSession } from '../services/guestMode'
 import { initStore } from '../services/store'
 
@@ -92,6 +92,14 @@ describe('successful native callback', () => {
     fireEvent.click(guest)
     expect(await screen.findByTestId('app-root')).toBeTruthy()
     // …and the session is flagged memory-only.
+    expect(isGuestSession()).toBe(true)
+  })
+
+  it('restores guest isolation when a guest returns after a reload', async () => {
+    setLaunchMode('guest')
+    render(welcome())
+
+    expect(await screen.findByTestId('app-root')).toBeTruthy()
     expect(isGuestSession()).toBe(true)
   })
 })
