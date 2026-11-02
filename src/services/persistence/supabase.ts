@@ -38,6 +38,20 @@ const subjectsRow = (item: Record<string, unknown>) => {
   delete mapped.name_key
   return mapped
 }
+/**
+ * Converts an optional wall-clock time into a value PostgreSQL will accept.
+ *
+ * `TIME WITHOUT TIME ZONE` has no representation for `''` — it is either a
+ * valid `HH:MM[:SS]` or NULL. A blank, whitespace-only, undefined or non-string
+ * value is therefore NULL. Valid values are trimmed and returned unchanged so
+ * the stored time is exactly what the user chose.
+ */
+export function normalizeOptionalTime(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed === '' ? null : trimmed
+}
+
 const fromDb = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'user_id' && key !== 'name_key').map(([k,v]) => [k.replace(/_([a-z])/g, (_,m:string) => m.toUpperCase()),v]))
 
 /** Cloud persistence adapter. Requires a signed-in Supabase user; RLS remains authoritative. */
@@ -190,6 +204,22 @@ export class SupabaseAdapter implements CloudPersistence {
         if (slice === 'sessions') { mapped.session_date = item.date || new Date().toISOString().slice(0,10); delete mapped.date }
         if (slice === 'focusSessions') { mapped.session_date = item.date; delete mapped.date }
         if (slice === 'journal') { mapped.entry_date = item.date; delete mapped.date }
+        if (slice === 'tasks') {
+          // CONFIRMED PRODUCTION DEFECT (SQLSTATE 22007).
+          //
+          // `tasks.due_time` is `TIME WITHOUT TIME ZONE` and nullable. The task
+          // form allows leaving the time empty and stores `''`; the generic
+          // camelCase mapper passed that empty string straight through, so
+          // PostgREST returned HTTP 400 with
+          //   invalid input syntax for type time: ""
+          // and EVERY task created without a time was rejected by the server —
+          // the whole upsert failed, so the snapshot never reached the cloud.
+          //
+          // An optional column means NULL, not an empty string. Valid times are
+          // preserved verbatim (`09:30`, `14:45`); only blank/whitespace/absent
+          // values become NULL.
+          mapped.due_time = normalizeOptionalTime(item.dueTime)
+        }
         return { ...mapped, user_id:userId }
       })
       await this.saveSlice(table, rows, userId)

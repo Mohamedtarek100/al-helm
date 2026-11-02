@@ -66,6 +66,68 @@ function sameRecordContent(left:AppData,right:AppData):boolean {
 }
 
 /**
+ * Collections that can hold a record the server has not accepted yet.
+ *
+ * Only these are merged; anything not listed (settings, profile, seeded
+ * challenges) is server-authoritative on restore.
+ */
+const MERGEABLE_KEYS = ['tasks', 'subjects', 'sessions', 'focusSessions', 'journal', 'goals', 'artworks', 'letters', 'exams'] as const
+
+/**
+ * How long a device-only record may still claim to exist after its last edit.
+ *
+ * Without a bound, a device restored from an old backup would re-upload records
+ * the user deleted on another device months ago. Seven days is long enough to
+ * cover a genuine offline edit and short enough to avoid resurrecting history.
+ */
+const PENDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
+ * Merges device-only records into the server snapshot.
+ *
+ * Rules, in order:
+ *   1. The SERVER value always wins for a record present on both sides — a stale
+ *      local copy must never overwrite newer server data.
+ *   2. A record ONLY on this device is kept if it was updated within
+ *      `PENDING_MAX_AGE_MS`; it becomes a pending upload so the next save can
+ *      push it.
+ *   3. `id` is the identity: one record per id, never a duplicate.
+ *   4. The result is a NEW object; neither input is mutated. The `pendings`
+ *      array passed in is populated (or emptied) in place so the caller can
+ *      report how many records are waiting to sync.
+ */
+function mergePendingIntoRemote(remote: AppData, local: AppData, pendings: { id: string; updatedAt: string }[]): AppData {
+  const cutoff = Date.now() - PENDING_MAX_AGE_MS
+  const result: AppData = { ...remote }
+  // Replaced wholesale below; kept only so TypeScript sees every key initialised.
+  const collected: { id: string; updatedAt: string }[] = []
+
+  for (const key of MERGEABLE_KEYS) {
+    const remoteRows = remote[key] as unknown as { id: string; updatedAt?: string }[]
+    const localRows = local[key] as unknown as { id: string; updatedAt?: string }[]
+    if (!localRows?.length) continue
+
+    const remoteIds = new Set(remoteRows.map((row) => row.id))
+    const deviceOnly = localRows.filter((row) => {
+      if (remoteIds.has(row.id)) return false
+      // Keep only recent device-only work; older records are treated as gone.
+      const stamp = row.updatedAt ?? ''
+      const updated = Date.parse(stamp)
+      return Number.isFinite(updated) && updated >= cutoff
+    })
+    if (deviceOnly.length === 0) continue
+
+    ;(result as unknown as Record<string, unknown>)[key] = [...remoteRows, ...structuredClone(deviceOnly)]
+    for (const row of deviceOnly) collected.push({ id: row.id, updatedAt: row.updatedAt ?? '' })
+  }
+
+  // The caller owns the list; replacing it in place keeps the merge pure.
+  pendings.length = 0
+  pendings.push(...collected)
+  return result
+}
+
+/**
  * Coordinates the local recovery snapshot and authenticated cloud state. Local
  * data remains the source until an explicit, verified migration succeeds.
  */
@@ -131,6 +193,17 @@ export class PersistenceCoordinator {
 
   /** Called by the store once it has written the normalised snapshot back. */
   clearPendingNormalization(): void { this.pendingNormalization = false }
+  /**
+   * Device-only records that the account does not yet hold.
+   *
+   * Kept on the coordinator (not in `AppData`) because it is sync bookkeeping,
+   * not user data, and must never be persisted or uploaded as a field.
+   */
+  private pendingUploads: { id: string; updatedAt: string }[] = []
+
+  /** How many records exist only on this device. `0` means fully synced. */
+  pendingUploadCount(): number { return this.pendingUploads.length }
+
   async refreshLocalSnapshot(data:AppData):Promise<void>{
     if(this.state.mode!=='local')throw new Error('Local edits cannot replace cloud state.')
     this.localSnapshot=structuredClone(data)
@@ -201,7 +274,20 @@ export class PersistenceCoordinator {
         return this.state
       }
       this.migrationRequiredForCurrentAccount=false
-      this.state = { data:hydrateData(remote), mode:'cloud', status:'ready', error:null, userId, migrationRequired:false }
+      // RECONCILE, DO NOT REPLACE.
+      //
+      // The server has content, but this device may also hold records the server
+      // has never accepted — a task saved locally whose cloud write was rejected
+      // (production: `invalid input syntax for type time: ""`). Replacing the
+      // local snapshot with `remote` discarded exactly those records, which is
+      // how a task the user watched being added disappeared after a restart.
+      //
+      // `mergePendingIntoRemote` keeps device-only records (bounded by age so a
+      // long-stale device cannot resurrect records deleted elsewhere), lets the
+      // SERVER win for records that exist on both sides, and never duplicates an
+      // id. Nothing about the server data is mutated here.
+      const merged = mergePendingIntoRemote(hydrateData(remote), this.localSnapshot, this.pendingUploads)
+      this.state = { data:merged, mode:'cloud', status:'ready', error:null, userId, migrationRequired:false }
       return this.state
     } catch (error) {
       this.state = { data:this.localSnapshot, mode:'local', status:'error', error:this.message(error), userId:null, migrationRequired:false }

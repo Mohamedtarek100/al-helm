@@ -101,3 +101,94 @@ Publication was **not** performed. The following release gates are unmet:
 - Admin send/recall was not exercised against the live backend with an approved test recipient.
 
 Everything that can be verified without those items has been verified and is green.
+
+---
+
+# PATCH RELEASE 1.5.9 — Confirmed production task-persistence defect
+
+## Root cause (from the production PostgreSQL log)
+
+```
+POST /rest/v1/tasks → HTTP 400
+invalid input syntax for type time: ""      SQLSTATE 22007
+```
+
+`tasks.due_time` is `TIME WITHOUT TIME ZONE` and nullable. The task form allows
+an empty time and stores `''`; the generic camelCase→snake_case mapper in
+`src/services/persistence/supabase.ts` carried that empty string into the
+INSERT. Because the adapter writes the whole snapshot in one pass, **every**
+task created without a time failed the entire save — so tasks appeared to be
+"not saved" regardless of entry point.
+
+## Fix
+
+`src/services/persistence/supabase.ts`
+- New exported `normalizeOptionalTime(value)` — blank, whitespace-only,
+  `undefined`, `null` and non-string become `NULL`; real values are trimmed and
+  returned verbatim (`09:30`, `14:45`).
+- In the task row builder: `mapped.due_time = normalizeOptionalTime(item.dueTime)`.
+- The column type, RLS and policies were **not** touched.
+
+`src/services/persistence/coordinator.ts`
+- **Recovery fix.** On cloud restore the coordinator replaced the local snapshot
+  wholesale (`data: hydrateData(remote)`), so a task saved on the device but
+  rejected by the server disappeared on the next cold start.
+- New `mergePendingIntoRemote()`: device-only records are kept (bounded to
+  records updated within 7 days), the **server always wins** for ids present on
+  both sides, ids are never duplicated, and the merge is deterministic.
+- New `pendingUploadCount()` exposes how many records exist only on this device.
+
+## Regression tests (15 new, all passing)
+
+`src/services/persistence/taskSerialization.test.ts` (9) — drives the REAL
+`SupabaseAdapter.save()` against a PostgREST/PostgreSQL-faithful fake that
+records the exact rows and returns SQLSTATE 22007 for `''`:
+
+| Test | Result |
+|---|---|
+| `dueTime: ''` → `due_time: null` | pass |
+| `dueTime: '14:30'` → `'14:30'` exactly | pass |
+| clearing an existing time → NULL | pass |
+| task with no time persists (no server rejection) | pass |
+| failed cloud write rejects, nothing recorded as synced | pass |
+| read-back restores the row with `dueTime: null` | pass |
+| whitespace-only and absent time → NULL | pass |
+
+`src/services/persistence/pendingRecovery.test.ts` (6) — coordinator merge:
+
+| Test | Result |
+|---|---|
+| device-only task survives a cold start | pass |
+| pending count is reported | pass |
+| stale local never overwrites a newer server row | pass |
+| ancient device-only record is not resurrected | pass |
+| merge is deterministic across two authentications | pass |
+| empty device gains nothing | pass |
+
+**Load-bearing proof:** reverting the `due_time` line fails 4 serialization
+tests; reverting the merge fails 2 recovery tests. Restored, all pass.
+
+## Production database evidence
+
+Against `warepmhybetvjzgvpuqv` (read-only / rolled back):
+
+| Probe | Result |
+|---|---|
+| `''::time` | **ERROR 22007** `invalid input syntax for type time: ""` — reproduces the log |
+| `(null::text)::time is null` | `true` — NULL accepted |
+| `'14:30'::time`, `'09:30'::time` | stored verbatim |
+| INSERT into real `public.tasks` with `due_time NULL` | succeeded (inside a transaction) |
+| INSERT with `due_time '14:30'` | succeeded, read back as `14:30` |
+| Transaction rollback | confirmed — `qa_%` rows remaining: **0** |
+| Unauthenticated PostgREST write | `42501 permission denied` — RLS live |
+
+No production data was written. No migration was applied. No policy changed.
+
+## What is NOT verified here
+
+- **No physical Android device is attached** (`adb devices` empty), so
+  Test A/B/C cold-restart checks on a real phone were not performed.
+- A signed-in RLS round-trip from the app was not run: the project enforces
+  email confirmation, anonymous sign-in is disabled, and no QA credentials were
+  provided. The database-level round trip above covers the serialization
+  contract; the authenticated path is covered by the adapter tests.
