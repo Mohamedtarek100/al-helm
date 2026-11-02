@@ -52,7 +52,7 @@ export function ColorPicker({
   const hsvRef = useRef(hsv)
   const [hexError, setHexError] = useState(false)
 
-  const current = hsv
+  const current = hexToHsv(value) ?? hsv
 
   useEffect(() => {
     const parsed = hexToHsv(value)
@@ -122,6 +122,23 @@ export function ColorPicker({
     if (!next) return
     event.preventDefault()
     apply(next, true)
+  }
+
+  const rgb = {
+    r: Number.parseInt(value.slice(1, 3), 16),
+    g: Number.parseInt(value.slice(3, 5), 16),
+    b: Number.parseInt(value.slice(5, 7), 16),
+  }
+  const changeRgb = (channel: keyof typeof rgb, channelValue: number) => {
+    const next = { ...rgb, [channel]: channelValue }
+    const hex = `#${[next.r, next.g, next.b].map((value) => value.toString(16).padStart(2, '0')).join('')}`
+    const parsed = hexToHsv(hex)
+    if (parsed) {
+      hsvRef.current = parsed
+      setHsv(parsed)
+    }
+    onChange(hex)
+    onCommit?.(hex)
   }
 
   const handle = pointToPercent(hsvToPoint(current))
@@ -233,6 +250,27 @@ export function ColorPicker({
           </div>
           {hexError && <span className="color-picker__hex-error" role="alert">{t('sketchInvalidHex')}</span>}
         </label>
+        <details className="color-picker__rgb">
+          <summary className="color-picker__label">{t('sketchRgbValues')}</summary>
+          {([
+            ['r', 'sketchRed'],
+            ['g', 'sketchGreen'],
+            ['b', 'sketchBlue'],
+          ] as const).map(([channel, labelKey]) => (
+            <label className="color-picker__rgb-row" key={channel}>
+              <span>{t(labelKey)}</span>
+              <input
+                type="range"
+                min={0}
+                max={255}
+                value={rgb[channel]}
+                aria-label={t(labelKey)}
+                onChange={(event) => changeRgb(channel, Number(event.target.value))}
+              />
+              <output>{rgb[channel]}</output>
+            </label>
+          ))}
+        </details>
       </div>
     </div>
   )

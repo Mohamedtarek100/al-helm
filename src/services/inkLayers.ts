@@ -20,9 +20,9 @@
  */
 
 import {
-  CANVAS_H, CANVAS_W, PAPER_BACKGROUND,
+  CANVAS_H, CANVAS_W, DEFAULT_LAYER_ID, PAPER_BACKGROUND,
   drawShape, drawStrokePath, drawText,
-  type DrawingDocument, type PaperKind, type Shape, type Stroke,
+  type DrawingDocument, type DrawingLayer, type PaperKind, type Shape, type Stroke,
 } from './drawing'
 
 /**
@@ -76,6 +76,8 @@ export interface InkLayers {
   ink: HTMLCanvasElement
 }
 
+const workCanvases = new WeakMap<HTMLCanvasElement, HTMLCanvasElement>()
+
 /** Creates the two offscreen layers at a given pixel size. */
 export function createLayers(width: number, height: number): InkLayers | null {
   if (typeof document === 'undefined') return null
@@ -113,20 +115,64 @@ export function renderInkLayer(
   ctx.globalCompositeOperation = 'source-over'
   ctx.globalAlpha = 1
   ctx.clearRect(0, 0, inkCanvas.width, inkCanvas.height)
-  ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
-  for (const stroke of doc.strokes) paintInkStroke(ctx, stroke)
-  // Shapes and text live on the INK layer too, so they behave exactly like ink:
-  // an eraser removes them, and they never touch the paper layer.
-  ctx.globalCompositeOperation = 'source-over'
-  for (const shape of doc.shapes ?? []) drawShape(ctx, shape)
-  for (const element of doc.texts ?? []) drawText(ctx, element)
-  if (options.live) paintInkStroke(ctx, options.live)
-  // Preview of a shape currently being dragged.
-  if (options.liveShape) {
-    ctx.globalCompositeOperation = 'source-over'
-    drawShape(ctx, options.liveShape)
+  const layers: DrawingLayer[] = doc.layers?.length
+    ? doc.layers
+    : [{ id: DEFAULT_LAYER_ID, name: 'Layer 1', visible: true }]
+  const fallbackLayerId = layers[0].id
+  const activeLayerId = layers.some((layer) => layer.id === doc.activeLayerId)
+    ? doc.activeLayerId
+    : fallbackLayerId
+  const drawLayer = (target: CanvasRenderingContext2D, layerId: string, preview: boolean) => {
+    target.setTransform(ratio, 0, 0, ratio, 0, 0)
+    for (const stroke of doc.strokes) {
+      if ((stroke.layerId ?? fallbackLayerId) === layerId) paintInkStroke(target, stroke)
+    }
+    target.globalCompositeOperation = 'source-over'
+    for (const shape of doc.shapes ?? []) {
+      if ((shape.layerId ?? fallbackLayerId) === layerId) drawShape(target, shape)
+    }
+    for (const element of doc.texts ?? []) {
+      if ((element.layerId ?? fallbackLayerId) === layerId) drawText(target, element)
+    }
+    if (preview && options.live) paintInkStroke(target, options.live)
+    if (preview && options.liveShape) {
+      target.globalCompositeOperation = 'source-over'
+      drawShape(target, options.liveShape)
+    }
+  }
+
+  const visibleLayers = layers.filter((layer) => layer.visible)
+  if (visibleLayers.length <= 1) {
+    const layer = visibleLayers[0]
+    if (layer) drawLayer(ctx, layer.id, layer.id === activeLayerId)
+  } else {
+    let workCanvas = workCanvases.get(inkCanvas)
+    if (!workCanvas) {
+      workCanvas = document.createElement('canvas')
+      workCanvases.set(inkCanvas, workCanvas)
+    }
+    if (workCanvas.width !== targetW || workCanvas.height !== targetH) {
+      workCanvas.width = targetW
+      workCanvas.height = targetH
+    }
+    const workCtx = workCanvas.getContext('2d')
+    if (workCtx) {
+      for (const layer of visibleLayers) {
+        workCtx.setTransform(1, 0, 0, 1, 0, 0)
+        workCtx.globalCompositeOperation = 'source-over'
+        workCtx.globalAlpha = 1
+        workCtx.clearRect(0, 0, targetW, targetH)
+        drawLayer(workCtx, layer.id, layer.id === activeLayerId)
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
+        ctx.globalCompositeOperation = 'source-over'
+        ctx.globalAlpha = 1
+        ctx.drawImage(workCanvas, 0, 0)
+      }
+    }
   }
   ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.globalAlpha = 1
 }
 
 /**

@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, IconButton } from './Button'
 import { Card } from './Card'
 import { ConfirmDialog } from './Modal'
-import { EraserIcon, PencilIcon, RedoIcon, TrashIcon, UndoIcon, DownloadIcon, SaveIcon, SquareIcon, CircleIcon, LineIcon, TypeIcon, SelectIcon, HandIcon, ZoomInIcon, ZoomOutIcon, ResetIcon } from './icons'
+import { EraserIcon, PencilIcon, RedoIcon, TrashIcon, UndoIcon, DownloadIcon, SaveIcon, SquareIcon, CircleIcon, LineIcon, TypeIcon, SelectIcon, HandIcon, ZoomInIcon, ZoomOutIcon, ResetIcon, ChevronDownIcon, PlusIcon, EyeIcon, EyeOffIcon } from './icons'
 import { createArtwork, updateArtwork, useAppData } from '../services/store'
 import { todayKey } from '../services/date'
 import { useI18n } from '../i18n/useI18n'
 import { compositeLayers, createLayers, renderInkLayer, type InkLayers } from '../services/inkLayers'
 import {
-  CANVAS_H, CANVAS_W, PAPER_SWATCH, appendPoint, clearDraft, emptyDocument,
+  CANVAS_H, CANVAS_W, DEFAULT_LAYER_ID, PAPER_SWATCH, appendPoint, clearDraft, emptyDocument,
   loadDraft, parseDocument, pointFromClient, renderDocument, saveDraft,
   type DrawingDocument, type PaperKind, type Point, type Shape, type ShapeKind, type Stroke, type TextElement, type Tool,
 } from '../services/drawing'
@@ -60,6 +60,9 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   const [color, setColor] = useState(PALETTE[0])
   const [size, setSize] = useState(3)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(false)
+  const [layersOpen, setLayersOpen] = useState(true)
+  const [layerToDelete, setLayerToDelete] = useState<string | null>(null)
   const [shapeKind, setShapeKind] = useState<ShapeKind>('rect')
   /** Recently used custom colours, persisted per device (drawingPalette is pure). */
   const [recentColors, setRecentColors] = useState<string[]>(() => {
@@ -229,12 +232,24 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
       return
     }
 
+    const activeLayer = docRef.current.layers?.find((layer) => layer.id === docRef.current.activeLayerId)
+      ?? docRef.current.layers?.[0]
+    if (activeLayer?.visible === false) return
+
     // Text: a tap places a text element; there is nothing to drag.
     if (tool === 'text') {
       const at = toPoint(event)
       const text = window.prompt(t('sketchTextPrompt'), '')
       if (text && text.trim()) {
-        const element: TextElement = { id: makeId('txt'), x: at.x, y: at.y, text: text.trim(), color, size: Math.max(12, size * 6) }
+        const element: TextElement = {
+          id: makeId('txt'),
+          layerId: activeLayer?.id ?? DEFAULT_LAYER_ID,
+          x: at.x,
+          y: at.y,
+          text: text.trim(),
+          color,
+          size: Math.max(12, size * 6),
+        }
         updateDoc({ ...docRef.current, texts: [...(docRef.current.texts ?? []), element] })
       }
       return
@@ -243,13 +258,27 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     // Shapes drag from the start point to the current point.
     if (tool === 'shape') {
       const from = toPoint(event)
-      pendingShapeRef.current = { id: makeId('shp'), kind: shapeKind, from, to: from, color, size }
+      pendingShapeRef.current = {
+        id: makeId('shp'),
+        layerId: activeLayer?.id ?? DEFAULT_LAYER_ID,
+        kind: shapeKind,
+        from,
+        to: from,
+        color,
+        size,
+      }
       setPendingShape(pendingShapeRef.current)
       setDrawing(true)
       return
     }
 
-    currentRef.current = { points: [toPoint(event)], color, size, eraser: tool === 'eraser' }
+    currentRef.current = {
+      layerId: activeLayer?.id ?? DEFAULT_LAYER_ID,
+      points: [toPoint(event)],
+      color,
+      size,
+      eraser: tool === 'eraser',
+    }
     setDrawing(true)
     paint(currentRef.current)
   }
@@ -400,6 +429,78 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
     updateDoc(cleared)
     // Clearing is an explicit action; the saved artwork is only replaced on Save.
     persistDraft(cleared, savedIdRef.current, titleRef.current)
+  }
+
+  const addLayer = () => {
+    const current = docRef.current
+    const layers = current.layers?.length
+      ? current.layers
+      : [{ id: DEFAULT_LAYER_ID, name: t('sketchLayerNumber', { count: 1 }), visible: true }]
+    const layer = { id: makeId('lay'), name: t('sketchLayerNumber', { count: layers.length + 1 }), visible: true }
+    updateDoc({ ...current, layers: [...layers, layer], activeLayerId: layer.id })
+  }
+
+  const selectLayer = (id: string) => {
+    const current = docRef.current
+    const layer = current.layers?.find((entry) => entry.id === id)
+    if (!layer?.visible) return
+    updateDoc({ ...current, activeLayerId: id }, { preserveSelection: true })
+  }
+
+  const renameLayer = (id: string, name: string) => {
+    const current = docRef.current
+    const layers = current.layers ?? []
+    updateDoc({
+      ...current,
+      layers: layers.map((layer) => layer.id === id ? { ...layer, name: name.slice(0, 60) } : layer),
+    }, { recordHistory: false, preserveSelection: true })
+  }
+
+  const moveLayer = (id: string, direction: -1 | 1) => {
+    const current = docRef.current
+    const layers = [...(current.layers ?? [])]
+    const index = layers.findIndex((layer) => layer.id === id)
+    const nextIndex = index + direction
+    if (index < 0 || nextIndex < 0 || nextIndex >= layers.length) return
+    ;[layers[index], layers[nextIndex]] = [layers[nextIndex], layers[index]]
+    updateDoc({ ...current, layers })
+  }
+
+  const toggleLayerVisibility = (id: string) => {
+    const current = docRef.current
+    const layers = current.layers ?? []
+    const layer = layers.find((entry) => entry.id === id)
+    if (!layer) return
+    if (layer.visible && layers.filter((entry) => entry.visible).length <= 1) return
+    const nextLayers = layers.map((entry) => entry.id === id ? { ...entry, visible: !entry.visible } : entry)
+    const nextActiveLayerId = id === current.activeLayerId && layer.visible
+      ? nextLayers.find((entry) => entry.visible)?.id
+      : current.activeLayerId
+    updateDoc({ ...current, layers: nextLayers, activeLayerId: nextActiveLayerId }, { preserveSelection: true })
+    setSelected(null)
+  }
+
+  const deleteLayer = () => {
+    const id = layerToDelete
+    setLayerToDelete(null)
+    if (!id) return
+    const current = docRef.current
+    const layers = current.layers ?? []
+    if (layers.length <= 1 || !layers.some((layer) => layer.id === id)) return
+    const fallbackLayerId = layers[0].id
+    const nextLayers = layers.filter((layer) => layer.id !== id)
+    const nextActiveLayerId = current.activeLayerId === id
+      ? (nextLayers.find((layer) => layer.visible) ?? nextLayers[0]).id
+      : current.activeLayerId
+    const belongsToDeletedLayer = (element: { layerId?: string }) => (element.layerId ?? fallbackLayerId) === id
+    updateDoc({
+      ...current,
+      layers: nextLayers,
+      activeLayerId: nextActiveLayerId,
+      strokes: current.strokes.filter((element) => !belongsToDeletedLayer(element)),
+      shapes: (current.shapes ?? []).filter((element) => !belongsToDeletedLayer(element)),
+      texts: (current.texts ?? []).filter((element) => !belongsToDeletedLayer(element)),
+    })
   }
 
   const exportPng = () => {
@@ -621,11 +722,39 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
   )
 
   const statusLabel = saveState === 'saving' ? t('sketchSaving') : saveState === 'error' ? t('sketchSaveFailed') : saveState === 'dirty' ? t('sketchUnsaved') : t('sketchSaved')
+  const studioLayers = doc.layers?.length
+    ? doc.layers
+    : [{ id: DEFAULT_LAYER_ID, name: t('sketchLayerNumber', { count: 1 }), visible: true }]
+  const activeLayerId = studioLayers.some((layer) => layer.id === doc.activeLayerId)
+    ? doc.activeLayerId
+    : studioLayers[0].id
 
   return (
     <div className={`page-stack sketch-studio ${focusMode ? 'sketch-studio--focus' : ''}`} ref={rootRef}>
       <Card padded={false} className={`sketch-card ${paletteOpen ? 'sketch-card--picker-open' : ''}`}>
-        <div className={`sketch-toolbar ${paletteOpen ? 'sketch-toolbar--picker-open' : ''}`} role="toolbar" aria-label={t('canvasTab')}>
+        <div className="sketch-workspace-controls">
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-expanded={!toolbarCollapsed}
+            aria-controls="sketch-toolbar"
+            trailingIcon={<ChevronDownIcon className={toolbarCollapsed ? 'sketch-toggle-icon--collapsed' : ''} size={15} />}
+            onClick={() => setToolbarCollapsed((collapsed) => !collapsed)}
+          >
+            {toolbarCollapsed ? t('sketchExpandTools') : t('sketchCollapseTools')}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-expanded={layersOpen}
+            aria-controls="sketch-layer-panel"
+            onClick={() => setLayersOpen((open) => !open)}
+          >
+            {layersOpen ? t('sketchHideLayers') : t('sketchShowLayers')}
+          </Button>
+        </div>
+        {!toolbarCollapsed && (
+        <div id="sketch-toolbar" className={`sketch-toolbar ${paletteOpen ? 'sketch-toolbar--picker-open' : ''}`} role="toolbar" aria-label={t('canvasTab')}>
           <div className="sketch-toolbar__group">
             <IconButton label={t('sketchPencil')} variant={tool === 'pencil' ? 'primary' : 'secondary'} onClick={() => setTool('pencil')}><PencilIcon size={17} /></IconButton>
             <IconButton label={t('sketchEraser')} variant={tool === 'eraser' ? 'primary' : 'secondary'} onClick={() => setTool('eraser')}><EraserIcon size={17} /></IconButton>
@@ -723,22 +852,108 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
             </div>
           )}
         </div>
+        )}
 
-        <div className="sketch-surface">
-          <canvas
-            ref={canvasRef}
-            width={CANVAS_W}
-            height={CANVAS_H}
-            className="sketch-canvas"
-            data-drawing={drawing ? 'true' : 'false'}
-            aria-label={t('canvasTab')}
-            onPointerDown={start}
-            onPointerMove={move}
-            onPointerUp={end}
-            onPointerCancel={cancelGesture}
-            onPointerLeave={(event) => { if (event.pointerType === 'mouse' && event.buttons === 0) end(event) }}
-            onContextMenu={(event) => event.preventDefault()}
-          />
+        <div className={`sketch-workspace ${layersOpen ? '' : 'sketch-workspace--layers-hidden'}`}>
+          <div className="sketch-surface">
+            <canvas
+              ref={canvasRef}
+              width={CANVAS_W}
+              height={CANVAS_H}
+              className="sketch-canvas"
+              data-drawing={drawing ? 'true' : 'false'}
+              aria-label={t('canvasTab')}
+              onPointerDown={start}
+              onPointerMove={move}
+              onPointerUp={end}
+              onPointerCancel={cancelGesture}
+              onPointerLeave={(event) => { if (event.pointerType === 'mouse' && event.buttons === 0) end(event) }}
+              onContextMenu={(event) => event.preventDefault()}
+            />
+          </div>
+          {layersOpen && (
+            <aside id="sketch-layer-panel" className="sketch-layer-panel" aria-label={t('sketchLayers')}>
+              <div className="sketch-layer-panel__header">
+                <h2>{t('sketchLayers')}</h2>
+                <IconButton label={t('sketchAddLayer')} size="sm" variant="secondary" onClick={addLayer}>
+                  <PlusIcon size={16} />
+                </IconButton>
+              </div>
+              <div className="sketch-layer-list">
+                {[...studioLayers].reverse().map((layer) => {
+                  const index = studioLayers.findIndex((entry) => entry.id === layer.id)
+                  const active = layer.id === activeLayerId
+                  const elementTotal = doc.strokes.filter((element) => (element.layerId ?? studioLayers[0].id) === layer.id).length
+                    + (doc.shapes ?? []).filter((element) => (element.layerId ?? studioLayers[0].id) === layer.id).length
+                    + (doc.texts ?? []).filter((element) => (element.layerId ?? studioLayers[0].id) === layer.id).length
+                  return (
+                    <div className={`sketch-layer ${active ? 'sketch-layer--active' : ''}`} key={layer.id}>
+                      <button
+                        type="button"
+                        className="sketch-layer__select"
+                        aria-label={layer.name}
+                        aria-pressed={active}
+                        onClick={() => selectLayer(layer.id)}
+                      >
+                        <span className="sketch-layer__swatch" aria-hidden="true" />
+                        <span className="sketch-layer__count">{elementTotal}</span>
+                      </button>
+                      <input
+                        className="input sketch-layer__name"
+                        value={layer.name}
+                        aria-label={t('sketchLayerName')}
+                        maxLength={60}
+                        onChange={(event) => renameLayer(layer.id, event.currentTarget.value)}
+                        onBlur={(event) => {
+                          if (!event.currentTarget.value.trim()) {
+                            renameLayer(layer.id, t('sketchLayerNumber', { count: index + 1 }))
+                          }
+                        }}
+                      />
+                      <div className="sketch-layer__actions">
+                        <IconButton
+                          label={layer.visible ? t('sketchHideLayer') : t('sketchShowLayer')}
+                          size="sm"
+                          variant="quiet"
+                          onClick={() => toggleLayerVisibility(layer.id)}
+                        >
+                          {layer.visible ? <EyeIcon size={15} /> : <EyeOffIcon size={15} />}
+                        </IconButton>
+                        <IconButton
+                          label={t('sketchMoveLayerUp')}
+                          size="sm"
+                          variant="quiet"
+                          className="sketch-layer__move-up"
+                          onClick={() => moveLayer(layer.id, 1)}
+                          disabled={index === studioLayers.length - 1}
+                        >
+                          <ChevronDownIcon size={14} />
+                        </IconButton>
+                        <IconButton
+                          label={t('sketchMoveLayerDown')}
+                          size="sm"
+                          variant="quiet"
+                          onClick={() => moveLayer(layer.id, -1)}
+                          disabled={index === 0}
+                        >
+                          <ChevronDownIcon size={14} />
+                        </IconButton>
+                        <IconButton
+                          label={t('sketchDeleteLayer')}
+                          size="sm"
+                          variant="danger"
+                          onClick={() => setLayerToDelete(layer.id)}
+                          disabled={studioLayers.length <= 1}
+                        >
+                          <TrashIcon size={14} />
+                        </IconButton>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </aside>
+          )}
         </div>
 
         <div className="sketch-footer">
@@ -794,6 +1009,16 @@ export function SketchCanvas({ initialArtworkId = null }: SketchCanvasProps) {
         destructive
         onConfirm={clear}
         onCancel={() => setConfirmClear(false)}
+      />
+      <ConfirmDialog
+        open={layerToDelete !== null}
+        title={t('sketchDeleteLayer')}
+        message={t('sketchDeleteLayerConfirm')}
+        confirmLabel={t('sketchDeleteLayer')}
+        cancelLabel={t('cancel')}
+        destructive
+        onConfirm={deleteLayer}
+        onCancel={() => setLayerToDelete(null)}
       />
     </div>
   )

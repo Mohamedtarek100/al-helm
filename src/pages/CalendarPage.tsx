@@ -6,7 +6,7 @@ import { Field, TextInput } from '../components/Field'
 import { SubjectSelect } from '../components/SubjectSelect'
 import { CheckIcon, PlusIcon, TrashIcon } from '../components/icons'
 import { useToast } from '../components/toastContext'
-import { deleteTask, createTask, setTaskCompleted, useAppData } from '../services/store'
+import { deleteTask, createTask, getPendingCloudError, setTaskCompleted, useAppData } from '../services/store'
 import { toDateKey, todayKey } from '../services/date'
 import { PageFrame, PageHeading } from './PageFrame'
 import { useI18n } from '../i18n/useI18n'
@@ -68,11 +68,9 @@ export function CalendarPage() {
       setNewSubjectId(null)
       setAddOpen(false)
       notify(
-        task.writeResult === 'session-only'
-          ? t('taskSessionOnly')
-          : task.writeResult === 'local-only'
-            ? language === 'en' ? 'Saved on this device. Cloud sync will retry when the connection returns.' : 'اتحفظ على الجهاز ده. مزامنة السحابة هتحاول تاني لما الاتصال يرجع.'
-            : t('taskAdded'),
+        task.writeResult === 'local-only'
+          ? getPendingCloudError() ? t('taskSavedCloudPending') : t('taskSavedDeviceOnly')
+          : t('taskAdded'),
         task.writeResult === 'cloud' ? 'success' : 'warning',
       )
     } catch (error) {
@@ -158,11 +156,9 @@ export function CalendarPage() {
                     try {
                       const result = await setTaskCompleted(task.id, !task.completed)
                       notify(
-                        result === 'session-only'
-                          ? t('taskSessionOnly')
-                          : result === 'local-only'
-                            ? language === 'en' ? 'Saved on this device. Cloud sync will retry when the connection returns.' : 'اتحفظ على الجهاز ده. مزامنة السحابة هتحاول تاني لما الاتصال يرجع.'
-                            : task.completed ? (language === 'en' ? 'Task reopened.' : 'رجعت المهمة للقائمة.') : t('taskCompleted'),
+                        result === 'local-only'
+                          ? getPendingCloudError() ? t('taskSavedCloudPending') : t('taskSavedDeviceOnly')
+                          : task.completed ? (language === 'en' ? 'Task reopened.' : 'رجعت المهمة للقائمة.') : t('taskCompleted'),
                         result === 'cloud' ? 'success' : 'warning',
                       )
                     }
@@ -211,11 +207,9 @@ export function CalendarPage() {
             const result = await deleteTask(id)
             setRemoveTask(null)
             notify(
-              result === 'session-only'
-                ? t('taskSessionOnly')
-                : result === 'local-only'
-                  ? language === 'en' ? 'Saved on this device. Cloud sync will retry when the connection returns.' : 'اتحفظ على الجهاز ده. مزامنة السحابة هتحاول تاني لما الاتصال يرجع.'
-                  : t('taskDeleted'),
+              result === 'local-only'
+                ? getPendingCloudError() ? t('taskSavedCloudPending') : t('taskSavedDeviceOnly')
+                : t('taskDeleted'),
               result === 'cloud' ? 'info' : 'warning',
             )
           } catch (error) { notify(error instanceof Error ? error.message : t('retry'), 'danger') }

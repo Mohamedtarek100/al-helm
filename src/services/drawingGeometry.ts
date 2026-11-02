@@ -1,4 +1,4 @@
-import type { DrawingDocument, Point, Shape, Stroke, TextElement } from './drawing'
+import { DEFAULT_LAYER_ID, type DrawingDocument, type Point, type Shape, type Stroke, type TextElement } from './drawing'
 
 /**
  * Pure geometry for Dream Studio: hit-testing, element movement and the pan/zoom
@@ -125,18 +125,32 @@ function pointInBox(point: Point, box: Bounds, tolerance = 0): boolean {
  */
 export function hitTest(doc: DrawingDocument, point: Point, tolerance = HIT_TOLERANCE): ElementRef | null {
   const texts = doc.texts ?? []
-  for (let i = texts.length - 1; i >= 0; i -= 1) {
-    if (pointInBox(point, textBox(texts[i]), tolerance)) return { kind: 'text', index: i }
-  }
   const shapes = doc.shapes ?? []
-  for (let i = shapes.length - 1; i >= 0; i -= 1) {
-    if (distanceToShape(point, shapes[i]) <= tolerance + shapes[i].size / 2) return { kind: 'shape', index: i }
-  }
-  for (let i = doc.strokes.length - 1; i >= 0; i -= 1) {
-    const stroke = doc.strokes[i]
-    // Eraser strokes are not selectable: they are a removal, not an object.
-    if (stroke.eraser) continue
-    if (distanceToStroke(point, stroke) <= tolerance + stroke.size / 2) return { kind: 'stroke', index: i }
+  const layers = doc.layers?.length
+    ? doc.layers
+    : [{ id: DEFAULT_LAYER_ID, name: 'Layer 1', visible: true }]
+  const fallbackLayerId = layers[0].id
+  for (let layerIndex = layers.length - 1; layerIndex >= 0; layerIndex -= 1) {
+    const layer = layers[layerIndex]
+    if (!layer.visible) continue
+    for (let i = texts.length - 1; i >= 0; i -= 1) {
+      if ((texts[i].layerId ?? fallbackLayerId) === layer.id && pointInBox(point, textBox(texts[i]), tolerance)) {
+        return { kind: 'text', index: i }
+      }
+    }
+    for (let i = shapes.length - 1; i >= 0; i -= 1) {
+      if ((shapes[i].layerId ?? fallbackLayerId) === layer.id
+        && distanceToShape(point, shapes[i]) <= tolerance + shapes[i].size / 2) {
+        return { kind: 'shape', index: i }
+      }
+    }
+    for (let i = doc.strokes.length - 1; i >= 0; i -= 1) {
+      const stroke = doc.strokes[i]
+      if ((stroke.layerId ?? fallbackLayerId) !== layer.id) continue
+      // Eraser strokes are not selectable: they are a removal, not an object.
+      if (stroke.eraser) continue
+      if (distanceToStroke(point, stroke) <= tolerance + stroke.size / 2) return { kind: 'stroke', index: i }
+    }
   }
   return null
 }

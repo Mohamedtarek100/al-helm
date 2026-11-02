@@ -11,7 +11,7 @@ import { SubjectSelect } from '../components/SubjectSelect'
 import { CheckIcon, CheckSquareIcon, EditIcon, PlusIcon, TrashIcon } from '../components/icons'
 import { describeDueDate, formatMinutes, formatTime, todayKey } from '../services/date'
 import { emptyTaskFilter, filterTasks, sortTasks, type TaskFilter, type TaskSortKey, type TaskStatusFilter, isTaskOverdue } from '../services/taskSelectors'
-import { createTask, deleteTask, setTaskCompleted, updateTask, useAppData, type NewTask, type WriteResult } from '../services/store'
+import { createTask, deleteTask, getPendingCloudError, setTaskCompleted, updateTask, useAppData, type NewTask, type WriteResult } from '../services/store'
 import { PageFrame, PageHeading } from './PageFrame'
 import { useToast } from '../components/toastContext'
 import { useI18n } from '../i18n/useI18n'
@@ -68,17 +68,8 @@ export function TasksPage() {
   }
 
   const reportTaskWrite = (result: WriteResult, successMessage: string, successTone: 'success' | 'info' = 'success') => {
-    if (result === 'session-only') {
-      notify(t('taskSessionOnly'), 'warning')
-      return
-    }
     if (result === 'local-only') {
-      notify(
-        en
-          ? 'Saved on this device. Cloud sync will retry when the connection returns.'
-          : 'اتحفظ على الجهاز ده. مزامنة السحابة هتحاول تاني لما الاتصال يرجع.',
-        'warning',
-      )
+      notify(getPendingCloudError() ? t('taskSavedCloudPending') : t('taskSavedDeviceOnly'), 'warning')
       return
     }
     notify(successMessage, successTone)

@@ -32,8 +32,7 @@ export function WelcomePage({ onDone, onGuest }: { onDone: () => void; onGuest?:
   const chooseGuest = () => {
     setBusy('guest')
     setError(null)
-    // Flag this page-load as a guest session BEFORE anything can persist, so no
-    // edit, autosave, retry or background sync writes to storage or the cloud.
+    // Keep guest edits on-device only; the store never writes them to Supabase.
     startGuestSession()
     const persisted = setLaunchMode('guest')
     if (!persisted) {
@@ -163,8 +162,8 @@ export function WelcomePage({ onDone, onGuest }: { onDone: () => void; onGuest?:
           </p>
           <p className="onboarding__note">
             {en
-              ? 'Guest data is temporary: it is never saved to this device or to any account. Reloading the page, closing the app, or losing the device ends the session and everything in it.'
-              : 'بيانات الضيف مؤقتة: مش بتتحفظ على الجهاز ولا في أي حساب. عمل تحديث للصفحة أو قفل التطبيق أو فقدان الجهاز بينهي الجلسة وكل حاجة فيها.'}
+              ? 'Guest work is saved on this device only and never synced to an account. It may be lost if this device or its browser data is cleared. Use the account migration flow before signing in to sync it.'
+              : 'شغلك كضيف بيتحفظ على الجهاز ده بس ومش بيتزامن مع حساب. ممكن يضيع لو بيانات الجهاز أو المتصفح اتمسحت. استخدمي نقل البيانات للحساب قبل تسجيل الدخول للمزامنة.'}
           </p>
           <div className="onboarding__actions">
             <Button variant="secondary" loading={shownBusy === 'guest'} onClick={chooseGuest}>

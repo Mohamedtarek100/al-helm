@@ -13,6 +13,7 @@
 //   heartbeat  — update own last_seen_at
 //   feed       — own announcements
 //   read       — mark own announcement read
+//   dismiss    — hide own announcement delivery rows
 //
 // Owner only (verified JWT + server-side ADMIN_EMAILS, every request):
 //   metrics       — the original KPI bundle (kept for compatibility)
@@ -1088,18 +1089,27 @@ Deno.serve(async (req) => {
     // delivery ids. This avoids relying on a cross-table RLS join, since
     // `announcements` intentionally has no client-facing SELECT policy (a
     // grant alone does not bypass RLS).
-    const { data: deliveries, error: delErr } = await userClient(authHeader)
+    const userDb = userClient(authHeader)
+    const { data: deliveries, error: delErr } = await userDb
       .from('announcement_delivery')
       .select('announcement_id,delivered_at,read_at')
       .eq('user_id', user.id)
       // Recalled announcements disappear from the recipient's feed. Applied
       // server-side so no client can resurrect one by skipping a local check.
       .is('revoked_at', null)
+      .is('dismissed_at', null)
       .order('delivered_at', { ascending: false })
       .limit(50)
     if (delErr) return json({ error: safeDbError(delErr, 'announcement feed') }, 500)
+    const { data: hiddenRows, error: hiddenErr } = await adminClient()
+      .from('announcement_delivery')
+      .select('announcement_id')
+      .eq('user_id', user.id)
+      .or('revoked_at.not.is.null,dismissed_at.not.is.null')
+    if (hiddenErr) return json({ error: safeDbError(hiddenErr, 'announcement feed') }, 500)
+    const dismissedIds = [...new Set((hiddenRows ?? []).map((row: { announcement_id: string }) => row.announcement_id))]
     const ids = (deliveries ?? []).map((d) => d.announcement_id)
-    if (ids.length === 0) return json({ feed: [] })
+    if (ids.length === 0) return json({ feed: [], dismissedIds })
     const { data: anns, error: annErr } = await adminClient()
       .from('announcements')
       .select('id,title,body,created_at')
@@ -1123,7 +1133,29 @@ Deno.serve(async (req) => {
         readAt: d.read_at,
       }]
     })
-    return json({ feed })
+    return json({ feed, dismissedIds })
+  }
+
+  if (action === 'dismiss') {
+    const rawIds = (body as { announcementIds?: unknown }).announcementIds
+    if (!Array.isArray(rawIds) || rawIds.length > 100) {
+      return json({ error: 'Provide up to 100 announcement ids.' }, 400)
+    }
+    const ids = [...new Set(rawIds.map((value) => typeof value === 'string' ? value.trim() : ''))]
+    if (ids.some((id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) {
+      return json({ error: 'Every announcement id must be a valid UUID.' }, 400)
+    }
+    if (ids.length === 0) return json({ ok: true, dismissed: 0 })
+    const { data, error } = await adminClient()
+      .from('announcement_delivery')
+      .update({ dismissed_at: new Date().toISOString() })
+      .eq('user_id', user.id)
+      .in('announcement_id', ids)
+      .is('dismissed_at', null)
+      .is('revoked_at', null)
+      .select('announcement_id')
+    if (error) return json({ error: safeDbError(error, 'announcement dismissal') }, 500)
+    return json({ ok: true, dismissed: data?.length ?? 0 })
   }
 
   if (action === 'read') {
@@ -1601,50 +1633,81 @@ Deno.serve(async (req) => {
       return json({ error: 'A valid requestId is required.' }, 400)
     }
 
+    const resolveRecipients = async (targetAudience: 'all' | 'opted_in'): Promise<{ recipients: string[] } | { error: string }> => {
+      if (targetAudience === 'opted_in') {
+        const ids = await pushSubscriberIds(admin)
+        if (isFailure(ids)) return { error: safeDbError({ message: ids.error }, 'recipients') }
+        return { recipients: [...ids] }
+      }
+
+      const listed = await listAllUsers(admin, 40)
+      if (isFailure(listed)) return { error: safeDbError({ message: listed.error }, 'recipient list') }
+      if (listed.truncated) {
+        return { error: safeDbError({ message: 'Recipient list exceeds the supported fan-out limit.' }, 'recipient list') }
+      }
+      return { recipients: listed.users.map((recipient: User) => recipient.id) }
+    }
+
+    const persistDeliveryRows = async (announcementId: string, recipients: string[]): Promise<string | null> => {
+      for (let offset = 0; offset < recipients.length; offset += 500) {
+        const batch = recipients.slice(offset, offset + 500)
+        const { error } = await admin.from('announcement_delivery').upsert(
+          batch.map((uid: string) => ({ announcement_id: announcementId, user_id: uid })),
+          { onConflict: 'announcement_id,user_id', ignoreDuplicates: true },
+        )
+        if (error) return safeDbError(error, 'announcement fan-out')
+      }
+      return null
+    }
+
     const duplicateResult = async (
-      announcementId: string,
-      savedPush: { push_status?: string | null; push_attempted?: number; push_accepted?: number; push_failed?: number; push_expired?: number },
+      savedAnnouncement: {
+        id: string
+        audience?: string
+        push_status?: string | null
+        push_attempted?: number
+        push_accepted?: number
+        push_failed?: number
+        push_expired?: number
+      },
     ) => {
+      const targetAudience = savedAnnouncement.audience === 'opted_in' ? 'opted_in' : 'all'
+      const recipientResult = await resolveRecipients(targetAudience)
+      if ('error' in recipientResult) return json({ error: recipientResult.error }, 500)
+      const fanOutError = await persistDeliveryRows(savedAnnouncement.id, recipientResult.recipients)
+      if (fanOutError) return json({ error: fanOutError }, 500)
+
       const { count, error: countError } = await admin.from('announcement_delivery')
         .select('*', { count: 'exact', head: true })
-        .eq('announcement_id', announcementId)
+        .eq('announcement_id', savedAnnouncement.id)
       if (countError) return json({ error: safeDbError(countError, 'announcement delivery') }, 500)
       return json({
         ok: true,
         duplicate: true,
-        announcementId,
+        announcementId: savedAnnouncement.id,
         recipientCount: count ?? 0,
         push: {
           status: 'already_processed',
-          originalStatus: savedPush.push_status ?? null,
-          attempted: savedPush.push_attempted ?? 0,
-          accepted: savedPush.push_accepted ?? 0,
-          failed: savedPush.push_failed ?? 0,
-          expired: savedPush.push_expired ?? 0,
+          originalStatus: savedAnnouncement.push_status ?? null,
+          attempted: savedAnnouncement.push_attempted ?? 0,
+          accepted: savedAnnouncement.push_accepted ?? 0,
+          failed: savedAnnouncement.push_failed ?? 0,
+          expired: savedAnnouncement.push_expired ?? 0,
         },
       })
     }
 
     const { data: existing, error: existingError } = await admin.from('announcements')
-      .select('id,push_status,push_attempted,push_accepted,push_failed,push_expired')
+      .select('id,audience,push_status,push_attempted,push_accepted,push_failed,push_expired')
       .eq('request_id', requestId)
       .maybeSingle()
     if (existingError) return json({ error: safeDbError(existingError, 'announcement idempotency') }, 500)
-    if (existing) return await duplicateResult(existing.id, existing)
+    if (existing) return await duplicateResult(existing)
 
     // Resolve recipients server-side. opted_in requires a push subscription.
-    let recipients: string[] = []
-    if (audience === 'opted_in') {
-      const ids = await pushSubscriberIds(admin)
-      if (isFailure(ids)) return json({ error: safeDbError({ message: ids.error }, 'recipients') }, 500)
-      recipients = [...ids]
-    } else {
-      // 'all' must include every registered account, not only users who have
-      // sent a heartbeat. Page through the full auth directory server-side.
-      const listed = await listAllUsers(admin, 40)
-      if (isFailure(listed)) return json({ error: safeDbError({ message: listed.error }, 'recipient list') }, 500)
-      recipients = listed.users.map((u: User) => u.id)
-    }
+    const recipientResult = await resolveRecipients(audience)
+    if ('error' in recipientResult) return json({ error: recipientResult.error }, 500)
+    const recipients = recipientResult.recipients
 
     const { data: ann, error: annErr } = await admin.from('announcements')
       .insert({ title, body: message, audience, created_by: user.id, request_id: requestId })
@@ -1653,20 +1716,16 @@ Deno.serve(async (req) => {
     if (annErr) {
       if (annErr.code === '23505') {
         const { data: raced, error: raceError } = await admin.from('announcements')
-            .select('id,push_status,push_attempted,push_accepted,push_failed,push_expired')
+            .select('id,audience,push_status,push_attempted,push_accepted,push_failed,push_expired')
           .eq('request_id', requestId)
           .maybeSingle()
         if (raceError) return json({ error: safeDbError(raceError, 'announcement idempotency') }, 500)
-          if (raced) return await duplicateResult(raced.id, raced)
+          if (raced) return await duplicateResult(raced)
       }
       return json({ error: safeDbError(annErr, 'announcement') }, 500)
     }
-    if (recipients.length) {
-      const { error: delErr } = await admin.from('announcement_delivery').insert(
-        recipients.map((uid: string) => ({ announcement_id: ann.id, user_id: uid })),
-      )
-      if (delErr) return json({ error: safeDbError(delErr, 'announcement fan-out') }, 500)
-    }
+    const fanOutError = await persistDeliveryRows(ann.id, recipients)
+    if (fanOutError) return json({ error: fanOutError }, 500)
     let push: PushReport
     try {
       push = await sendAnnouncementPush(admin, ann.id, recipients, title, message)

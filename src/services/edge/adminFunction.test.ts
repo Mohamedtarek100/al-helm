@@ -69,7 +69,7 @@ async function loadHandler(): Promise<(req: Request) => Promise<Response>> {
         return { data: { user: null }, error: { message: 'invalid token' } }
       },
     },
-    from: () => ({ select: () => ({ eq: () => ({ order: () => ({ limit: async () => ({ data: [], error: null }) }) }) }) }),
+    from: () => ({ select: () => emptyQuery() }),
   })
 
   const adminClient = () => ({
@@ -92,6 +92,8 @@ async function loadHandler(): Promise<(req: Request) => Promise<Response>> {
       select: () => emptyQuery(
         table === 'announcements' && existingAnnouncement
           ? { data: existingAnnouncement }
+          : table === 'announcement_delivery'
+            ? { data: announcementDeliveryRows, count: announcementDeliveryRows.length }
           : table === 'push_subscriptions'
             ? { data: pushRows }
             : table === 'fcm_push_tokens'
@@ -100,8 +102,17 @@ async function loadHandler(): Promise<(req: Request) => Promise<Response>> {
               ? { data: retryRows, count: retryRows.length }
             : {},
       ),
-      upsert: (row: unknown) => {
-        upsertCalls.push({ table, row })
+      upsert: (row: unknown, options?: unknown) => {
+        upsertCalls.push({ table, row, options })
+        if (table === 'announcement_delivery' && Array.isArray(row)) {
+          for (const candidate of row) {
+            const delivery = candidate as { announcement_id: string; user_id: string }
+            if (!announcementDeliveryRows.some((existing) =>
+              existing.announcement_id === delivery.announcement_id && existing.user_id === delivery.user_id)) {
+              announcementDeliveryRows.push(delivery)
+            }
+          }
+        }
         return Promise.resolve({ error: null })
       },
       update: (values: unknown) => {
@@ -196,6 +207,7 @@ let fcmRows: { token_hash: string; user_id: string; device_id?: string; token: s
 let retryRows: { user_id: string; subscription_id: string; attempt_count: number; provider?: string }[] = []
 let deleteCalls: string[] = []
 let updateCalls: { table: string; values: unknown }[] = []
+let announcementDeliveryRows: { announcement_id: string; user_id: string }[] = []
 type WebPushMock = {
   setVapidDetails: (...args: string[]) => void
   sendNotification: (subscription: unknown, payload: string, options?: unknown) => Promise<{ statusCode: number }>
@@ -228,6 +240,7 @@ beforeEach(() => {
   retryRows = []
   deleteCalls = []
   updateCalls = []
+  announcementDeliveryRows = []
   webPushMock = {
     setVapidDetails: () => undefined,
     sendNotification: async () => ({ statusCode: 201 }),
@@ -376,6 +389,54 @@ describe('announcement recall', () => {
     const feedStart = source.indexOf("action === 'feed'")
     const feedEnd = source.indexOf("action === 'read'")
     expect(source.slice(feedStart, feedEnd)).toMatch(/\.is\('revoked_at', null\)/)
+  })
+})
+
+describe('recipient announcement dismissal', () => {
+  const VALID_ID = '11111111-2222-4333-8444-555555555555'
+
+  it('allows an authenticated recipient to dismiss only their own delivery', async () => {
+    const res = await call({
+      method: 'POST',
+      headers: OTHER,
+      body: JSON.stringify({ action: 'dismiss', announcementIds: [VALID_ID] }),
+    }, '/admin/dismiss')
+
+    expect(res.status, res.body).toBe(200)
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true, dismissed: 0 })
+    expect(updateCalls).toContainEqual({
+      table: 'announcement_delivery',
+      values: expect.objectContaining({ dismissed_at: expect.any(String) }),
+    })
+    const source = readFileSync('supabase/functions/admin/index.ts', 'utf8')
+    const block = source.slice(source.indexOf("action === 'dismiss'"), source.indexOf("action === 'read'"))
+    expect(block).toMatch(/\.eq\('user_id', user\.id\)/)
+    expect(block).toMatch(/\.in\('announcement_id', ids\)/)
+  })
+
+  it('rejects malformed ids and unauthenticated callers', async () => {
+    const malformed = await call({
+      method: 'POST',
+      headers: OTHER,
+      body: JSON.stringify({ action: 'dismiss', announcementIds: ['not-a-uuid'] }),
+    }, '/admin/dismiss')
+    expect(malformed.status).toBe(400)
+
+    const unauthenticated = await call({
+      method: 'POST',
+      body: JSON.stringify({ action: 'dismiss', announcementIds: [VALID_ID] }),
+    }, '/admin/dismiss')
+    expect(unauthenticated.status).toBe(403)
+  })
+
+  it('excludes dismissed rows from the feed and returns tombstones for other devices', async () => {
+    const source = readFileSync('supabase/functions/admin/index.ts', 'utf8')
+    const feedStart = source.indexOf("action === 'feed'")
+    const feedEnd = source.indexOf("action === 'dismiss'")
+    const block = source.slice(feedStart, feedEnd)
+    expect(block).toMatch(/\.is\('dismissed_at', null\)/)
+    expect(block).toMatch(/dismissedIds/)
+    expect(block).toMatch(/dismissed_at\.not\.is\.null/)
   })
 })
 
@@ -672,9 +733,10 @@ describe('browser push subscription and announcement idempotency', () => {
     expect(upsertCalls).toHaveLength(0)
   })
 
-  it('reuses an existing announcement when a send request is retried', async () => {
+  it('repairs a partial announcement fan-out when a send request is retried', async () => {
     existingAnnouncement = {
       id: 'existing-announcement',
+      audience: 'all',
       push_status: 'sent',
       push_attempted: 2,
       push_accepted: 1,
@@ -696,9 +758,18 @@ describe('browser push subscription and announcement idempotency', () => {
     expect(JSON.parse(res.body)).toMatchObject({
       duplicate: true,
       announcementId: 'existing-announcement',
+      recipientCount: 1,
       push: { status: 'already_processed', originalStatus: 'sent', attempted: 2, accepted: 1, failed: 1 },
     })
     expect(insertCalls).toHaveLength(0)
+    expect(announcementDeliveryRows).toEqual([
+      { announcement_id: 'existing-announcement', user_id: 'u-owner' },
+    ])
+    expect(upsertCalls).toContainEqual({
+      table: 'announcement_delivery',
+      row: [{ announcement_id: 'existing-announcement', user_id: 'u-owner' }],
+      options: { onConflict: 'announcement_id,user_id', ignoreDuplicates: true },
+    })
   })
 
   it('records provider acceptance without claiming the device displayed the push', async () => {

@@ -184,6 +184,20 @@ describe('cloud mode', () => {
     expect(store.getPendingCloudError()).toContain('tasks_priority_check')
   })
 
+  it('does not report local-only when the device recovery write fails', async () => {
+    const before = store.getState().tasks.map((task) => task.id)
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('device storage quota exceeded') })
+    try {
+      await expect(store.createTask(newTask('high'))).rejects.toThrow('device storage quota exceeded')
+    } finally {
+      setItem.mockRestore()
+    }
+
+    expect(store.getState().tasks.map((task) => task.id)).toEqual(before)
+    expect(cloudState.saveCalls).toBe(0)
+    expect(store.getPendingCloudError()).toContain('device storage quota exceeded')
+  })
+
   it('does not issue a redundant second write for one edit', async () => {
     vi.useFakeTimers()
     try {

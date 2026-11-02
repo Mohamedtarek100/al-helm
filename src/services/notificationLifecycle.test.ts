@@ -16,6 +16,9 @@ const cloud = vi.hoisted(() => ({
   feed: [] as Array<{ id: string; title: string; body: string; createdAt: string; deliveredAt: string; readAt: string | null }>,
   markReadCalls: [] as string[],
   markReadOk: true,
+  dismissCalls: [] as string[][],
+  dismissError: null as string | null,
+  dismissedIds: [] as string[],
 }))
 
 // The REAL localStorage adapter is used (not a stub): "survives a reload" is
@@ -41,7 +44,16 @@ vi.mock('./persistence/supabase', () => ({
 }))
 
 vi.mock('./edge/admin', () => ({
-  getAnnouncementFeed: async () => ({ feed: cloud.feed }),
+  getAnnouncementFeed: async () => ({
+    feed: cloud.feed.filter((item) => !cloud.dismissedIds.includes(item.id)),
+    dismissedIds: cloud.dismissedIds,
+  }),
+  dismissAnnouncements: async (ids: string[]) => {
+    cloud.dismissCalls.push(ids)
+    if (cloud.dismissError) throw new Error(cloud.dismissError)
+    cloud.dismissedIds = [...new Set([...cloud.dismissedIds, ...ids])]
+    return { ok: true as const, dismissed: ids.length }
+  },
   markAnnouncementRead: async (id: string) => {
     cloud.markReadCalls.push(id)
     return cloud.markReadOk ? { ok: true as const } : ({ ok: false } as unknown as { ok: true })
@@ -68,6 +80,9 @@ beforeEach(async () => {
   cloud.feed = []
   cloud.markReadCalls = []
   cloud.markReadOk = true
+  cloud.dismissCalls = []
+  cloud.dismissError = null
+  cloud.dismissedIds = []
   await store.initStore(true)
   await store.authenticateCloudUser('user-1')
 })
@@ -154,6 +169,80 @@ describe('delete', () => {
   it('deleting a missing id is a no-op, not an error', async () => {
     await expect(store.deleteNotification('does-not-exist')).resolves.toBeDefined()
   })
+
+  it('dismisses a server announcement so a later feed sync cannot restore it', async () => {
+    cloud.feed = [announcement('a1')]
+    await store.syncServerAnnouncements()
+    await store.deleteNotification('ann-a1')
+
+    expect(cloud.dismissCalls).toEqual([['a1']])
+    expect(store.getState().notifications).toHaveLength(0)
+    await store.syncServerAnnouncements()
+    expect(store.getState().notifications).toHaveLength(0)
+    expect(cloud.dismissedIds).toContain('a1')
+  })
+
+  it('keeps an announcement removed after server dismissal even if cloud snapshot sync fails', async () => {
+    cloud.feed = [announcement('a1')]
+    await store.syncServerAnnouncements()
+    cloud.saveThrows = 'temporary cloud outage'
+
+    await expect(store.deleteNotification('ann-a1')).resolves.toBe('local-only')
+    expect(store.getState().notifications).toHaveLength(0)
+    expect(cloud.dismissedIds).toContain('a1')
+    expect(localStorage.getItem('alhelm.v1.announcementDismissals.user-1')).toBeNull()
+  })
+
+  it('keeps an offline deletion queued and syncs it after reconnecting', async () => {
+    cloud.feed = [announcement('a1')]
+    await store.syncServerAnnouncements()
+    cloud.dismissError = 'offline'
+
+    await expect(store.deleteNotification('ann-a1')).resolves.toBe('local-pending')
+    expect(store.getState().notifications).toHaveLength(0)
+    expect(localStorage.getItem('alhelm.v1.announcementDismissals.user-1')).toContain('a1')
+
+    cloud.dismissError = null
+    await store.syncServerAnnouncements()
+    expect(store.getState().notifications).toHaveLength(0)
+    expect(cloud.dismissedIds).toContain('a1')
+    expect(localStorage.getItem('alhelm.v1.announcementDismissals.user-1')).toBeNull()
+  })
+
+  it('removes a dismissal made on another device', async () => {
+    cloud.feed = [announcement('a1')]
+    await store.syncServerAnnouncements()
+    cloud.dismissedIds = ['a1']
+
+    await store.syncServerAnnouncements()
+    expect(store.getState().notifications).toHaveLength(0)
+  })
+
+  it('clears server announcements across devices as well as local notices', async () => {
+    cloud.feed = [announcement('a1'), announcement('a2')]
+    await store.syncServerAnnouncements()
+    await store.addNotification({ kind: 'system', title: 'Local notice', body: '' })
+
+    await store.clearNotifications()
+
+    expect(store.getState().notifications).toHaveLength(0)
+    expect(cloud.dismissedIds).toEqual(expect.arrayContaining(['a1', 'a2']))
+    await store.syncServerAnnouncements()
+    expect(store.getState().notifications).toHaveLength(0)
+  })
+
+  it('does not clear locally when durable deletion-queue storage fails', async () => {
+    cloud.feed = [announcement('a1')]
+    await store.syncServerAnnouncements()
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota exceeded') })
+    try {
+      await expect(store.deleteNotification('ann-a1')).rejects.toThrow(/quota exceeded/)
+      expect(store.getState().notifications.some((item) => item.id === 'ann-a1')).toBe(true)
+      expect(cloud.dismissCalls).toHaveLength(0)
+    } finally {
+      setItem.mockRestore()
+    }
+  })
 })
 
 describe('server announcement sync', () => {
@@ -209,11 +298,11 @@ describe('server announcement sync', () => {
     await expect(store.markAnnouncementReadEverywhere('a1')).rejects.toThrow(/could not be marked as read/i)
   })
 
-  it('keeps local notifications when the feed request fails', async () => {
+  it('keeps local notifications and surfaces feed errors', async () => {
     await store.addNotification({ kind: 'system', title: 'Mine', body: '' })
     const admin = await import('./edge/admin')
       ; (admin as unknown as { getAnnouncementFeed: () => Promise<unknown> }).getAnnouncementFeed = async () => { throw new Error('offline') }
-    await expect(store.syncServerAnnouncements()).resolves.toBe(0)
+    await expect(store.syncServerAnnouncements()).rejects.toThrow('offline')
     expect(store.getState().notifications).toHaveLength(1)
   })
 })

@@ -7,6 +7,7 @@ import { BellIcon, CheckIcon, TrashIcon } from '../components/icons'
 import {
   clearNotifications,
   deleteNotification,
+  getPendingAnnouncementDismissalError,
   getPendingCloudError,
   markAllNotificationsRead,
   markAnnouncementReadEverywhere,
@@ -224,8 +225,13 @@ export function NotificationsPage() {
   })
 
   const remove = (id: string) => withBusy(id, async () => {
-    await deleteNotification(id)
-    notify(t('notifDeleted'), 'info')
+    const result = await deleteNotification(id)
+    if (result === 'local-pending') {
+      const error = getPendingAnnouncementDismissalError()
+      notify(`${t('notifDeletePending')}${error ? `: ${error}` : ''}`, 'warning')
+    } else {
+      notify(t('notifDeleted'), 'info')
+    }
     reportCloudGate()
   })
 
@@ -242,8 +248,13 @@ export function NotificationsPage() {
   const clearAll = async () => {
     setClearing(true)
     try {
-      await clearNotifications()
-      notify(t('notificationsCleared'), 'info')
+      const result = await clearNotifications()
+      if (result === 'local-pending') {
+        const error = getPendingAnnouncementDismissalError()
+        notify(`${t('notifDeletePending')}${error ? `: ${error}` : ''}`, 'warning')
+      } else {
+        notify(t('notificationsCleared'), 'info')
+      }
       reportCloudGate()
     } catch (error) {
       notify(error instanceof Error ? error.message : t('retry'), 'danger')

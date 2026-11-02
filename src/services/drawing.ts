@@ -17,7 +17,8 @@
 
 export const CANVAS_W = 900
 export const CANVAS_H = 620
-export const DRAWING_MODEL_VERSION = 2
+export const DRAWING_MODEL_VERSION = 3
+export const DEFAULT_LAYER_ID = 'layer_default'
 
 export type PaperKind = 'white' | 'cream' | 'grid'
 /**
@@ -30,6 +31,7 @@ export type ShapeKind = 'line' | 'rect' | 'ellipse'
 /** A geometric shape, stored independently of freehand strokes. */
 export interface Shape {
   id: string
+  layerId?: string
   kind: ShapeKind
   from: Point
   to: Point
@@ -40,6 +42,7 @@ export interface Shape {
 /** A text element. `x`/`y` is the top-left of the drawn glyphs. */
 export interface TextElement {
   id: string
+  layerId?: string
   x: number
   y: number
   text: string
@@ -53,10 +56,17 @@ export interface Point {
 }
 
 export interface Stroke {
+  layerId?: string
   points: Point[]
   color: string
   size: number
   eraser: boolean
+}
+
+export interface DrawingLayer {
+  id: string
+  name: string
+  visible: boolean
 }
 
 export interface DrawingDocument {
@@ -69,6 +79,8 @@ export interface DrawingDocument {
   shapes?: Shape[]
   /** v3. Absent in older documents and always optional when reading. */
   texts?: TextElement[]
+  layers?: DrawingLayer[]
+  activeLayerId?: string
 }
 
 export const PAPER_BACKGROUND: Record<PaperKind, string> = {
@@ -84,7 +96,18 @@ export const PAPER_SWATCH: Record<PaperKind, string> = {
 }
 
 export function emptyDocument(paper: PaperKind = 'cream'): DrawingDocument {
-  return { version: DRAWING_MODEL_VERSION, width: CANVAS_W, height: CANVAS_H, paper, strokes: [], shapes: [], texts: [] }
+  const layer: DrawingLayer = { id: DEFAULT_LAYER_ID, name: 'Layer 1', visible: true }
+  return {
+    version: DRAWING_MODEL_VERSION,
+    width: CANVAS_W,
+    height: CANVAS_H,
+    paper,
+    strokes: [],
+    shapes: [],
+    texts: [],
+    layers: [layer],
+    activeLayerId: layer.id,
+  }
 }
 
 /** Defensive parse of a shape; malformed entries are dropped, never thrown. */
@@ -98,6 +121,7 @@ function cleanShape(value: unknown): Shape | null {
   const size = Number(c.size)
   return {
     id: typeof c.id === 'string' && c.id ? c.id : `shp_${Math.random().toString(36).slice(2, 10)}`,
+    ...(typeof c.layerId === 'string' && c.layerId ? { layerId: c.layerId } : {}),
     kind,
     from: { x: Number(from!.x), y: Number(from!.y) },
     to: { x: Number(to!.x), y: Number(to!.y) },
@@ -115,6 +139,7 @@ function cleanText(value: unknown): TextElement | null {
   const size = Number(c.size)
   return {
     id: typeof c.id === 'string' && c.id ? c.id : `txt_${Math.random().toString(36).slice(2, 10)}`,
+    ...(typeof c.layerId === 'string' && c.layerId ? { layerId: c.layerId } : {}),
     x: Number(c.x),
     y: Number(c.y),
     text: c.text.slice(0, 500),
@@ -124,7 +149,7 @@ function cleanText(value: unknown): TextElement | null {
 }
 
 /** Stable id for a new shape/text element. */
-export function makeId(prefix: 'shp' | 'txt'): string {
+export function makeId(prefix: 'shp' | 'txt' | 'lay'): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 }
 
@@ -139,6 +164,7 @@ function cleanStroke(value: unknown): Stroke | null {
   if (points.length === 0) return null
   const size = Number(candidate.size)
   return {
+    ...(typeof candidate.layerId === 'string' && candidate.layerId ? { layerId: candidate.layerId } : {}),
     points,
     color: typeof candidate.color === 'string' && candidate.color ? candidate.color : '#34312f',
     size: Number.isFinite(size) && size > 0 ? Math.min(60, size) : 3,
@@ -163,14 +189,39 @@ export function parseDocument(raw: string | null | undefined): DrawingDocument |
   // arrays — so reopening an old drawing never loses or invents content.
   const shapes = Array.isArray(doc.shapes) ? doc.shapes.map(cleanShape).filter((s): s is Shape => s !== null) : []
   const texts = Array.isArray(doc.texts) ? doc.texts.map(cleanText).filter((t): t is TextElement => t !== null) : []
+  const layers = Array.isArray(doc.layers)
+    ? doc.layers
+      .filter((layer): layer is DrawingLayer => Boolean(layer) && typeof layer === 'object'
+        && typeof (layer as DrawingLayer).id === 'string' && Boolean((layer as DrawingLayer).id)
+        && typeof (layer as DrawingLayer).name === 'string')
+      .map((layer) => ({
+        id: layer.id,
+        name: layer.name.trim().slice(0, 60) || 'Layer',
+        visible: layer.visible !== false,
+      }))
+    : []
+  const normalizedLayers = layers.length ? layers : [{ id: DEFAULT_LAYER_ID, name: 'Layer 1', visible: true }]
+  const layerIds = new Set(normalizedLayers.map((layer) => layer.id))
+  const normalizeLayerId = <T extends { layerId?: string }>(element: T): T =>
+    element.layerId && !layerIds.has(element.layerId)
+      ? { ...element, layerId: normalizedLayers[0].id }
+      : element
+  const normalizedStrokes = strokes.map(normalizeLayerId)
+  const normalizedShapes = shapes.map(normalizeLayerId)
+  const normalizedTexts = texts.map(normalizeLayerId)
+  const activeLayerId = typeof doc.activeLayerId === 'string' && layerIds.has(doc.activeLayerId)
+    ? doc.activeLayerId
+    : normalizedLayers[0].id
   return {
     version: DRAWING_MODEL_VERSION,
     width: Number(doc.width) > 0 ? Number(doc.width) : CANVAS_W,
     height: Number(doc.height) > 0 ? Number(doc.height) : CANVAS_H,
     paper,
-    strokes,
-    shapes,
-    texts,
+    strokes: normalizedStrokes,
+    shapes: normalizedShapes,
+    texts: normalizedTexts,
+    layers: normalizedLayers,
+    activeLayerId,
   }
 }
 

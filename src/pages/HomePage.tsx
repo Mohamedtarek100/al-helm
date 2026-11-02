@@ -9,7 +9,7 @@ import { WEEKDAY_SHORT, SUBJECT_COLOR_HEX, SESSION_TYPE_LABELS } from '../servic
 import { formatMinutes, formatTime, todayKey } from '../services/date'
 import { useI18n } from '../i18n/useI18n'
 import { sessionsForDate } from '../services/selectors'
-import { useAppData, setTaskCompleted, useSettings, updateSettings } from '../services/store'
+import { getPendingCloudError, useAppData, setTaskCompleted, useSettings, updateSettings } from '../services/store'
 import { PageFrame } from './PageFrame'
 
 function SketchHero() {
@@ -101,11 +101,9 @@ export function HomePage() {
                   try {
                     const result = await setTaskCompleted(task.id, true)
                     notify(
-                      result === 'session-only'
-                        ? t('taskSessionOnly')
-                        : result === 'local-only'
-                          ? language === 'en' ? 'Saved on this device. Cloud sync will retry when the connection returns.' : 'اتحفظ على الجهاز ده. مزامنة السحابة هتحاول تاني لما الاتصال يرجع.'
-                          : t('taskCompleted'),
+                      result === 'local-only'
+                        ? getPendingCloudError() ? t('taskSavedCloudPending') : t('taskSavedDeviceOnly')
+                        : t('taskCompleted'),
                       result === 'cloud' ? 'success' : 'warning',
                     )
                   } catch (error) {
